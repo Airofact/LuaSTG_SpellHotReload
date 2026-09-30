@@ -12,6 +12,31 @@ LuaSTG Editor Sharp 的 **Spell Practice（符卡练习）热重载** 调试插�
 
 实现位于 `game/plugin/SpellHotReload/`。无需改动编辑器、项目源文件或生成文件。
 
+## 安装与更新
+
+在游戏项目根目录（包含 `game/` 的目录）执行：
+
+```powershell
+git submodule add https://github.com/Airofact/LuaSTG_SpellHotReload.git game/plugin/SpellHotReload
+```
+
+克隆已经引用本插件的项目后，用 `git submodule update --init --recursive`
+取回项目记录的版本。更新插件时执行：
+
+```powershell
+git -C game/plugin/SpellHotReload pull --ff-only origin main
+git add game/plugin/SpellHotReload
+```
+
+主项目提交新的 gitlink 后，其他使用者再执行 `git submodule update --init`
+即可取得相同版本。也可直接下载本仓库，把含 `__init__.lua` 的根目录放到
+`game/plugin/SpellHotReload/`。
+
+运行需要提供 `lib.Ldebug`、插件事件、ImGui、`lstg.FileSystemWatcher` 以及
+THlib 符卡练习接口的 LuaSTG 环境；已验证环境为 THDiMS 的 LuaSTG Sub
+v0.21.111 / LuaJIT 2.1.1744887079。Lua 5.1 可运行独立 spec，不能据此
+推断其它引擎包的运行兼容性。启用插件后重启游戏，使加载捕获先于 mod 执行。
+
 ## 使用
 
 1. 将本目录放在 `game/plugin/` 下并启用插件，重新启动游戏。
@@ -203,6 +228,8 @@ Driver 75、Card 63、Host 93、Watcher 14 全部 0 failed（InlineSpec 在 LuaJ
 `userdata/spell_hot_reload_smoke/` 写入测试生成文件和 `result.txt`。
 成功标记为 `PASS`；实际覆盖生产加载 hook、文件监视、两次应用、新 Boss /
 任务、局部状态保留，以及 class/符卡注册数量不变。
+符卡 Apply 迁入 Driver 后于 2026-09-30 复跑通过，同时验证 Dismiss 在
+周期扫描与 Rescan 后仍保持有效。
 
 SC Debug 入口的 smoke 需要生成产物末端带 `Include 'THlib\UI\scdebugger.lua'`
 （用 SC Debug 入口重新打包；当前 `game/mod/DiMS/` 产物不含该 Include，
