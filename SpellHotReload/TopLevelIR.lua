@@ -363,21 +363,32 @@ end
 ---@param options table?  -- { host_calls = { [callee_path] = true } }
 ---@return table[]? nodes
 ---@return string? error
+---@return table? analysis -- shared lexical snapshot, NOT binding proof
 function M.Analyze(content, options)
     options = options or {}
     if type(content) ~= "string" then
         return nil, "content must be a string"
     end
+    local source_offset = 0
     if content:sub(1, 3) == "\239\187\191" then
         content = content:sub(4)
+        source_offset = 3
     end
 
     local tokens, lines, starts = split(content)
-    local nodes = {}
+    local nodes, statements = {}, {}
     for k = 1, #starts do
         local first = starts[k]
         local last = (starts[k + 1] and starts[k + 1] - 1) or #tokens
-        local text = content:sub(tokens[first].pos, tokens[last].pos + #tokens[last].value - 1)
+        local first_byte = tokens[first].pos
+        local last_byte = tokens[last].pos + #tokens[last].value - 1
+        local text = content:sub(first_byte, last_byte)
+        statements[#statements + 1] = {
+            tok = { first = first, last = last }, line = lines[first], text = text,
+            source_range = {
+                first = first_byte + source_offset, last = last_byte + source_offset,
+            },
+        }
         for _, node in ipairs(classify(tokens, first, last, lines[first], options)) do
             node.text = text
             nodes[#nodes + 1] = node
@@ -385,7 +396,13 @@ function M.Analyze(content, options)
     end
 
     M._link(tokens, nodes)
-    return nodes
+    -- Token positions refer to BOM-stripped source; public byte ranges refer to
+    -- the original content. The line splitter/name deps are not a Lua parser.
+    return nodes, nil, {
+        source = content, source_offset = source_offset,
+        tokens = tokens, token_lines = lines, statements = statements,
+        nodes = nodes, binding_complete = false,
+    }
 end
 
 ---Split into top-level statements and return their source text. Exposed
