@@ -1,7 +1,10 @@
 --- Full-file discovery only: no candidate execution or publication.
 --- Inputs/outputs are read-only by contract, not protected Lua tables.
+--- Every snapshot also carries the shared TopLevelIR analysis and the Binding
+--- declaration/visibility model; neither is a binding-safety proof.
 local IR = require("SpellHotReload.TopLevelIR")
 local Adapter = require("SpellHotReload.Adapter")
+local Binding = require("SpellHotReload.Binding")
 local M = {}
 
 local function plain(value)
@@ -58,7 +61,8 @@ end
 ---Discover(registry, content, common?, options?) -> snapshot | nil, error.
 ---common is shallow-copied; file/session/generation/version references survive.
 ---Each Match sees the same full analysis, including unchanged/unselected units.
----unit.key is snapshot-local only. context/binding/deps remain adapter-owned.
+---unit.key is snapshot-local only; context/deps stay adapter-owned, while
+---snapshot.bindings is the shared lexical declaration/visibility model.
 function M.Discover(registry, content, supplied, options)
     if supplied ~= nil and not plain(supplied) then
         return failure("analyze", "unsupported", "common must be a plain table")
@@ -93,9 +97,13 @@ function M.Discover(registry, content, supplied, options)
         return failure("analyze", "unsupported", analyzed and reason or nodes, file)
     end
     common.content, common.analysis = content, analysis
+    local bindings, binding_error = Binding.Analyze(analysis)
+    if bindings == nil then
+        return failure("analyze", "unsupported", binding_error or "binding analysis failed", file)
+    end
     local snapshot = {
-        common = common, analysis = analysis, units = {}, entries = {},
-        by_key = {}, adapter_contexts = {}, claims = {}, claim_owners = {},
+        common = common, analysis = analysis, bindings = bindings, units = {},
+        entries = {}, by_key = {}, adapter_contexts = {}, claims = {}, claim_owners = {},
     }
     for _, adapter in ipairs(adapters) do
         local id = rawget(adapter, "Id")
