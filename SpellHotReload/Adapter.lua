@@ -51,6 +51,38 @@ function Adapter.Validate(adapter)
     return true
 end
 
+---Validate the explicit discovery contract without invoking adapter code.
+---Legacy Validate remains independent; this does not register or run Match.
+function Adapter.ValidateDiscovery(adapter)
+    if type(adapter) ~= "table" then
+        return false, "adapter must be a table"
+    end
+    if rawget(adapter, "ContractVersion") ~= 2 then
+        return false, "discovery adapter requires ContractVersion = 2"
+    end
+    local id = rawget(adapter, "Id")
+    if type(id) ~= "string" or not id:match("^[a-z][a-z0-9_.-]*$") then
+        return false, "discovery adapter requires a valid lowercase Id"
+    end
+    for _, hook in ipairs({ "Match", "Locate", "Inject", "Commit" }) do
+        if type(rawget(adapter, hook)) ~= "function" then
+            return false, "adapter is missing required hook '" .. hook .. "'"
+        end
+    end
+    local restartable = rawget(adapter, "Restartable")
+    if restartable ~= nil and type(restartable) ~= "boolean" then
+        return false, "Restartable must be a boolean"
+    end
+    local restart = rawget(adapter, "Restart")
+    if restart ~= nil and type(restart) ~= "function" then
+        return false, "Restart must be a function"
+    end
+    if restartable == true and restart == nil then
+        return false, "restartable adapter requires Restart"
+    end
+    return true
+end
+
 ---Declines every node, so an unregistered carrier degrades to a no-op instead of
 ---erroring. Installing it as a node registry's fallback is the intended use.
 Adapter.Fallback = {
