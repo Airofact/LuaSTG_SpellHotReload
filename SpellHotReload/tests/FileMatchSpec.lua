@@ -1,6 +1,6 @@
 local FileMatch = require("SpellHotReload.FileMatch")
 local Registry = require("SpellHotReload.NodeRegistry")
-local Loader = require("SpellHotReload.GeneratedBossLoader")
+local Lexer = require("SpellHotReload.Lexer")
 local IR = require("SpellHotReload.TopLevelIR")
 local M = {}
 
@@ -72,14 +72,14 @@ function M.run()
         loaded_source = "loaded", registry_entry = {}, base_revision = 2,
         published_units = {}, analysis = "old", content = "old",
     }
-    local old_tokenize, lex_count = Loader.Tokenize, 0
-    Loader.Tokenize = function(content)
+    local old_tokenize, lex_count = Lexer.Tokenize, 0
+    Lexer.Tokenize = function(content)
         lex_count = lex_count + 1
         return old_tokenize(content)
     end
     local ok, snapshot = pcall(discover, registry(adapter("b", match_b),
         adapter("a", match_a)), source, supplied)
-    Loader.Tokenize = old_tokenize
+    Lexer.Tokenize = old_tokenize
     assert(ok, snapshot)
     assert(snapshot)
     eq(lex_count, 1, "shared lexer called once")

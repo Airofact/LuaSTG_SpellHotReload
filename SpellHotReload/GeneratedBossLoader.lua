@@ -1,7 +1,9 @@
 --------------------------------------------------------------------------------
 --- SpellHotReload.GeneratedBossLoader
 ---
---- The hot-reload harvest + inject mechanism.
+--- Legacy harvest + value-injection compatibility only. Production initial
+--- load uses LoadHook -> AnchorLoad; analysis/composition use Lexer directly.
+--- This module retains old Apply builders until their pipeline is migrated.
 ---
 --- 1. Intercept `lstg.DoFile` so that when a `*_Boss.lua` file loads (during normal
 ---    mod load), its top-level `local function`s are captured into an
@@ -19,6 +21,9 @@
 ---    the whole file.
 --- CardCallbacks additionally extracts and rebuilds the current card's callbacks.
 --------------------------------------------------------------------------------
+
+local Lexer = require("SpellHotReload.Lexer")
+local Capture = require("SpellHotReload.LoadCapture")
 
 local Loader = {}
 
@@ -76,48 +81,6 @@ local function read_text(filename, base)
 end
 
 --------------------------------------------------------------------------------
---- capability probe
---------------------------------------------------------------------------------
-
----Verify the primitives the plugin relies on: `debug.setupvalue` on Lua closures
----(with non-empty upvalue names), `compile`, and the name-list/capture path.
----@return boolean, string?
-function Loader.Probe()
-	local function make_closure()
-		local captured = function() return 7 end
-		return function() return captured() end
-	end
-	local f = make_closure()
-	local name = debug.getupvalue(f, 1)
-	if name == nil or name == "" then
-		return false, "upvalue names unavailable (debug info stripped)"
-	end
-	local sok, serr = pcall(debug.setupvalue, f, 1, function() return 8 end)
-	if not sok then
-		return false, "debug.setupvalue on Lua closure failed: " .. tostring(serr)
-	end
-	if f() ~= 8 then
-		return false, "setupvalue patch not effective"
-	end
-
-	local src = "local function __probe_capture() return 1 end"
-	local names = Loader.ListFunctionNames(src)
-	if #names == 0 or names[1] ~= "__probe_capture" then
-		return false, "top-level local-function name extraction unavailable"
-	end
-	local chunk = compile(src .. "\n" .. Loader.BuildTrailer(names), "@SpellHotReload.probe")
-	if chunk == nil then
-		return false, "compile unavailable"
-	end
-	local t = chunk()
-	if type(t) ~= "table" or type(t["__probe_capture"]) ~= "function" then
-		return false, "capture (trailer return) unavailable"
-	end
-
-	return true
-end
-
---------------------------------------------------------------------------------
 --- interception
 --------------------------------------------------------------------------------
 
@@ -125,14 +88,7 @@ end
 ---@param names string[]
 ---@return string
 local function build_trailer(names)
-	if #names == 0 then return "return {}" end
-	local parts = { "return {" }
-	for i, name in ipairs(names) do
-		parts[#parts + 1] = "[" .. string.format("%q", name) .. "]=" .. name
-			.. (i < #names and "," or "")
-	end
-	parts[#parts + 1] = "}"
-	return table.concat(parts)
+	return Capture.Trailer(names)
 end
 
 function Loader.BuildTrailer(names)
@@ -148,8 +104,7 @@ local _installed = false
 ---`capture.trailer(names)` may return the richer dual trailer (legacy value map
 ---plus anchor closure) and `capture.on_capture(base, content, names, results)`
 ---runs once the file has executed, so the anchor half of `results` can be
----registered without this module depending on the anchor service - which would
----be a require cycle, since TopLevelIR already requires this module.
+---registered without this compatibility module owning an anchor service.
 ---@param registry table  -- UpvalueRegistry instance
 ---@param capture table?  -- { trailer = function(names), on_capture = function(base, content, names, results) }
 function Loader.InstallDoFileHook(registry, capture)
@@ -197,99 +152,9 @@ end
 --- lexer + fragment extraction
 --------------------------------------------------------------------------------
 
-local BLOCK_OPEN = { ["function"] = true, ["if"] = true, ["do"] = true, ["repeat"] = true }
-local BLOCK_CLOSE = { ["end"] = true, ["until"] = true }
-
----Tokenize, recording byte offset and block depth per token.
----@param content string
----@return table[]
+-- Legacy callers delegate to the same lexer as the generic model.
 local function lex(content)
-	local tokens = {}
-	local n = #content
-	local i = 1
-	local depth = 0
-
-	local function emit(kind, value, pos)
-		tokens[#tokens + 1] = { kind = kind, value = value, pos = pos, depth = depth }
-	end
-
-	local function long_bracket(p)
-		if content:sub(p, p) ~= "[" then return nil end
-		local j = p + 1
-		while j <= n and content:sub(j, j) == "=" do j = j + 1 end
-		if content:sub(j, j) == "[" then
-			return "]" .. string.rep("=", j - (p + 1)) .. "]", j + 1
-		end
-		return nil
-	end
-
-	while i <= n do
-		local c = content:sub(i, i)
-
-		if c == " " or c == "\t" or c == "\r" or c == "\n" or c == "\f" or c == "\v" then
-			i = i + 1
-
-		elseif c == "-" and content:sub(i, i + 1) == "--" then
-			local close, body_start = long_bracket(i + 2)
-			if close then
-				local close_pos = content:find(close, body_start, true)
-				i = close_pos and (close_pos + #close) or (n + 1)
-			else
-				while i <= n and content:sub(i, i) ~= "\n" do i = i + 1 end
-			end
-
-		elseif c == "'" or c == '"' then
-			local start = i
-			local q = c
-			i = i + 1
-			while i <= n do
-				local ch = content:sub(i, i)
-				if ch == "\\" then
-					i = i + 2
-				elseif ch == q then
-					i = i + 1
-					break
-				else
-					i = i + 1
-				end
-			end
-			emit("string", content:sub(start, i - 1), start)
-
-		elseif c == "[" then
-			local start = i
-			local close, body_start = long_bracket(i)
-			if close then
-				local close_pos = content:find(close, body_start, true)
-				i = close_pos and (close_pos + #close) or (n + 1)
-				emit("string", content:sub(start, i - 1), start)
-			else
-				emit("symbol", "[", i)
-				i = i + 1
-			end
-
-		elseif c:match("[%a_]") then
-			local start = i
-			local j = i
-			while j <= n and content:sub(j, j):match("[%w_]") do j = j + 1 end
-			local word = content:sub(i, j - 1)
-			i = j
-			if BLOCK_OPEN[word] then
-				emit("word", word, start)
-				depth = depth + 1
-			elseif BLOCK_CLOSE[word] then
-				emit("word", word, start)
-				depth = depth - 1
-			else
-				emit("word", word, start)
-			end
-
-		else
-			emit("symbol", c, i)
-			i = i + 1
-		end
-	end
-
-	return tokens
+	return Lexer.Tokenize(content)
 end
 
 -- Shared with the generated-card reader; strings/comments never become code tokens.

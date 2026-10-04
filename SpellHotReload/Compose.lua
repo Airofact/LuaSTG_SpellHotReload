@@ -41,7 +41,7 @@
 --------------------------------------------------------------------------------
 
 local Anchor = require("SpellHotReload.Anchor")
-local Loader = require("SpellHotReload.GeneratedBossLoader")
+local Lexer = require("SpellHotReload.Lexer")
 
 local M = {}
 
@@ -219,7 +219,7 @@ end
 ---@param declared table<string, boolean>
 ---@return table<string, boolean>
 local function nested_mentions(body, declared)
-    local tokens = Loader.Tokenize(body)
+    local tokens = Lexer.Tokenize(body)
     local stack, mentions = {}, {}
 
     local function function_level()

@@ -13,11 +13,11 @@
 ---   effect     require / Include / New 等     -> 无载体副作用，不可重放
 ---
 --- The module never executes the analyzed source. Everything is derived from the
---- shared lexer in GeneratedBossLoader, so it can be exercised under plain Lua
+--- shared engine-independent Lexer, so it can be exercised under plain Lua
 --- and LuaJIT without an engine.
 --------------------------------------------------------------------------------
 
-local Loader = require("SpellHotReload.GeneratedBossLoader")
+local Lexer = require("SpellHotReload.Lexer")
 
 local M = {}
 
@@ -54,7 +54,7 @@ local function is_close(value) return CLOSE[value] == true end
 ---@return integer[] lines
 ---@return integer[] starts
 local function split(content)
-    local tokens = Loader.Tokenize(content)
+    local tokens = Lexer.Tokenize(content)
     local lines, starts = {}, {}
     local nest = 0
     local line = 1

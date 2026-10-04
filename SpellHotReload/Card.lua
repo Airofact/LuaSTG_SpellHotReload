@@ -43,7 +43,6 @@
 --------------------------------------------------------------------------------
 
 local CardCallbacks = require("SpellHotReload.CardCallbacks")
-local Loader = require("SpellHotReload.GeneratedBossLoader")
 local Binding = require("SpellHotReload.PracticeBinding")
 
 local compile = loadstring or load

@@ -29,7 +29,6 @@
 --------------------------------------------------------------------------------
 
 local IR = require("SpellHotReload.TopLevelIR")
-local Loader = require("SpellHotReload.GeneratedBossLoader")
 
 local M = {}
 
@@ -116,7 +115,14 @@ end
 ---@param names string[]
 ---@return string
 function M.Trailer(names)
-    return Loader.BuildTrailer(names)
+    if #names == 0 then return "return {}" end
+    local parts = { "return {" }
+    for i, name in ipairs(names) do
+        parts[#parts + 1] = "[" .. string.format("%q", name) .. "]=" .. name
+            .. (i < #names and "," or "")
+    end
+    parts[#parts + 1] = "}"
+    return table.concat(parts)
 end
 
 --------------------------------------------------------------------------------
@@ -155,7 +161,7 @@ function M.Run(content, name, options)
     local captured = options.capture ~= false and not has_return
     local chunk_src = source
     if captured then
-        chunk_src = source .. "\n" .. Loader.BuildTrailer(names)
+        chunk_src = source .. "\n" .. M.Trailer(names)
     end
 
     local chunk, cerr = compile(chunk_src, "@" .. tostring(name or "LoadCapture"))

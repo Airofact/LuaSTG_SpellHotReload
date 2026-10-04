@@ -14,7 +14,7 @@
 ---
 ---   Trailer   the dual trailer. It keeps the legacy `return { [name] = name }`
 ---             map as the chunk's *first* result - byte-derived from
----             GeneratedBossLoader.BuildTrailer - and appends Anchor's anchor
+---             LoadCapture.Trailer - and appends Anchor's anchor
 ---             closure as the *second*, so `results[1]` stays exactly what the
 ---             current hook stores and `results[2]` is the new model;
 ---   Capture   analyse with the shared TopLevelIR/Binding snapshot, apply the
@@ -42,7 +42,7 @@
 
 local Anchor = require("SpellHotReload.Anchor")
 local Compose = require("SpellHotReload.Compose")
-local Loader = require("SpellHotReload.GeneratedBossLoader")
+local Capture = require("SpellHotReload.LoadCapture")
 
 local M = {}
 
@@ -91,7 +91,7 @@ end
 
 ---Build the dual capture trailer for the given names.
 ---
----The map half is derived from `GeneratedBossLoader.BuildTrailer`, so a hook
+---The map half is derived from `LoadCapture.Trailer`, so a hook
 ---that only reads `results[1]` keeps the exact bytes it stores today; the anchor
 ---half is derived from `Anchor.Trailer`, so the closure is the same shape the
 ---anchor service expects. Names are validated by `Anchor.Trailer` (a dense array
@@ -104,7 +104,7 @@ function M.Trailer(names)
     if anchor_src == nil then
         return nil, reason
     end
-    local map_src = Loader.BuildTrailer(names)
+    local map_src = Capture.Trailer(names)
     local map_expr = map_src:match("^return%s+(.*)$")
     local anchor_expr = anchor_src:match("^return%s+(.*)$")
     if map_expr == nil or anchor_expr == nil then
