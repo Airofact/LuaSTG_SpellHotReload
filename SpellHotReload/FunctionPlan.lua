@@ -141,6 +141,17 @@ local function analyze(content)
     return result
 end
 
+---Read-only source inspection used by the R3 version/diff service. Results
+---contain direct literal candidates, direct-write counts and conservative
+---blocked names, NOT a guarantee that every candidate can be published.
+---Prepare remains the authority for selected-definition/anchor validation.
+---The complete source is syntax checked; its chunk is never executed.
+function M.Inspect(content)
+    local result, reason, code = analyze(content)
+    if result == nil then return failure(code, reason) end
+    return result
+end
+
 ---Prepare(content, entry, selected, published) -> plan | nil, structured error.
 ---selected is a dense name array, published[name] is the last published function
 ---identity (not a function discovered from an old snapshot). The caller owns
