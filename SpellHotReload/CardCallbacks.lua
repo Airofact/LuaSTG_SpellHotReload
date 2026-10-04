@@ -1,6 +1,6 @@
 -- Read Editor Sharp's card registrations without executing generated wiring.
 -- Build only callback closures, retaining captured locals from the running card.
-local Loader = require("SpellHotReload.GeneratedBossLoader")
+local Lexer = require("SpellHotReload.Lexer")
 local M = {}
 local compile = loadstring or load
 local CALLBACKS = { "before", "init", "frame", "render", "beforedel", "del", "after" }
@@ -113,7 +113,7 @@ end
 function M.Read(content, class_key)
     local chunk, err = compile(content:gsub("^\239\187\191", ""), "@SpellHotReload.card_check")
     if not chunk then return nil, "syntax: " .. tostring(err) end
-    local tokens = Loader.Tokenize(content)
+    local tokens = Lexer.Tokenize(content)
     local layout, locals, pending, held = {}, {}, nil, nil
     local found = false
     local i = 1
@@ -165,7 +165,7 @@ function M.Read(content, class_key)
                         kind = tokens[i + 4].value,
                         name = constructor_name(tokens, i + 2),
                         constructor = signature(tokens, i + 2, last),
-                        callbacks = {}, locals = visible, perform = "",
+                        callbacks = {}, callback_points = {}, locals = visible, perform = "",
                     }
                     -- `_tmp_sc` keeps referring to this object until it is
                     -- reassigned, so a later list rebuild can reuse it.
@@ -193,6 +193,9 @@ function M.Read(content, class_key)
                         tail = "self" .. (empty and "" or ",") .. tail
                     end
                     pending.callbacks[name] = "function(" .. tail
+                    -- Byte offsets refer to the original input, including BOM.
+                    pending.callback_points[name] = { first = t.pos,
+                        last = tokens[last].pos + 2 }
                     i = last
                 elseif name == "perform" and matches(tokens, i + 3, "=") then
                     pending.perform = tokens[i + 4].value
@@ -396,6 +399,8 @@ end
 
 -- Preparation never invokes callback bodies or changes a live upvalue.
 function M.Build(descriptor, card, content, registry)
+    -- Legacy constructors are loaded only when the legacy Build is requested.
+    local Loader = require("SpellHotReload.GeneratedBossLoader")
     registry = registry or {}
     local captured, references = {}, {}
     for _, name in ipairs(CALLBACKS) do
