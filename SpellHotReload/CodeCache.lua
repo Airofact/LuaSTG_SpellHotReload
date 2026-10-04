@@ -28,7 +28,7 @@ function M.Invalidate()
     end
     local ok, err = pcall(flush)
     if not ok then
-        return false, "code cache: jit.flush failed: " .. tostring(err)
+        return false, "code cache: jit.flush failed: " .. (type(err) == "string" and err or "unknown error")
     end
     return true
 end
