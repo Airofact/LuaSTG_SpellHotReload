@@ -3,7 +3,7 @@
 ---
 --- Singleton lifecycle and orchestration. Owns the SnapshotStore, Watcher, and
 --- View; resolves the mod root; activates the watcher from `afterTHlib` (resolve
---- root, probe, baseline, start watching) with a first-Tick fallback; and
+--- root, capability gate, baseline, start watching) with a first-Tick fallback; and
 --- implements the Apply / Retry / Dismiss / Rescan / Start-Stop Watching
 --- transactions.
 ---
@@ -18,7 +18,7 @@
 local Watcher = require("SpellHotReload.Watcher")
 local SnapshotStore = require("SpellHotReload.SnapshotStore")
 local Scanner = require("SpellHotReload.GeneratedBossScanner")
-local Loader = require("SpellHotReload.GeneratedBossLoader")
+local Compose = require("SpellHotReload.Compose")
 local Binding = require("SpellHotReload.PracticeBinding")
 local ChangeLog = require("SpellHotReload.ChangeLog")
 local UpvalueRegistry = require("SpellHotReload.UpvalueRegistry")
@@ -51,6 +51,7 @@ function Plugin.New()
 	self._log = ChangeLog.New()
 	self._registry = UpvalueRegistry.New()
 	self._anchors = AnchorRegistry.New()
+	self._loads = {} -- full first-load entries, including non-capturable files
 	self._watcher = nil
 	self._view = nil
 	self._root = nil
@@ -76,6 +77,7 @@ end
 function Plugin:GetStore() return self._store end
 function Plugin:GetRegistry() return self._registry end
 function Plugin:GetAnchors() return self._anchors end
+function Plugin:GetLoad(file) return self._loads[file] end
 function Plugin:GetDriver() return self._driver end
 function Plugin:GetLog() return self._log end
 function Plugin:GetWatcher() return self._watcher end
@@ -127,6 +129,52 @@ function Plugin:CaptureAnchor(file, content, names, map, anchor)
 	return registered
 end
 
+---Adopt the FULL AnchorLoad result; never reconstruct or discard its verdict.
+---Normal DoFile still executes on each call. If a selected file is executed
+---again, hold the first anchor/source/map and disable reload: new consumers may
+---now reference a different family of cells. This is not a supported Apply.
+function Plugin:AdoptLoad(file, entry)
+	if type(file) ~= "string" or file == "" or type(entry) ~= "table"
+		or getmetatable(entry) ~= nil or type(entry.loaded_source) ~= "string" then
+		return false, "invalid load entry"
+	end
+	local existing = self._loads[file]
+	if existing then
+		if existing == entry then return true end
+		existing.reloadable = false
+		existing.reason = "file executed again; restart game: " .. file
+		return false, existing.reason
+	end
+	if entry.reloadable == true and type(entry.anchor) ~= "function" then
+		return false, "reloadable entry must carry an anchor"
+	end
+	if type(entry.anchor) == "function" then
+		local ok, reason = self._anchors:Set(file, entry)
+		if not ok then return false, reason end
+	end
+	self._loads[file] = entry
+	if type(entry.map) == "table" then self._registry:SetAll(file, entry.map) end
+	self._registry:SetSource(file, entry.loaded_source)
+	if entry.reloadable ~= true then
+		log(self, "warn", file .. ": reload disabled: " .. tostring(entry.reason))
+	end
+	return true
+end
+
+---Production captures never fall back to a legacy Apply after refusal. The
+---no-entry branch is retained only for isolated legacy callers/spec fixtures.
+function Plugin:_CheckLoad(file)
+	local entry = self._loads[file]
+	if entry == nil then return true end
+	if entry.reloadable ~= true then
+		return false, entry.reason or "file is not reloadable"
+	end
+	if self._anchors:Entry(file) ~= entry or not self._anchors:Live(file) then
+		return false, "anchor entry is unavailable or missing; restart game"
+	end
+	return true
+end
+
 ---The bytes a file was loaded from: the anchor registry first, then the legacy
 ---map store, so either registry can answer for a file the other never saw.
 ---@param file string
@@ -169,7 +217,7 @@ function Plugin:RequestActivation()
 	self._activation_requested = true
 end
 
----Resolve the mod root, probe patch capability, capture the baseline, and start
+---Resolve the mod root, check patch capability, capture the baseline, and start
 ---watching. Called from the plugin's `afterTHlib` hook, before the mod's own
 ---synchronous load. Idempotent: the first attempt wins, success or failure.
 ---@return boolean  true when the watcher is active
@@ -228,13 +276,13 @@ function Plugin:_activate()
 	self._supported = true
 	log(self, "info", "activated; watching " .. tostring(root))
 
-	local ok, serr = Loader.Probe()
+	local ok, serr = Anchor.Supported(Compose.Capability(debug))
 	self._sandbox_ok = ok
 	self._sandbox_error = serr
 	if ok then
-		log(self, "ok", "patch probe ok")
+		log(self, "ok", "anchor capability available")
 	else
-		log(self, "error", "patch probe failed: " .. tostring(serr))
+		log(self, "warn", "anchor capability unavailable: " .. tostring(serr))
 	end
 
 	self._watcher = Watcher.New({
@@ -304,6 +352,8 @@ function Plugin:_apply()
 		end
 	end
 	if not target_file then return "no stable candidate defines the current class" end
+	local load_ok, load_reason = self:_CheckLoad(target_file)
+	if not load_ok then return "loaded file cannot reload: " .. tostring(load_reason) end
 
 	-- Re-read the bytes shown in the UI and re-capture the live binding before
 	-- planning. The driver compares statement text, not the live binding, so a

@@ -15,8 +15,7 @@
 local lstg_debug = require("lib.Ldebug")
 local Plugin = require("SpellHotReload.Plugin")
 local View = require("SpellHotReload.View")
-local Loader = require("SpellHotReload.GeneratedBossLoader")
-local AnchorLoad = require("SpellHotReload.AnchorLoad")
+local LoadHook = require("SpellHotReload.LoadHook")
 
 local plugin = nil
 local view = nil
@@ -30,16 +29,12 @@ local function ensure_loaded()
 	view:initialize(plugin)
 	plugin:SetView(view)
 	lstg_debug.addView("lstg.debug.SpellHotReload", view)
-	-- Intercept lstg.DoFile before the mod loads so Boss-file top-level locals
-	-- are captured during normal load (the "file-level upvalue collection").
-	-- The dual trailer additionally returns the file's anchor, which is
-	-- registered first-load-wins for the hot-reload Apply path.
-	Loader.InstallDoFileHook(plugin:GetRegistry(), {
-		trailer = AnchorLoad.Trailer,
-		on_capture = function(base, content, names, results)
-			plugin:CaptureAnchor(base, content, names, results[1], results[2])
-		end,
-	})
+	-- Keep the existing watch scope, but capture ALL top-level locals and the
+	-- complete reload verdict from one normal execution, not the legacy hook.
+	local ok, reason = LoadHook.Install(lstg, function(file, entry)
+		return plugin:AdoptLoad(file, entry)
+	end, { select = LoadHook.BossFile })
+	if not ok then error("SpellHotReload load hook: " .. tostring(reason)) end
 end
 
 lstg.plugin.RegisterEvent("afterTHlib", "dims.debug.spellHotReload", 0, function()
