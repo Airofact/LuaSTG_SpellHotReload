@@ -52,6 +52,7 @@ function Plugin.New()
 	self._registry = UpvalueRegistry.New()
 	self._anchors = AnchorRegistry.New()
 	self._loads = {} -- full first-load entries, including non-capturable files
+	self._released = false
 	self._watcher = nil
 	self._view = nil
 	self._root = nil
@@ -82,7 +83,7 @@ function Plugin:GetDriver() return self._driver end
 function Plugin:GetLog() return self._log end
 function Plugin:GetWatcher() return self._watcher end
 function Plugin:GetView() return self._view end
-function Plugin:SetView(view) self._view = view end
+function Plugin:SetView(view) if not self._released then self._view = view end end
 function Plugin:GetLastResult() return self._last_result end
 function Plugin:IsActivated() return self._activated end
 ---@return boolean
@@ -95,6 +96,30 @@ function Plugin:IsSandboxOk() return self._sandbox_ok end
 function Plugin:GetSandboxError() return self._sandbox_error end
 function Plugin:IsWatching() return self._watcher ~= nil and self._watcher:IsRunning() end
 function Plugin:HasRestartPending() return self._pending_restart_run ~= nil end
+function Plugin:IsReleased() return self._released end
+
+---End this Plugin session. Bootstrap retires its DoFile hook separately; this
+---method drops only Plugin-owned state, not live game consumers or their cells.
+---StopWatching and Tool visibility are deliberately not session termination.
+function Plugin:Release(reason)
+	if self._released then return true end
+	self._released = true
+	self._activation_requested = false
+	self._activation_attempted = true
+	self._activated = false
+	self._supported = false
+	self._unsupported_reason = reason or "session ended"
+	self._pending_restart_run = nil
+	if self._watcher then self._watcher:Release() end
+	self._watcher, self._view = nil, nil
+	self._loads = {}
+	self._anchors:Release()
+	self._registry:Release()
+	self._store:Clear()
+	self._log:Clear()
+	self._root, self._last_result = nil, nil
+	return true
+end
 
 ---Register the anchor a Boss file's first load produced.
 ---
@@ -112,6 +137,7 @@ function Plugin:HasRestartPending() return self._pending_restart_run ~= nil end
 ---@param anchor function?
 ---@return boolean
 function Plugin:CaptureAnchor(file, content, names, map, anchor)
+	if self._released then return false, "session ended" end
 	if type(anchor) ~= "function" then
 		return false
 	end
@@ -134,6 +160,7 @@ end
 ---again, hold the first anchor/source/map and disable reload: new consumers may
 ---now reference a different family of cells. This is not a supported Apply.
 function Plugin:AdoptLoad(file, entry)
+	if self._released then return false, "session ended" end
 	if type(file) ~= "string" or file == "" or type(entry) ~= "table"
 		or getmetatable(entry) ~= nil or type(entry.loaded_source) ~= "string" then
 		return false, "invalid load entry"
@@ -164,6 +191,7 @@ end
 ---Production captures never fall back to a legacy Apply after refusal. The
 ---no-entry branch is retained only for isolated legacy callers/spec fixtures.
 function Plugin:_CheckLoad(file)
+	if self._released then return false, "session ended" end
 	local entry = self._loads[file]
 	if entry == nil then return true end
 	if entry.reloadable ~= true then
@@ -205,6 +233,7 @@ end
 ---@param file string
 ---@param functions table
 function Plugin:_Publish(file, functions)
+	if self._released then return false, "session ended" end
 	self._registry:SetAll(file, functions)
 	if self._anchors:Has(file) then
 		self._anchors:SetAll(file, functions)
@@ -214,6 +243,7 @@ end
 ---Fallback activation request from the `afterMod` hook. Activation normally
 ---happens from `afterTHlib`; this only takes effect if that path did not run.
 function Plugin:RequestActivation()
+	if self._released then return false, "session ended" end
 	self._activation_requested = true
 end
 
@@ -222,6 +252,7 @@ end
 ---synchronous load. Idempotent: the first attempt wins, success or failure.
 ---@return boolean  true when the watcher is active
 function Plugin:Activate()
+	if self._released then return false, "session ended" end
 	if self._activation_attempted then
 		return self._activated
 	end
@@ -255,6 +286,7 @@ end
 ---Drive the first-Tick activation fallback and the per-frame watcher polling.
 ---Called from the View's update() each frame.
 function Plugin:Tick()
+	if self._released then return end
 	if not self._activation_attempted and self._activation_requested then
 		self:Activate()
 	end
@@ -264,6 +296,7 @@ function Plugin:Tick()
 end
 
 function Plugin:_activate()
+	if self._released then return end
 	self._activation_requested = false
 	local root, rerr = self:ResolveRoot()
 	if root == nil then
@@ -316,6 +349,7 @@ end
 ---Apply the current candidate to the current card and restart the practice.
 ---@return string
 function Plugin:Apply()
+	if self._released then return "session ended" end
 	local result = self:_apply()
 	self._last_result = result
 	log(self, (result == "applied" or result:sub(1, 7) == "applied") and "ok" or "warn", result)
@@ -323,6 +357,7 @@ function Plugin:Apply()
 end
 
 function Plugin:_apply()
+	if self._released then return "session ended" end
 	if not self._activated then return "not activated" end
 	if not self._supported then return "unsupported: " .. tostring(self._unsupported_reason) end
 	if not self._sandbox_ok then return "patch capability unavailable: " .. tostring(self._sandbox_error) end
@@ -423,6 +458,7 @@ end
 ---Retry only the stage restart (definitions are already committed).
 ---@return string
 function Plugin:RetryRestart()
+	if self._released then return "session ended" end
 	local run = self._pending_restart_run
 	if run == nil then
 		log(self, "warn", "retry: nothing to retry")
@@ -443,6 +479,7 @@ end
 
 ---@param file_name string
 function Plugin:Dismiss(file_name)
+	if self._released then return false, "session ended" end
 	-- Remember the rejected bytes so the drift scan does not resurrect the
 	-- candidate on the next interval.
 	self._store:DismissCandidate(file_name)
@@ -451,12 +488,14 @@ function Plugin:Dismiss(file_name)
 end
 
 function Plugin:Rescan()
+	if self._released then return end
 	if self._watcher == nil then return end
 	self._watcher:rescan()
 	log(self, "info", "rescan requested")
 end
 
 function Plugin:StartWatching()
+	if self._released then return end
 	if self._watcher == nil then return end
 	self._watcher:Start()
 	log(self, "info", "watching started")

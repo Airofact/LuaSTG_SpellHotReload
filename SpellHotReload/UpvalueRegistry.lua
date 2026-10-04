@@ -70,4 +70,12 @@ function Registry:Names(file)
 	return result
 end
 
+---Drop session-owned maps and loaded-source bytes, without mutating maps held
+---by other consumers. Reusable, like AnchorRegistry:Release; idempotent.
+function Registry:Release()
+	self._files = {}
+	self._sources = {}
+	return true
+end
+
 return Registry

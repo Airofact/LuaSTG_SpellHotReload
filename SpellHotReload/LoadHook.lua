@@ -12,7 +12,9 @@
 local AnchorLoad = require("SpellHotReload.AnchorLoad")
 
 local M = {}
-local installed = setmetatable({}, { __mode = "k" })
+-- The wrapper owns its state; the index must not root an engine/wrapper cycle
+-- on Lua 5.1 (weak keys alone are not ephemerons there).
+local installed = setmetatable({}, { __mode = "kv" })
 
 ---Compatibility selection policy, not the capture mechanism. Watcher still
 ---tracks only these basenames; widening the monitored files is a separate step.
@@ -54,50 +56,75 @@ function M.Install(engine, on_capture, options)
     if type(on_capture) ~= "function" or type(options.select) ~= "function" then
         return false, "on_capture and select must be functions"
     end
-    local original = engine.DoFile
-    local select_file, reader = options.select, options.read
     -- Freeze configuration at install; mutating options cannot retarget a hook.
-    local capability, limit, ir_options = options.capability, options.limit, options.ir_options
+    local state = {
+        original = engine.DoFile, engine = engine, on_capture = on_capture,
+        select_file = options.select, reader = options.read,
+        capability = options.capability, limit = options.limit,
+        ir_options = options.ir_options,
+    }
     local wrapper = function(filename, ...)
-        local key = select_file(filename)
-        if key == nil then return original(filename, ...) end
+        if state.retired then return state.original(filename, ...) end
+        local key = state.select_file(filename)
+        if state.retired or key == nil then return state.original(filename, ...) end
         local content
-        if reader then
-            content = reader(filename, key)
+        if state.reader then
+            content = state.reader(filename, key)
         else
-            content = read_source(engine, filename, key)
+            content = read_source(state.engine, filename, key)
         end
-        if type(content) ~= "string" then return original(filename, ...) end
+        if state.retired or type(content) ~= "string" then return state.original(filename, ...) end
         local entry, reason, phase = AnchorLoad.Capture(content, {
             name = filename, args = { n = select("#", ...), ... },
-            capability = capability, limit = limit, ir_options = ir_options,
+            capability = state.capability, limit = state.limit, ir_options = state.ir_options,
         })
         if entry == nil then
             -- These phases precede execution. Let the engine handle its own
             -- loading/compile diagnostics. No retry once any body has run.
             if phase == "analyze" or phase == "compile" then
-                return original(filename, ...)
+                return state.original(filename, ...)
             end
             -- Record failed/partially executed initialization too, so a second
             -- failing load cannot leave a previously held file reloadable.
             -- Instrumentation failure must not replace the script's error.
-            local notified, notify_error = pcall(on_capture, key, {
-                loaded_source = content, reloadable = false, failed = true,
-                reason = reason, phase = phase,
-            })
-            if not notified and type(engine.Log) == "function" then
-                pcall(engine.Log, 3, "[SpellHotReload.LoadHook] " .. tostring(notify_error))
+            if not state.retired then
+                local notified, notify_error = pcall(state.on_capture, key, {
+                    loaded_source = content, reloadable = false, failed = true,
+                    reason = reason, phase = phase,
+                })
+                if not notified and not state.retired and type(state.engine.Log) == "function" then
+                    pcall(state.engine.Log, 3, "[SpellHotReload.LoadHook] " .. tostring(notify_error))
+                end
             end
             error(tostring(reason), 0)
         end
-        local accepted, diagnostic = on_capture(key, entry)
-        if accepted == false and type(engine.Log) == "function" then
-            pcall(engine.Log, 3, "[SpellHotReload.LoadHook] " .. tostring(diagnostic))
+        if not state.retired then
+            local accepted, diagnostic = state.on_capture(key, entry)
+            if accepted == false and not state.retired and type(state.engine.Log) == "function" then
+                pcall(state.engine.Log, 3, "[SpellHotReload.LoadHook] " .. tostring(diagnostic))
+            end
         end
         return AnchorLoad.ReturnValues(entry)
     end
     engine.DoFile = wrapper
-    installed[engine] = wrapper
+    state.wrapper = wrapper
+    installed[engine] = state
+    return true
+end
+
+---Retire capture and drop callback/configuration references. Restore DoFile only
+---when it is still ours; a later plugin's outer hook must remain intact. An old
+---wrapper retained by that plugin becomes a transparent original-DoFile forwarder.
+---Idempotent; a later explicit Install can begin a fresh capture session.
+function M.Release(engine)
+    if type(engine) ~= "table" then return false, "engine must be a table" end
+    local state = installed[engine]
+    if state == nil then return true end
+    state.retired = true
+    installed[engine] = nil
+    if engine.DoFile == state.wrapper then engine.DoFile = state.original end
+    state.engine, state.on_capture, state.select_file, state.reader = nil, nil, nil, nil
+    state.capability, state.limit, state.ir_options, state.wrapper = nil, nil, nil, nil
     return true
 end
 

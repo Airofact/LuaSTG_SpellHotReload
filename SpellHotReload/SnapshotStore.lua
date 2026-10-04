@@ -250,4 +250,13 @@ function SnapshotStore:VerifyStable(file_name, generation, content, read_update,
 	return copy_record(current), "stable"
 end
 
+---Drop accepted, candidate and dismissed bytes at session end. Keep generation
+---monotonic so a stale first-read ticket cannot match a future candidate.
+function SnapshotStore:Clear()
+	self._accepted = {}
+	self._candidates = {}
+	self._dismissed = {}
+	return true
+end
+
 return SnapshotStore

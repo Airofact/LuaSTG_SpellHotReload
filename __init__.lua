@@ -35,6 +35,15 @@ local function ensure_loaded()
 		return plugin:AdoptLoad(file, entry)
 	end, { select = LoadHook.BossFile })
 	if not ok then error("SpellHotReload load hook: " .. tostring(reason)) end
+	-- THlib's final GameExit is already defined here. FrameFunc and the engine
+	-- can both call it: our cleanup is idempotent, but the previous callback must
+	-- still run on every invocation with its arguments/results/errors unchanged.
+	local original_GameExit = GameExit
+	GameExit = function(...)
+		LoadHook.Release(lstg)
+		plugin:Release("game exit")
+		if original_GameExit then return original_GameExit(...) end
+	end
 end
 
 lstg.plugin.RegisterEvent("afterTHlib", "dims.debug.spellHotReload", 0, function()

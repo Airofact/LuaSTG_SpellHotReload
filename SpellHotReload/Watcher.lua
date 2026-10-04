@@ -108,6 +108,7 @@ end
 
 ---@return boolean, string?
 function Watcher:Start()
+    if self._released then return false, "watcher released" end
     if self._fs ~= nil then
         return true
     end
@@ -131,6 +132,17 @@ function Watcher:Stop()
     end
 end
 
+---Session end, unlike Stop Watching. Retained watcher handles cannot restart or
+---poll after this, and no longer hold Plugin callbacks or SnapshotStore bytes.
+function Watcher:Release()
+    if self._released then return true end
+    self._released = true
+    self:Stop()
+    self._pending, self._known = {}, {}
+    self._on_candidate, self._on_error, self._store = nil, nil, nil
+    return true
+end
+
 ---@param file_name string
 ---@return string
 function Watcher:GetPath(file_name)
@@ -141,6 +153,7 @@ end
 ---@param file_name string
 ---@return string?, string?
 function Watcher:ReadFile(file_name)
+    if self._released then return nil, "watcher released" end
     local path = self:GetPath(file_name)
     local f, err = io.open(path, "rb")
     if f == nil then
@@ -186,6 +199,7 @@ end
 
 ---Poll events (bounded per frame) and advance the read/verify state machine.
 function Watcher:update()
+    if self._released then return end
     self._update = self._update + 1
 
     if self._fs ~= nil then
@@ -300,6 +314,7 @@ end
 ---flight; a showing candidate is restarted only if its bytes changed again. Used
 ---as a periodic fallback for lost watcher events.
 function Watcher:_drift_scan()
+    if self._released then return end
     for _, name in ipairs(self:list_boss_files()) do
         self._known[name] = true
         if self._pending[name] ~= nil then
@@ -332,6 +347,7 @@ end
 ---Force re-read every Boss file on disk and promote any drift to a fresh
 ---candidate (used by the user-facing Rescan button).
 function Watcher:rescan()
+    if self._released then return end
     for _, name in ipairs(self:list_boss_files()) do
         self._known[name] = true
         local accepted = self._store:GetAccepted(name)
@@ -347,6 +363,7 @@ end
 ---prompting. Called once when activation initializes the watcher (the plugin's
 ---`afterTHlib` hook, before the mod's own synchronous load).
 function Watcher:baseline()
+    if self._released then return end
     local names = self:list_boss_files()
     for _, name in ipairs(names) do
         if is_safe_basename(name) then
