@@ -42,6 +42,7 @@
 
 local Anchor = require("SpellHotReload.Anchor")
 local Lexer = require("SpellHotReload.Lexer")
+local CodeCache = require("SpellHotReload.CodeCache")
 
 local M = {}
 
@@ -484,7 +485,9 @@ end
 ---Joining makes the new closure share the anchor's existing cell; it does not
 ---write any value and does not replace the anchor, so it is always safe to run
 ---before the Commit step decides whether to publish. Returns the number of
----slots joined.
+---slots joined. Before the first alias change, invalidate the entire compiled
+---code cache, including callers which inlined the closure. JIT stays enabled;
+---cache failure refuses before any join. An empty plan needs no invalidation.
 ---@param plan table  -- a `Compose.Plan` result
 ---@param capability table?  -- defaults to the running runtime
 ---@return integer? joined
@@ -510,6 +513,10 @@ function M.Join(plan, capability)
         if not integer(join.index) or join.index < 1
             or not integer(join.donor) or join.donor < 1 then
             return nil, "join " .. i .. " has an invalid upvalue index"
+        end
+        if joined == 0 then
+            local ready, cache_reason = CodeCache.Invalidate()
+            if not ready then return nil, cache_reason end
         end
         local ok, err = pcall(debug.upvaluejoin, join.fn, join.index,
             join.anchor, join.donor)

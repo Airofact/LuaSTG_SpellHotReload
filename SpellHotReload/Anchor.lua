@@ -33,6 +33,7 @@
 
 local IR = require("SpellHotReload.TopLevelIR")
 local Binding = require("SpellHotReload.Binding")
+local CodeCache = require("SpellHotReload.CodeCache")
 
 local M = {}
 
@@ -298,11 +299,14 @@ function M.Get(entry, name)
 end
 
 ---Write a slot through the anchor cell via `debug.setupvalue`.
+---Invalidate compiled readers first; jit.flush keeps JIT enabled.
 ---@return boolean
 ---@return string? reason
 function M.Set(entry, name, value)
     local index, reason = M.Slot(entry, name)
     if index == nil then return false, reason end
+    local ready, cache_reason = CodeCache.Invalidate()
+    if not ready then return false, cache_reason end
     local uname = debug.setupvalue(entry.anchor, index, value)
     if uname ~= name then
         return false, "anchor slot drifted for '" .. tostring(name) .. "'"
