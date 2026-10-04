@@ -22,6 +22,8 @@ local Loader = require("SpellHotReload.GeneratedBossLoader")
 local Binding = require("SpellHotReload.PracticeBinding")
 local ChangeLog = require("SpellHotReload.ChangeLog")
 local UpvalueRegistry = require("SpellHotReload.UpvalueRegistry")
+local Anchor = require("SpellHotReload.Anchor")
+local AnchorRegistry = require("SpellHotReload.AnchorRegistry")
 local Driver = require("SpellHotReload.Driver")
 local Card = require("SpellHotReload.Card")
 
@@ -48,6 +50,7 @@ function Plugin.New()
 	self._store = SnapshotStore.New()
 	self._log = ChangeLog.New()
 	self._registry = UpvalueRegistry.New()
+	self._anchors = AnchorRegistry.New()
 	self._watcher = nil
 	self._view = nil
 	self._root = nil
@@ -72,6 +75,7 @@ end
 
 function Plugin:GetStore() return self._store end
 function Plugin:GetRegistry() return self._registry end
+function Plugin:GetAnchors() return self._anchors end
 function Plugin:GetDriver() return self._driver end
 function Plugin:GetLog() return self._log end
 function Plugin:GetWatcher() return self._watcher end
@@ -89,6 +93,75 @@ function Plugin:IsSandboxOk() return self._sandbox_ok end
 function Plugin:GetSandboxError() return self._sandbox_error end
 function Plugin:IsWatching() return self._watcher ~= nil and self._watcher:IsRunning() end
 function Plugin:HasRestartPending() return self._pending_restart_run ~= nil end
+
+---Register the anchor a Boss file's first load produced.
+---
+---The DoFile hook runs the file exactly once and hands back both the legacy
+---`name -> value` map and the anchor closure the dual trailer returned. The
+---anchor is registered first-load-wins: AnchorRegistry:Set refuses a second
+---anchor for a file it already holds, so a later Apply can never replace the
+---cells a live closure is still reading. A file whose locals cannot be
+---enumerated (no capability, a name the anchor did not capture) keeps its
+---legacy map and simply stays non-reloadable.
+---@param file string
+---@param content string
+---@param names string[]
+---@param map table?
+---@param anchor function?
+---@return boolean
+function Plugin:CaptureAnchor(file, content, names, map, anchor)
+	if type(anchor) ~= "function" then
+		return false
+	end
+	local slots, order = Anchor.Slots(anchor, names)
+	if slots == nil then
+		return false
+	end
+	local registered = self._anchors:Set(file, {
+		anchor = anchor, slots = slots, order = order,
+		loaded_source = content, map = map, names = names,
+	})
+	if registered then
+		self._anchors:SetSource(file, content)
+	end
+	return registered
+end
+
+---The bytes a file was loaded from: the anchor registry first, then the legacy
+---map store, so either registry can answer for a file the other never saw.
+---@param file string
+---@return string?
+function Plugin:_LoadedSource(file)
+	local source = self._anchors:GetSource(file)
+	if source ~= nil then return source end
+	return self._registry:GetSource(file)
+end
+
+---The live `name -> value` view for a file: a read-through snapshot from the
+---anchor when the anchor registry holds it, otherwise the legacy map. The
+---snapshot is built at call time, so a setter or a reassignment inside the file
+---is observed instead of the load-time map going stale.
+---@param file string
+---@return table?
+function Plugin:_LoadedValues(file)
+	if self._anchors:Has(file) then
+		local values = self._anchors:Get(file)
+		if values ~= nil then return values end
+	end
+	return self._registry:Get(file)
+end
+
+---Publish the rebuilt named functions. The anchor cells are the shared units, so
+---the new closures are written through them whenever the anchor registry holds
+---the file; the legacy map is kept in step as the fallback view.
+---@param file string
+---@param functions table
+function Plugin:_Publish(file, functions)
+	self._registry:SetAll(file, functions)
+	if self._anchors:Has(file) then
+		self._anchors:SetAll(file, functions)
+	end
+end
 
 ---Fallback activation request from the `afterMod` hook. Activation normally
 ---happens from `afterTHlib`; this only takes effect if that path did not run.
@@ -223,7 +296,7 @@ function Plugin:_apply()
 				log(self, "warn", "apply: rejected " .. file_name .. ": " .. tostring(gate.error))
 			elseif Scanner.ClassKeys(cand.first_content)[current.class_key] then
 				if target_file then return "multiple candidate files define the current class" end
-				if not self._registry:GetSource(file_name) then
+				if not self:_LoadedSource(file_name) then
 					return "loaded source unavailable; restart game"
 				end
 				target_file = file_name
@@ -261,9 +334,9 @@ function Plugin:_apply()
 	if request == nil then return "card: " .. tostring(qerr) end
 	local run, perr = Card.Plan(request, {
 		file = target_file,
-		original = self._registry:GetSource(target_file),
-		content = content,
-		registry = self._registry:Get(target_file),
+			original = self:_LoadedSource(target_file),
+			content = content,
+			registry = self:_LoadedValues(target_file),
 	})
 	if run == nil then return "card: " .. tostring(perr) end
 
@@ -275,8 +348,10 @@ function Plugin:_apply()
 		return "commit: " .. tostring(reason)
 	end
 	-- Post-commit: republish the freshly compiled named functions so the next
-	-- reload resolves sibling locals from the new closures instead of the old ones.
-	self._registry:SetAll(target_file, run.plan.functions)
+	-- reload resolves sibling locals from the new closures instead of the old
+	-- ones. The anchor cells are the shared units, so the new closures are
+	-- written through them as well.
+	self:_Publish(target_file, run.plan.functions)
 	self._store:SetAccepted(target_file, content, "published")
 	self._store:CancelCandidate(target_file)
 	log(self, "ok", string.format("apply: replaced callbacks for %s slot %d (%s)",

@@ -141,11 +141,23 @@ end
 
 local _installed = false
 
----Replace `lstg.DoFile` with a wrapper that captures Boss-file locals. Idempotent.
+---Replace `lstg.DoFile` with a wrapper that captures Boss-file locals. The first
+---installation wins, so the hook stays bound to the registries it was handed.
+---
+---`capture` is an optional extension the anchor wiring supplies. When present,
+---`capture.trailer(names)` may return the richer dual trailer (legacy value map
+---plus anchor closure) and `capture.on_capture(base, content, names, results)`
+---runs once the file has executed, so the anchor half of `results` can be
+---registered without this module depending on the anchor service - which would
+---be a require cycle, since TopLevelIR already requires this module.
 ---@param registry table  -- UpvalueRegistry instance
-function Loader.InstallDoFileHook(registry)
+---@param capture table?  -- { trailer = function(names), on_capture = function(base, content, names, results) }
+function Loader.InstallDoFileHook(registry, capture)
 	if _installed then return end
 	_installed = true
+
+	local trailer_of = capture and capture.trailer or nil
+	local on_capture = capture and capture.on_capture or nil
 
 	local orig_DoFile = lstg.DoFile
 	lstg.DoFile = function(filename, ...)
@@ -154,12 +166,24 @@ function Loader.InstallDoFileHook(registry)
 			local content = read_text(filename, base)
 			if content ~= nil then
 				local names = Loader.ListFunctionNames(content)
-				local chunk = compile(content .. "\n" .. build_trailer(names), "@" .. tostring(filename))
+				-- The plain map trailer stays the default, so a capture extension
+				-- that cannot build its richer trailer changes nothing.
+				local trailer = build_trailer(names)
+				if trailer_of ~= nil then
+					local dual = trailer_of(names)
+					if dual ~= nil then
+						trailer = dual
+					end
+				end
+				local chunk = compile(content .. "\n" .. trailer, "@" .. tostring(filename))
 				if chunk ~= nil then
 					local results = { chunk() }
 					if type(results[1]) == "table" then
 						registry:SetAll(base, results[1])
 						registry:SetSource(base, content)
+					end
+					if on_capture ~= nil then
+						on_capture(base, content, names, results)
 					end
 					return nil -- Boss files carry no meaningful return value
 				end
