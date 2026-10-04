@@ -26,6 +26,8 @@ local Anchor = require("SpellHotReload.Anchor")
 local AnchorRegistry = require("SpellHotReload.AnchorRegistry")
 local Driver = require("SpellHotReload.Driver")
 local Card = require("SpellHotReload.Card")
+local LoadVersions = require("SpellHotReload.LoadVersions")
+local session_serial = 0
 
 local Plugin = {}
 Plugin.__index = Plugin
@@ -52,6 +54,9 @@ function Plugin.New()
 	self._registry = UpvalueRegistry.New()
 	self._anchors = AnchorRegistry.New()
 	self._loads = {} -- full first-load entries, including non-capturable files
+	session_serial = session_serial + 1
+	self._session_id = "SpellHotReload:" .. session_serial
+	self._versions = {} -- first-load success/refusal; never lazily reseeded
 	self._released = false
 	self._watcher = nil
 	self._view = nil
@@ -79,6 +84,40 @@ function Plugin:GetStore() return self._store end
 function Plugin:GetRegistry() return self._registry end
 function Plugin:GetAnchors() return self._anchors end
 function Plugin:GetLoad(file) return self._loads[file] end
+---Read-only first-load capture or its sticky unavailability reason. Query never
+---reads live to manufacture history. Legacy publication retires this capture.
+function Plugin:GetVersions(file)
+	if self._released then return nil, "session ended" end
+	local record = self._versions[file]
+	if record == nil then return nil, "first-load versions unavailable" end
+	return record.capture, record.reason
+end
+
+function Plugin:_RetireVersions(file, reason)
+	local record = self._versions[file]
+	if record then record.capture, record.reason = nil, reason end
+end
+
+---Only AdoptLoad's first successful adoption calls this synchronously. Catch
+---metadata faults after initialization; never turn them into a replay/load error.
+function Plugin:_CaptureVersions(file, entry)
+	if self._released or self._loads[file] ~= entry or self._versions[file] ~= nil then return end
+	entry.file = file
+	local classes = rawget(_G, "_editor_class")
+	local boss_api = rawget(_G, "boss")
+	local card_api = type(boss_api) == "table" and rawget(boss_api, "card") or nil
+	local defaults = type(card_api) == "table" and rawget(card_api, "_default_card") or nil
+	local ok, capture, err = pcall(LoadVersions.Capture, entry, self._session_id, classes, defaults)
+	local reason
+	if not ok then
+		reason = "first-load metadata failed: " .. (type(capture) == "string" and capture or "non-string error")
+	elseif capture == nil then
+		local message = type(err) == "table" and rawget(err, "message") or err
+		reason = type(message) == "string" and message or "first-load metadata unavailable"
+	end
+	self._versions[file] = { capture = ok and capture or nil, reason = reason }
+end
+
 function Plugin:GetDriver() return self._driver end
 function Plugin:GetLog() return self._log end
 function Plugin:GetWatcher() return self._watcher end
@@ -112,7 +151,7 @@ function Plugin:Release(reason)
 	self._pending_restart_run = nil
 	if self._watcher then self._watcher:Release() end
 	self._watcher, self._view = nil, nil
-	self._loads = {}
+	self._loads, self._versions, self._session_id = {}, {}, nil
 	self._anchors:Release()
 	self._registry:Release()
 	self._store:Clear()
@@ -170,6 +209,7 @@ function Plugin:AdoptLoad(file, entry)
 		if existing == entry then return true end
 		existing.reloadable = false
 		existing.reason = "file executed again; restart game: " .. file
+		self:_RetireVersions(file, existing.reason)
 		return false, existing.reason
 	end
 	if entry.reloadable == true and type(entry.anchor) ~= "function" then
@@ -180,6 +220,7 @@ function Plugin:AdoptLoad(file, entry)
 		if not ok then return false, reason end
 	end
 	self._loads[file] = entry
+	self:_CaptureVersions(file, entry)
 	if type(entry.map) == "table" then self._registry:SetAll(file, entry.map) end
 	self._registry:SetSource(file, entry.loaded_source)
 	if self._watcher and type(self._watcher.Track) == "function" then
@@ -205,6 +246,7 @@ function Plugin:Missing(file, reason)
 	entry.missing = true
 	entry.missing_reason = "loaded file missing; restart game: " .. tostring(file)
 	if reason ~= nil then entry.missing_reason = entry.missing_reason .. ": " .. tostring(reason) end
+	self:_RetireVersions(file, entry.missing_reason)
 	if self._anchors:Has(file) then self._anchors:Missing(file) end
 	self._store:CancelCandidate(file)
 	self._last_result = entry.missing_reason
@@ -262,6 +304,7 @@ end
 ---@param functions table
 function Plugin:_Publish(file, functions)
 	if self._released then return false, "session ended" end
+	self:_RetireVersions(file, "legacy publication; restart game for versioned Apply")
 	self._registry:SetAll(file, functions)
 	if self._anchors:Has(file) then
 		self._anchors:SetAll(file, functions)
@@ -461,6 +504,9 @@ function Plugin:_apply()
 
 	-- Commit is the single live mutation; the restartable card adapter restarts
 	-- the practice right afterwards unless that restart fails.
+	-- Legacy Commit can publish and enter Restart before returning. Retire the
+	-- revision-0 baseline before that boundary, including a failed/partial run.
+	self:_RetireVersions(target_file, "legacy Apply attempted; restart game for versioned Apply")
 	local report = self._driver:Commit(run)
 	if report.committed ~= 1 then
 		local reason = report.failed[1] ~= nil and report.failed[1].reason or "no entry committed"
