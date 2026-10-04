@@ -182,9 +182,33 @@ function Plugin:AdoptLoad(file, entry)
 	self._loads[file] = entry
 	if type(entry.map) == "table" then self._registry:SetAll(file, entry.map) end
 	self._registry:SetSource(file, entry.loaded_source)
+	if self._watcher and type(self._watcher.Track) == "function" then
+		self._watcher:Track(file)
+	end
+	if self._watcher and type(self._watcher.IsMissing) == "function" and self._watcher:IsMissing(file) then
+		self:Missing(file, "file vanished earlier in this session")
+	end
 	if entry.reloadable ~= true then
 		log(self, "warn", file .. ": reload disabled: " .. tostring(entry.reason))
 	end
+	return true
+end
+
+---A confirmed vanished file disables reload for this session, never destroys
+---live cells, loaded bytes or a committed restart plan. Preserve the original
+---capture verdict/reason; reappearance alone cannot revive this anchor.
+function Plugin:Missing(file, reason)
+	if self._released then return false, "session ended" end
+	local entry = self._loads[file] or self._anchors:Entry(file)
+	if entry == nil then return false, "unknown loaded file: " .. tostring(file) end
+	if entry.missing then return true end
+	entry.missing = true
+	entry.missing_reason = "loaded file missing; restart game: " .. tostring(file)
+	if reason ~= nil then entry.missing_reason = entry.missing_reason .. ": " .. tostring(reason) end
+	if self._anchors:Has(file) then self._anchors:Missing(file) end
+	self._store:CancelCandidate(file)
+	self._last_result = entry.missing_reason
+	log(self, "warn", entry.missing_reason)
 	return true
 end
 
@@ -193,6 +217,10 @@ end
 function Plugin:_CheckLoad(file)
 	if self._released then return false, "session ended" end
 	local entry = self._loads[file]
+	local held = entry or self._anchors:Entry(file)
+	if held and held.missing then
+		return false, held.missing_reason or "loaded file missing; restart game"
+	end
 	if entry == nil then return true end
 	if entry.reloadable ~= true then
 		return false, entry.reason or "file is not reloadable"
@@ -318,9 +346,15 @@ function Plugin:_activate()
 		log(self, "warn", "anchor capability unavailable: " .. tostring(serr))
 	end
 
+	local known_files = {}
+	for file in pairs(self._loads) do known_files[#known_files + 1] = file end
 	self._watcher = Watcher.New({
 		root = root,
 		store = self._store,
+		known_files = known_files,
+		on_missing = function(file_name, reason)
+			self:Missing(file_name, reason)
+		end,
 		on_candidate = function(file_name)
 			self._last_result = "candidate ready: " .. file_name
 			log(self, "info", "candidate ready: " .. file_name)

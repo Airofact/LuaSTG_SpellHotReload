@@ -64,6 +64,7 @@ end
 ---@field _known table<string, boolean>
 ---@field _on_candidate fun(file_name: string)?
 ---@field _on_error fun(message: string)?
+---@field _on_missing fun(file_name: string, message: string)?
 ---@field _quiet_frames integer
 ---@field _read_gap integer
 ---@field _max_events integer
@@ -78,6 +79,7 @@ function Watcher.New(options)
     self._store = options.store
     self._on_candidate = options.on_candidate
     self._on_error = options.on_error
+    self._on_missing = options.on_missing
     self._quiet_frames = options.quiet_frames or DEFAULT_QUIET_FRAMES
     self._read_gap = options.read_gap or DEFAULT_READ_GAP
     self._max_events = options.max_events or DEFAULT_MAX_EVENTS_PER_FRAME
@@ -87,8 +89,23 @@ function Watcher.New(options)
     self._update = 0
     self._pending = {}
     self._known = {}
+    self._missing = {} -- confirmed once per session; reappearance is not a reset
     self._last_error = nil
+    for _, name in ipairs(options.known_files or {}) do self:Track(name) end
     return self
+end
+
+---Remember a normally loaded file too, even if baseline/event enumeration
+---missed it. Only the existing direct-child Boss allowlist can be tracked.
+function Watcher:Track(file_name)
+    if self._released or not is_safe_basename(file_name) then return false end
+    self._known[file_name] = true
+    return true
+end
+
+---Whether this watcher confirmed absence earlier in the current session.
+function Watcher:IsMissing(file_name)
+    return self._missing[file_name] == true
 end
 
 ---@return string
@@ -138,8 +155,8 @@ function Watcher:Release()
     if self._released then return true end
     self._released = true
     self:Stop()
-    self._pending, self._known = {}, {}
-    self._on_candidate, self._on_error, self._store = nil, nil, nil
+    self._pending, self._known, self._missing = {}, {}, {}
+    self._on_candidate, self._on_error, self._on_missing, self._store = nil, nil, nil, nil
     return true
 end
 
@@ -149,19 +166,20 @@ function Watcher:GetPath(file_name)
     return self._root .. "/" .. file_name
 end
 
----Read full physical bytes; returns content or nil, error.
+---Read full physical bytes; an open failure also returns errno. ENOENT (2),
+---not an arbitrary read error or an empty EnumFiles result, proves absence.
 ---@param file_name string
----@return string?, string?
+---@return string?, string?, integer?
 function Watcher:ReadFile(file_name)
     if self._released then return nil, "watcher released" end
     local path = self:GetPath(file_name)
-    local f, err = io.open(path, "rb")
+    local f, err, code = io.open(path, "rb")
     if f == nil then
-        return nil, err
+        return nil, err, code
     end
-    local content = f:read("*a")
+    local content, read_error = f:read("*a")
     f:close()
-    return content
+    return content, read_error
 end
 
 ---@param file_name string
@@ -174,8 +192,33 @@ local function begin_pending(self, file_name, source)
         first_content = nil,
         first_read_update = nil,
         fail_count = 0,
+        missing_count = 0,
     }
     self._known[file_name] = true
+end
+
+---Exhaustion cancels the candidate, but only consecutive ENOENT opens invalidate
+---reload. Permission/I/O/unknown failures are diagnostic, never Missing.
+local function failed_read(self, file_name, pending, err, code)
+    pending.fail_count = pending.fail_count + 1
+    pending.missing_count = code == 2 and (pending.missing_count or 0) + 1 or 0
+    if pending.fail_count <= self._max_read_failures then
+        pending.quiet_left = self._quiet_frames
+        return
+    end
+    self._pending[file_name] = nil
+    self._store:CancelCandidate(file_name)
+    local message = "read failed after retries: " .. file_name .. ": " .. tostring(err)
+    diag(message)
+    if pending.missing_count > self._max_read_failures then
+        if not self._missing[file_name] then
+            self._missing[file_name] = true
+            if self._on_missing then self._on_missing(file_name, message) end
+        end
+    else
+        self._last_error = message
+        if self._on_error then self._on_error(message) end
+    end
 end
 
 ---@param file_name string
@@ -224,10 +267,11 @@ function Watcher:update()
 
     -- drive pending candidates
     for file_name, pending in pairs(self._pending) do
+        if self._released then return end
         if pending.quiet_left > 0 then
             pending.quiet_left = pending.quiet_left - 1
         elseif pending.first_content == nil then
-            local content, err = self:ReadFile(file_name)
+            local content, err, code = self:ReadFile(file_name)
             if content ~= nil then
                 if self._store:IsDismissed(file_name, content) then
                     -- bytes the user already rejected: drop without surfacing a candidate
@@ -239,40 +283,24 @@ function Watcher:update()
                         pending.first_content = content
                         pending.first_read_update = self._update
                         pending.fail_count = 0
+                        pending.missing_count = 0
                     else
                         -- superseded (newer change arrived) — drop
                         self._pending[file_name] = nil
                     end
                 end
             else
-                -- read failed (mid-write / vanished): count consecutive failures
-                -- so a truly-deleted file gives up instead of looping forever
-                pending.fail_count = pending.fail_count + 1
-                if pending.fail_count > self._max_read_failures then
-                    diag("give up " .. file_name .. " after " .. pending.fail_count .. " failed reads")
-                    self._pending[file_name] = nil
-                    self._store:CancelCandidate(file_name)
-                else
-                    pending.quiet_left = self._quiet_frames
-                end
-                _ = err
+                failed_read(self, file_name, pending, err, code)
             end
         else
             -- second read after the gap
             if self._update - pending.first_read_update >= self._read_gap then
-                local content, err = self:ReadFile(file_name)
+                local content, err, code = self:ReadFile(file_name)
                 if content == nil then
-                    pending.fail_count = pending.fail_count + 1
-                    if pending.fail_count > self._max_read_failures then
-                        diag("give up " .. file_name .. " after " .. pending.fail_count .. " failed reads")
-                        self._pending[file_name] = nil
-                        self._store:CancelCandidate(file_name)
-                    else
-                        pending.quiet_left = self._quiet_frames
-                    end
-                    _ = err
+                    failed_read(self, file_name, pending, err, code)
                 else
                     pending.fail_count = 0
+                    pending.missing_count = 0
                     local verified, status = self._store:VerifyStable(
                         file_name, pending.generation, content, self._update, self._read_gap)
                     diag("VerifyStable " .. file_name .. " -> " .. tostring(status))
@@ -305,9 +333,19 @@ function Watcher:update()
 
     -- periodic drift scan: fallback for lost watcher events (the engine watcher
     -- can overflow and drop added/modified events when the editor bulk-rewrites)
-    if self._update % self._drift_interval == 0 then
+    if not self._released and self._update % self._drift_interval == 0 then
         self:_drift_scan()
     end
+end
+
+---Union disk names with previously observed/loaded names: lost removal events
+---must not hide disappeared files. Enumeration itself never proves Missing.
+local function tracked_files(self)
+    for _, name in ipairs(self:list_boss_files()) do self:Track(name) end
+    local names = {}
+    for name in pairs(self._known) do names[#names + 1] = name end
+    table.sort(names)
+    return names
 end
 
 ---Conservative drift scan. Only starts a candidate when nothing is already in
@@ -315,14 +353,15 @@ end
 ---as a periodic fallback for lost watcher events.
 function Watcher:_drift_scan()
     if self._released then return end
-    for _, name in ipairs(self:list_boss_files()) do
-        self._known[name] = true
+    for _, name in ipairs(tracked_files(self)) do
         if self._pending[name] ~= nil then
             -- event path already working on it
         else
             local content = self:ReadFile(name)
             if content == nil then
-                -- file gone; nothing to promote
+                -- Schedule the SAME quiet/retry path as an event, never an
+                -- immediate invalidation from a one-off failure or lost enum.
+                if not self._missing[name] then begin_pending(self, name, "drift-unreadable") end
             else
                 local cand = self._store:GetCandidate(name)
                 if cand ~= nil and cand.first_content ~= nil then
@@ -348,13 +387,14 @@ end
 ---candidate (used by the user-facing Rescan button).
 function Watcher:rescan()
     if self._released then return end
-    for _, name in ipairs(self:list_boss_files()) do
-        self._known[name] = true
+    for _, name in ipairs(tracked_files(self)) do
         local accepted = self._store:GetAccepted(name)
         local content = self:ReadFile(name)
         if content ~= nil and (accepted == nil or accepted.content ~= content)
             and not self._store:IsDismissed(name, content) then
             begin_pending(self, name, "rescan")
+        elseif content == nil and self._pending[name] == nil and not self._missing[name] then
+            begin_pending(self, name, "rescan-unreadable")
         end
     end
 end
