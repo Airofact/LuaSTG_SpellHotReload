@@ -42,8 +42,13 @@ function M.run()
         class_key="K",class=class,list=list,card=card,slot=2,name="Live",include_previous=true,key=key}
     local proof={}
     local live={binding=initial,classes=classes,entry=entry,snapshot=snapshot,session_id=target.session_id}
-    local discovery={snapshot={}}
-    local location,report,selection={match="identity"},{},{}
+    local common={file="Runtime_Boss.lua",content="synthetic candidate"}
+    local unit={key="card:K",carrier="card",context={class_key="K"}}
+    local discovered={unit=unit,adapter=Card,context={common=common,
+        adapter={file={carrier="card"},unit=unit.context}}}
+    local discovery={snapshot={common=common,by_key={["card:K"]=discovered}}}
+    local location,report,selection={match="identity",target=target,
+        discovery=discovery.snapshot,entry=discovered},{},{}
     local model={selected={key}}
     local function refresh() mark("refresh");return live end
     local function refusal(value,err,part,label)

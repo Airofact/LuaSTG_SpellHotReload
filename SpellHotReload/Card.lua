@@ -2,7 +2,9 @@
 --- SpellHotReload.Card
 ---
 --- Versioned runtime helpers below own current-root planning, frozen restart
---- and card-binding inspection rules. The four hooks/Plan remain legacy.
+--- and card-binding inspection rules. Locate/Inject also accept an explicit
+--- versioned unit/context; legacy Commit/Restart refuse that path so it cannot
+--- bypass the atomic transaction or committed frozen restart handoff.
 ---
 --- The card adapter: presents the card reload pipeline (CardCallbacks +
 --- PracticeBinding) through the generic four-hook contract, so a card commit
@@ -57,6 +59,24 @@ Card.Id = "card"
 Card.ContractVersion = 2
 Card.Restartable = true
 Card.carriers = { card = true }
+
+local RUNTIME_KIND = "SpellHotReload.Card.RuntimeContext"
+local HANDLE_KIND = "SpellHotReload.Card.VersionedHandle"
+local locate_versioned, inject_versioned
+local function runtime_of(context)
+    local adapter = type(context) == "table" and rawget(context, "adapter") or nil
+    if type(adapter) == "table" then return rawget(adapter, "runtime") end
+end
+local function versioned_handle(handle)
+    return type(handle) == "table" and rawget(handle, "kind") == HANDLE_KIND
+end
+local function versioned_refusal(handle, context, phase, detail)
+    local common = type(context)=="table" and rawget(context,"common") or nil
+    local unit = type(handle)=="table" and rawget(handle,"unit") or nil
+    return false, {phase=phase, code="unsupported", message=detail,
+        file=type(common)=="table" and rawget(common,"file") or nil,
+        unit_key=type(unit)=="table" and rawget(unit,"key") or nil}
+end
 
 ---Normalize a request from a captured binding (PracticeBinding.CurrentBinding)
 ---or from an explicit table. `binding` is what CardCallbacks.Select consumes;
@@ -397,6 +417,7 @@ end
 ---@return table? handle
 ---@return string? reason
 function Card.Locate(node, context)
+    if runtime_of(context) ~= nil then return locate_versioned(node, context) end
     local request, env, rreason = resolve(node, context)
     if request == nil then
         return nil, rreason or "Locate expects a card request"
@@ -424,6 +445,9 @@ end
 ---@return table? plan
 ---@return string? reason
 function Card.Inject(handle, request, env)
+    if runtime_of(env) ~= nil or versioned_handle(handle) then
+        return inject_versioned(handle, request, env)
+    end
     env = env_of(env)
     if type(handle) ~= "table" or type(handle.descriptor) ~= "table" then
         return nil, "Inject expects a located card handle"
@@ -444,6 +468,11 @@ end
 ---@return boolean
 ---@return string? reason
 function Card.Commit(handle, plan, env)
+    if runtime_of(env) ~= nil or versioned_handle(handle)
+        or (type(plan) == "table" and rawget(plan, "kind") == "SpellHotReload.CardVersions.Selection") then
+        return versioned_refusal(handle, env, "commit",
+            "versioned publication requires the atomic transaction")
+    end
     if type(handle) ~= "table" or type(plan) ~= "table" then
         return false, "Commit expects a card handle and plan"
     end
@@ -470,6 +499,11 @@ end
 ---@return boolean
 ---@return string? reason
 function Card.Restart(handle, plan, env)
+    if runtime_of(env) ~= nil or versioned_handle(handle)
+        or (type(plan) == "table" and rawget(plan, "kind") == "SpellHotReload.CardVersions.Selection") then
+        return versioned_refusal(handle, env, "restart",
+            "versioned restart requires the committed frozen handoff")
+    end
     local context = (type(plan) == "table" and plan.restart)
         or (type(handle) == "table" and handle.restart)
     if context == nil then
@@ -550,21 +584,19 @@ end
 ---Same pure current-root path for Apply and explicit Inspect. The trusted
 ---refresh callback supplies real fresh bytes/binding; it is not a capability.
 function Card.PrepareVersioned(capture, discovery, initial, proof, refresh)
-    local Target = require("SpellHotReload.CardTarget")
-    local Cards = require("SpellHotReload.CardVersions")
-    local target, terr = Target.Resolve(initial,capture,proof)
-    if not target then return nil, "locate: " .. message(terr) end
-    local live, err = refresh()
-    if not live then return nil, "versioned preflight: " .. message(err) end
-    local checked, check_error = Target.Check(target,live.binding,capture,live)
-    if not checked then return nil, "locate: " .. message(check_error) end
-    local location, lerr = Target.LocateDiscovery(target,discovery.snapshot,live.binding,capture,live)
-    if not location then return nil, "locate: " .. message(lerr) end
-    local report, rerr = Cards.CompareLocated(capture.snapshot,location,live.binding,capture,live)
-    if not report then return nil, "compare: " .. message(rerr) end
-    local selection, serr = Cards.Select(report,{target.key})
-    if not selection then return nil, "select: " .. message(serr) end
-    return {target=target, live=live, location=location, selection=selection}
+    local unit, context = Card.RuntimeContext(capture, discovery, initial, proof, refresh)
+    if not unit then return nil, "locate: " .. message(context) end
+    local handle, err = Card.Locate(unit, context)
+    if not handle then
+        local stage = type(err)=="table" and getmetatable(err)==nil and rawget(err,"stage") or nil
+        return nil, (type(stage)=="string" and stage or "locate") .. ": " .. message(err)
+    end
+    local selection, serr = Card.Inject(handle, unit, context)
+    if not selection then
+        local stage = type(serr)=="table" and getmetatable(serr)==nil and rawget(serr,"stage") or nil
+        return nil, (type(stage)=="string" and stage or "inject") .. ": " .. message(serr)
+    end
+    return {target=handle.target, live=handle.live, location=handle.location, selection=selection}
 end
 
 
@@ -856,6 +888,116 @@ function Card.CheckJoinDestinations(selection)
         end
     end
     return true
+end
+
+--------------------------------------------------------------------------------
+--- Versioned Locate/Inject consume the SAME complete discovered unit/context.
+--- A per-call runtime extension belongs to adapter context, never Match's common
+--- or a module-level session cache. Legacy entry points stay distinct.
+--------------------------------------------------------------------------------
+
+local function stage_error(phase, stage, detail, file, key)
+    local code = plain(detail) and rawget(detail, "code") or nil
+    return nil, {phase=phase, code=type(code)=="string" and code or "unsupported",
+        message=message(detail), file=file, unit_key=key, stage=stage}
+end
+
+---Bridge the complete discovery context to current-root runtime inputs.
+---Do not mutate common/file/unit contexts or rediscover/filter the snapshot.
+function Card.RuntimeContext(capture, discovery, initial, proof, refresh)
+    local snapshot = plain(discovery) and rawget(discovery, "snapshot") or nil
+    local common = plain(snapshot) and rawget(snapshot, "common") or nil
+    local file = plain(common) and rawget(common, "file") or nil
+    if not plain(capture) or not plain(discovery) or not plain(snapshot) or not plain(common)
+        or not plain(snapshot.by_key) or not plain(capture.snapshot)
+        or not plain(initial) or type(initial.class_key)~="string"
+        or not plain(proof) or type(refresh)~="function" then
+        return stage_error("locate", "locate", "complete discovery and explicit runtime inputs required", file)
+    end
+    local entry = rawget(snapshot.by_key, "card:" .. initial.class_key)
+    if not plain(entry) or entry.adapter~=Card or not plain(entry.unit)
+        or not plain(entry.context) or entry.context.common~=common or not plain(entry.context.adapter)
+        or not plain(entry.unit.context) or not plain(entry.context.adapter.file)
+        or entry.context.adapter.unit~=entry.unit.context then
+        return stage_error("locate", "locate", "owned Card discovery entry required", file)
+    end
+    local runtime = {kind=RUNTIME_KIND, capture=capture, discovery=discovery, initial=initial,
+        proof=proof, refresh=refresh, snapshot=capture.snapshot}
+    return entry.unit, {common=common, adapter={file=entry.context.adapter.file,
+        unit=entry.context.adapter.unit, runtime=runtime}}
+end
+
+local function runtime_context(unit, context, phase)
+    local runtime = runtime_of(context)
+    local common = plain(context) and rawget(context, "common") or nil
+    local file = plain(common) and rawget(common, "file") or nil
+    if not plain(context) or not plain(common) or not plain(context.adapter)
+        or not plain(runtime) or runtime.kind~=RUNTIME_KIND or not plain(runtime.discovery)
+        or not plain(runtime.discovery.snapshot) or runtime.discovery.snapshot.common~=common
+        or not plain(runtime.capture) or runtime.snapshot~=runtime.capture.snapshot
+        or not plain(runtime.initial) or type(runtime.initial.class_key)~="string"
+        or not plain(runtime.proof) or type(runtime.refresh)~="function"
+        or not plain(runtime.snapshot)
+        or not plain(unit) or not plain(unit.context) or unit.carrier~="card"
+        or unit.key~="card:" .. runtime.initial.class_key
+        or unit.context.class_key~=runtime.initial.class_key
+        or not plain(runtime.discovery.snapshot.by_key) then
+        return stage_error(phase, phase, "versioned Card unit/context changed", file)
+    end
+    local entry = rawget(runtime.discovery.snapshot.by_key, unit.key)
+    if not plain(entry) or entry.unit~=unit or entry.adapter~=Card or not plain(entry.context)
+        or entry.context.common~=common or not plain(entry.context.adapter)
+        or context.adapter.file~=entry.context.adapter.file
+        or context.adapter.unit~=unit.context or entry.context.adapter.unit~=unit.context then
+        return stage_error(phase, phase, "versioned Card unit/context ownership changed", file, unit.key)
+    end
+    return runtime, entry
+end
+
+locate_versioned = function(unit, context)
+    local runtime, entry = runtime_context(unit, context, "locate")
+    if not runtime then return nil, entry end
+    local Target = require("SpellHotReload.CardTarget")
+    local capture, file = runtime.capture, context.common.file
+    local target, terr = Target.Resolve(runtime.initial, capture, runtime.proof)
+    if not target then return stage_error("locate", "locate", terr, file, unit.key) end
+    local live, lerr = runtime.refresh()
+    if not live then return stage_error("locate", "versioned preflight", lerr, file, unit.key) end
+    local current, cerr = runtime_context(unit, context, "locate")
+    if not current then return nil, cerr end
+    if current~=runtime or not plain(live) then
+        return stage_error("locate", "locate", "versioned Card runtime changed during refresh", file, unit.key)
+    end
+    local checked, check_error = Target.Check(target, live.binding, capture, live)
+    if not checked then return stage_error("locate", "locate", check_error, file, unit.key) end
+    local location, why = Target.LocateDiscovery(target, runtime.discovery.snapshot, live.binding, capture, live)
+    if not location then return stage_error("locate", "locate", why, file, unit.key) end
+    return {kind=HANDLE_KIND, unit=unit, context=context, runtime=runtime,
+        capture=capture, snapshot=runtime.snapshot, discovery=runtime.discovery.snapshot, entry=entry,
+        initial=runtime.initial, proof=runtime.proof, refresh=runtime.refresh,
+        target=target, live=live, location=location}
+end
+
+inject_versioned = function(handle, unit, context)
+    local runtime, entry = runtime_context(unit, context, "inject")
+    if not runtime then return nil, entry end
+    local file = context.common.file
+    if not plain(handle) or handle.kind~=HANDLE_KIND or handle.unit~=unit or handle.context~=context
+        or handle.runtime~=runtime or handle.capture~=runtime.capture or handle.snapshot~=runtime.snapshot
+        or handle.discovery~=runtime.discovery.snapshot or handle.entry~=entry
+        or handle.initial~=runtime.initial or handle.proof~=runtime.proof or handle.refresh~=runtime.refresh
+        or not plain(handle.live) or not plain(handle.target) or not plain(handle.location)
+        or handle.location.target~=handle.target or handle.location.discovery~=handle.discovery
+        or handle.location.entry~=entry then
+        return stage_error("inject", "inject", "matching versioned Card handle required", file, unit.key)
+    end
+    local Cards = require("SpellHotReload.CardVersions")
+    local report, rerr = Cards.CompareLocated(runtime.snapshot, handle.location,
+        handle.live.binding, runtime.capture, handle.live)
+    if not report then return stage_error("inject", "compare", rerr, file, unit.key) end
+    local selection, serr = Cards.Select(report, {handle.target.key})
+    if not selection then return stage_error("inject", "select", serr, file, unit.key) end
+    return selection
 end
 
 return Card
