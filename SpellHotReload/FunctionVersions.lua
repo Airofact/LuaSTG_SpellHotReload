@@ -109,8 +109,10 @@ local function fail(code, message, state, name)
         file = plain(state) and state.file or nil,
         unit_key = type(name) == "string" and ("local:" .. name) or nil }
 end
-local function inspect(content, state)
-    local result, err = Plan.Inspect(content)
+local function inspect(content, state, snapshot)
+    local result, err
+    if snapshot ~= nil then result, err = Plan.InspectDiscovery(snapshot)
+    else result, err = Plan.Inspect(content) end
     if result == nil then return fail(err.code, err.message, state) end
     return result
 end
@@ -303,10 +305,10 @@ end
 ---All candidate literals may be compiled for binding/capture inspection; this
 ---does NOT schedule all of them for publication. There is no global cache.
 ---Only exact candidate bytes go in content, never a token hash for stale checks.
-function M.Compare(state, content)
+local function compare(state, content, snapshot)
     local problem = snapshot_problem(state)
     if problem then return fail("unsupported", problem, state) end
-    local scan, err = inspect(content, state)
+    local scan, err = inspect(content, state, snapshot)
     if scan == nil then return nil, err end
     local reads, rerr = capture_reads(state)
     if reads == nil then return nil, rerr end
@@ -317,12 +319,17 @@ function M.Compare(state, content)
     end
     local identities = {}
     for _, name in ipairs(state.names) do identities[name] = state.units[name].fn end
-    local prepared, perr = Plan.Prepare(content, state.entry, state.names, identities)
+    local prepared, perr
+    if snapshot ~= nil then
+        prepared, perr = Plan.PrepareDiscovery(snapshot, state.entry, state.names, identities)
+    else
+        prepared, perr = Plan.Prepare(content, state.entry, state.names, identities)
+    end
     if prepared == nil then return nil, perr end
     local report = { kind = M.Kind .. ".Diff", version = M.Version,
         base = state, content = content, prepared = prepared, by_name = {},
         changed = {}, affected = {}, initializers = {}, capture_reads = reads,
-        scope = "local-functions" }
+        scope = "local-functions", discovery = snapshot }
     local targets = {}
     for _, item in ipairs(prepared.functions) do
         local name, previous = item.name, state.units[item.name]
@@ -381,6 +388,7 @@ function M.Select(report, roots)
     local prepared, base = report.prepared, report.base
     local result = { kind = M.Kind .. ".Selection", version = M.Version,
         base = base, report = report, roots = copy(roots), content = report.content,
+        discovery = report.discovery,
         entry = base.entry, anchor = base.anchor, loaded_source = base.loaded_source,
         session_id = base.session_id, base_revision = base.revision,
         functions = {}, joins = {}, writes = {}, read_set = copy(prepared.read_set),
@@ -438,6 +446,16 @@ function M.Next(selection)
         result.units[name].observed = observations(result.units, name)
     end
     return result
+end
+
+function M.Compare(state, content) return compare(state, content) end
+---Shared candidate analysis only, never a newly inferred publication baseline.
+---The caller/aggregate service owns common session/revision scope validation.
+function M.CompareDiscovery(state, snapshot)
+    if not plain(snapshot) or not plain(snapshot.common) then
+        return fail("unsupported", "complete discovery required", state)
+    end
+    return compare(state, snapshot.common.content, snapshot)
 end
 
 return M

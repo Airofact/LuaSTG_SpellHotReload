@@ -86,17 +86,37 @@ local function literal(analysis, statement, record)
             first = statement.source_range.first, last = statement.source_range.last } }
 end
 
-local function analyze(content)
+local function analyze(content, snapshot)
     if type(content) ~= "string" then return nil, "source must be a string", "unsupported" end
     local source = content
     if source:sub(1, 3) == "\239\187\191" then source = source:sub(4) end
     local chunk, syntax = compile(source, "@FunctionPlan:syntax")
     if chunk == nil then return nil, syntax, "compile" end
     -- Discard chunk without calling it. Initialization/wiring is never replayed.
-    local nodes, err, analysis = IR.Analyze(content)
-    if nodes == nil then return nil, err, "unsupported" end
-    local bindings, berr = Binding.Analyze(analysis)
-    if bindings == nil then return nil, berr, "unsupported" end
+    local nodes, analysis, bindings
+    if snapshot ~= nil then
+        -- Trusted read-only FileMatch snapshot, not a forged-input sandbox.
+        if not plain(snapshot) or not plain(snapshot.common)
+            or snapshot.common.content ~= content or not plain(snapshot.analysis)
+            or snapshot.common.analysis ~= snapshot.analysis
+            or snapshot.analysis.source ~= source
+            or snapshot.analysis.source_offset ~= #content - #source
+            or not plain(snapshot.analysis.tokens) or not plain(snapshot.analysis.nodes)
+            or not plain(snapshot.analysis.statements) or not plain(snapshot.bindings)
+            or not plain(snapshot.bindings.statements) or not plain(snapshot.bindings.names)
+            or not plain(snapshot.bindings.by_name) or not plain(snapshot.bindings.declarations)
+            or #snapshot.bindings.statements ~= #snapshot.analysis.statements then
+            return nil, "shared discovery does not match source", "unsupported"
+        end
+        analysis, bindings = snapshot.analysis, snapshot.bindings
+        nodes = analysis.nodes
+    else
+        local err, berr
+        nodes, err, analysis = IR.Analyze(content)
+        if nodes == nil then return nil, err, "unsupported" end
+        bindings, berr = Binding.Analyze(analysis)
+        if bindings == nil then return nil, berr, "unsupported" end
+    end
     local policy, perr = Anchor.Policy(content, { analysis = analysis, bindings = bindings })
     if policy == nil or not policy.reloadable then
         return nil, perr or policy.reason, "unsupported"
@@ -146,8 +166,8 @@ end
 ---blocked names, NOT a guarantee that every candidate can be published.
 ---Prepare remains the authority for selected-definition/anchor validation.
 ---The complete source is syntax checked; its chunk is never executed.
-function M.Inspect(content)
-    local result, reason, code = analyze(content)
+local function inspect(content, snapshot)
+    local result, reason, code = analyze(content, snapshot)
     if result == nil then return failure(code, reason) end
     return result
 end
@@ -158,7 +178,7 @@ end
 ---selection, semantic diff/impact, unit versions and the R4 transaction.
 ---Supports local function f, local f=function, f=function and function f after
 ---a visible forward local declaration. No factories, aliases or unknown RHS.
-function M.Prepare(content, entry, selected, published)
+local function prepare(content, entry, selected, published, snapshot)
     local file = plain(entry) and entry.file or nil
     if not plain(entry) or not Anchor.Live(entry) or type(entry.anchor) ~= "function"
         or not plain(entry.slots) or type(entry.loaded_source) ~= "string" then
@@ -183,7 +203,7 @@ function M.Prepare(content, entry, selected, published)
     end
     local loaded, lerr, lcode = analyze(entry.loaded_source)
     if loaded == nil then return failure(lcode, lerr, file) end
-    local candidate, cerr, ccode = analyze(content)
+    local candidate, cerr, ccode = analyze(content, snapshot)
     if candidate == nil then return failure(ccode, cerr, file) end
     local old, new = loaded.bindings, candidate.bindings
     -- Fixed unique declarations, their kind and source order. This is stricter
@@ -242,6 +262,23 @@ function M.Prepare(content, entry, selected, published)
         for _, join in ipairs(join_plan.joins) do plan.joins[#plan.joins + 1] = join end
     end
     return plan
+end
+
+-- Keep legacy arities: e.g. gsub's extra numeric return is not a snapshot.
+function M.Inspect(content) return inspect(content) end
+function M.Prepare(content, entry, selected, published)
+    return prepare(content, entry, selected, published)
+end
+local function shared_content(snapshot)
+    return plain(snapshot) and plain(snapshot.common) and snapshot.common.content or nil
+end
+---Complete trusted FileMatch snapshot; mismatches refuse, never re-analyze.
+function M.InspectDiscovery(snapshot)
+    return inspect(shared_content(snapshot), snapshot)
+end
+---Reuse candidate discovery only; loaded checks and literal safety remain.
+function M.PrepareDiscovery(snapshot, entry, selected, published)
+    return prepare(shared_content(snapshot), entry, selected, published, snapshot)
 end
 
 return M

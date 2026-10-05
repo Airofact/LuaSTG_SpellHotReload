@@ -86,11 +86,49 @@ local function signature(body)
     end
     return table.concat(tokens, "|")
 end
-local function discover(content, state)
-    local scan, err = Source.Inspect(content)
+local function discover(content, state, snapshot)
+    local scan, err
+    if snapshot ~= nil then scan, err = Source.InspectDiscovery(snapshot)
+    else scan, err = Source.Inspect(content) end
     if not scan then return nil, err end
-    local match, merr = Card.Match(scan.analysis, { content = content })
-    if not match then return fail(merr.code, merr.message, state, merr.unit_key) end
+    local match
+    if snapshot ~= nil then
+        local file_context = plain(snapshot.adapter_contexts)
+            and snapshot.adapter_contexts.card or nil
+        if not plain(file_context) or file_context.carrier ~= "card"
+            or dense(snapshot.entries) == nil or not plain(snapshot.by_key) then
+            return fail("unsupported", "complete registered Card discovery required", state)
+        end
+        local units = {}
+        for _, entry in ipairs(snapshot.entries) do
+            if not plain(entry) or not plain(entry.unit) then
+                return fail("unsupported", "invalid discovery entry", state)
+            end
+            if entry.adapter == Card then
+                local unit, ctx = entry.unit, entry.context
+                if unit.carrier ~= "card" or not plain(unit.context)
+                    or type(unit.context.class_key) ~= "string"
+                    or unit.key ~= "card:" .. unit.context.class_key
+                    or snapshot.by_key[unit.key] ~= entry or not plain(ctx)
+                    or ctx.common ~= snapshot.common or not plain(ctx.adapter)
+                    or ctx.adapter.file ~= file_context or ctx.adapter.unit ~= unit.context
+                    or dense(unit.context.layout) == nil then
+                    return fail("ownership", "Card discovery context disagrees", state)
+                end
+                units[#units + 1] = unit
+            elseif entry.unit.carrier == "card" then
+                return fail("ownership", "card unit not owned by registered Card", state)
+            end
+        end
+        if #units ~= file_context.classes then
+            return fail("unsupported", "incomplete Card discovery", state)
+        end
+        match = { units = units }
+    else
+        local merr
+        match, merr = Card.Match(scan.analysis, { content = content })
+        if not match then return fail(merr.code, merr.message, state, merr.unit_key) end
+    end
     local layout, order, descriptors = {}, {}, {}
     for _, class in ipairs(match.units) do
         local ctx = class.context
@@ -276,17 +314,28 @@ function M.Seed(functions, initial, defaults)
 end
 
 ---Full candidate report; compares each actually published callback signature.
-function M.Compare(state, content)
+local function compare(state, content, snapshot)
     if not valid(state) then return fail("unsupported", "a valid card snapshot is required", state) end
-    local function_diff, ferr = Functions.Compare(state.functions, content)
+    if snapshot ~= nil then
+        local common = plain(snapshot) and snapshot.common or nil
+        if not plain(common) or common.file ~= state.file
+            or common.session_id ~= state.session_id or common.registry_entry ~= state.entry
+            or common.loaded_source ~= state.loaded_source
+            or common.base_revision ~= state.revision or common.published_units ~= state then
+            return fail("stale", "discovery published baseline disagrees", state)
+        end
+    end
+    local function_diff, ferr
+    if snapshot ~= nil then function_diff, ferr = Functions.CompareDiscovery(state.functions, snapshot)
+    else function_diff, ferr = Functions.Compare(state.functions, content) end
     if not function_diff then return nil, ferr end
-    local discovery, derr = discover(content, state)
+    local discovery, derr = discover(content, state, snapshot)
     if not discovery then return nil, derr end
     if not fixed_layout(state.layout, discovery.layout) or not same(state.order, discovery.order) then
         return fail("ambiguous", "fixed first-load card layout changed; restart/remapping required", state)
     end
     local report = { kind = M.Kind .. ".Diff", version = M.Version, base = state,
-        content = content, functions = function_diff, by_key = {}, changed = {},
+        content = content, discovery = snapshot, functions = function_diff, by_key = {}, changed = {},
         affected = {}, read_set = {}, capture_reads = {} }
     local changed_functions = {}
     for _, name in ipairs(function_diff.affected) do changed_functions[name] = true end
@@ -357,6 +406,7 @@ function M.Select(report, keys)
     if not functions then return nil, ferr end
     local result = { kind = M.Kind .. ".Selection", version = M.Version,
         base = report.base, base_revision = report.base.revision, report = report,
+        discovery = report.discovery,
         content = report.content, entry = report.base.entry, anchor = report.base.anchor,
         session_id = report.base.session_id, roots = copy(keys), function_roots = roots,
         functions = functions, selected = {}, pending = {}, publications = {},
@@ -443,6 +493,17 @@ function M.Next(selection)
     end
     for _, key in ipairs(result.order) do result.units[key].observed = observed(result.units[key], functions) end
     return result
+end
+
+function M.Compare(state, content) return compare(state, content) end
+---Complete FileMatch snapshot carrying this actual publication baseline in
+---common. Class keys are NOT the per-card publication keys in this report.
+---Invalid/incomplete snapshots refuse; no hidden Match or legacy fallback.
+function M.CompareDiscovery(state, snapshot)
+    if not plain(snapshot) or not plain(snapshot.common) then
+        return fail("stale", "discovery published baseline disagrees", state)
+    end
+    return compare(state, snapshot.common.content, snapshot)
 end
 
 return M
