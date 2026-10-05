@@ -3,7 +3,6 @@
 local M = {}
 function M.run()
     local Card = require("SpellHotReload.Card")
-    local Versions = require("SpellHotReload.LoadVersions")
     local Binding = require("SpellHotReload.PracticeBinding")
     local Scanner = require("SpellHotReload.GeneratedBossScanner")
     local Driver = require("SpellHotReload.Driver")
@@ -19,7 +18,7 @@ function M.run()
     local keys = {"boss", "_editor_class", "_tmp_sc", "_adapter_seed_runs"}
     local globals = {}
     for _, key in ipairs(keys) do globals[key] = rawget(_G, key) end
-    local original_capture = Versions.Capture
+    local original_capture = Card.SeedVersions
     local original_current, original_replay = Binding.CaptureCurrent, Binding.IsReplay
     local original_scan = Scanner.Scan
     local saved_set, saved_join, saved_jit = debug.setupvalue, debug.upvaluejoin, rawget(_G, "jit")
@@ -34,7 +33,7 @@ function M.run()
     local ok, problem = pcall(function()
         rawset(_G, "_editor_class", classes)
         rawset(_G, "boss", {card={_default_card=defaults}})
-        Versions.Capture = function(e, session, c, d)
+        Card.SeedVersions = function(e, session, c, d)
             metadata_calls = metadata_calls + 1
             eq(e, entry, "original load entry consumed")
             eq(session, "adapter:session", "session explicit")
@@ -49,7 +48,7 @@ function M.run()
         local second_classes, second_defaults = {}, {}
         rawset(_G, "_editor_class", second_classes)
         rawset(_G, "boss", {card={_default_card=second_defaults}})
-        Versions.Capture = function(e, session, c, d)
+        Card.SeedVersions = function(e, session, c, d)
             eq(c, second_classes, "no adapter registry cache")
             eq(d, second_defaults, "no adapter defaults cache")
             return snapshot
@@ -60,7 +59,7 @@ function M.run()
             elseif kind == "non-table" then rawset(_G, "boss", false)
             elseif kind == "inherited-card" then rawset(_G, "boss", hostile)
             else rawset(_G, "boss", {card=hostile}) end
-            Versions.Capture = function(e, s, c, d)
+            Card.SeedVersions = function(e, s, c, d)
                 eq(d, nil, kind .. " does not invent defaults")
                 return nil, {message="standard defaults unavailable"}
             end
@@ -69,7 +68,7 @@ function M.run()
             eq(reason, "standard defaults unavailable", kind .. " reason retained")
         end
         for _, fault in ipairs({"string", "object", "empty", "throw-string", "throw-object"}) do
-            Versions.Capture = function()
+            Card.SeedVersions = function()
                 if fault == "throw-string" then error("metadata fixture") end
                 if fault == "throw-object" then error(hostile) end
                 if fault == "string" then return nil, "plain refusal" end
@@ -82,7 +81,8 @@ function M.run()
                 ["throw-string"]="first-load metadata failed:", ["throw-object"]="first-load metadata failed: non-string error"})[fault]
             has(reason, expected, fault .. " safe reason")
         end
-        local version_key = "SpellHotReload.LoadVersions"
+        Card.SeedVersions = original_capture
+        local version_key = "SpellHotReload.FunctionVersions"
         local held_module, held_preload = package.loaded[version_key], package.preload[version_key]
         package.loaded[version_key] = nil
         package.preload[version_key] = function() error("lazy metadata import fixture") end
@@ -92,7 +92,7 @@ function M.run()
         has(reason, "first-load metadata failed:", "lazy import fault category")
         has(reason, "lazy metadata import fixture", "lazy import fault diagnostic")
         eq(metamethods, 0, "metadata never invokes hostile metamethods")
-        Versions.Capture = original_capture
+        Card.SeedVersions = original_capture
         -- Real miniature initialization once, then real adapter metadata capture.
         -- Lua5.1 really lacks join and is refused, not granted shared support.
         for _, cb in ipairs({"before","init","frame","render","beforedel","del","after"}) do
@@ -182,7 +182,7 @@ function M.run()
         eq(Card.DefinesCurrent(discovery, {class_key="K"}), true, "repeated query")
         eq(discovery.snapshot.by_key["card:K"], marker, "discovery retained")
     end)
-    Versions.Capture = original_capture
+    Card.SeedVersions = original_capture
     Binding.CaptureCurrent, Binding.IsReplay = original_current, original_replay
     Scanner.Scan = original_scan
     debug.setupvalue, debug.upvaluejoin = saved_set, saved_join

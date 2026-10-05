@@ -6,8 +6,8 @@
 --- initial = dense { {class_key, slot, card, callbacks={name->first function}} }
 --- defaults = caller-owned standard callback identities, copied at first load.
 --- Card tables must be plain; raw slots only. Metadata/functions must be genuine
---- first capture, not live reads after setter/Apply. LoadVersions owns production
---- capture. Callers must retain this snapshot and release all artifacts.
+--- first capture, not live reads after setter/Apply. Card.SeedVersions owns
+--- production capture; LoadVersions is a compatibility entry. Retain/release snapshots.
 ---
 --- Compare(snapshot, complete_content) validates all saved raw callback identities
 --- and real capture slots/sharing (when upvalueid exists); prepares analysis

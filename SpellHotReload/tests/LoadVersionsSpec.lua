@@ -2,6 +2,7 @@
 local M = {}
 function M.run()
     local Capture = require("SpellHotReload.LoadVersions")
+    local Card = require("SpellHotReload.Card")
     local Hook = require("SpellHotReload.LoadHook")
     local Load = require("SpellHotReload.AnchorLoad")
     local Anchor = require("SpellHotReload.Anchor")
@@ -39,7 +40,7 @@ function M.run()
     local saved = {}
     for _, key in ipairs(keys) do saved[key] = rawget(_G, key) end
     local saved_join, saved_set, saved_jit = debug.upvaluejoin, debug.setupvalue, rawget(_G, "jit")
-    local original_capture = Capture.Capture
+    local original_capture = Card.SeedVersions
     local engines = {}
     local names = { "before", "init", "frame", "render", "beforedel", "del", "after" }
     local defaults = {}
@@ -225,7 +226,7 @@ function M.run()
         local p = Plugin.New()
         local engine = engine_for(SOURCE, p)
         local calls = 0
-        Capture.Capture = function(...)
+        Card.SeedVersions = function(...)
             calls=calls+1; return original_capture(...)
         end
         local returns = pack(engine.DoFile("Seed_Boss.lua"))
@@ -288,7 +289,7 @@ function M.run()
         for _, fault in ipairs({ "throw", "error-object", "refuse" }) do
             local plugin = Plugin.New()
             local hooked = engine_for(SOURCE, plugin)
-            Capture.Capture = function()
+            Card.SeedVersions = function()
                 if fault == "throw" then error("metadata-fault") end
                 if fault == "error-object" then error(setmetatable({}, {
                     __tostring=function() error("must not stringify thrown object") end })) end
@@ -299,7 +300,7 @@ function M.run()
             local state, reason = plugin:GetVersions("Seed_Boss.lua")
             eq(state, nil, fault .. " unavailable")
             check(type(reason) == "string", fault .. " diagnostic")
-            Capture.Capture = original_capture
+            Card.SeedVersions = original_capture
             must(plugin:AdoptLoad("Seed_Boss.lua", plugin:GetLoad("Seed_Boss.lua")))
             eq(plugin:GetVersions("Seed_Boss.lua"), nil, fault .. " no repair from live")
             plugin:Release()
@@ -358,10 +359,10 @@ function M.run()
         eq(plugin:GetVersions("Seed_Boss.lua"), nil, "refused file not seeded")
         check(plugin:GetLoad("Seed_Boss.lua").reloadable == false, "capture verdict not upgraded")
         plugin:Release()
-        Capture.Capture = original_capture
+        Card.SeedVersions = original_capture
     end)
     for _, engine in ipairs(engines) do Hook.Release(engine) end
-    Capture.Capture = original_capture
+    Card.SeedVersions = original_capture
     package.loaded["SpellHotReload.Plugin"] = old_plugin
     debug.upvaluejoin, debug.setupvalue, _G.jit = saved_join, saved_set, saved_jit
     for _, key in ipairs(keys) do rawset(_G, key, saved[key]) end

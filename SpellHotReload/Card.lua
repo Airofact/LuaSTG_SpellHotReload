@@ -696,15 +696,14 @@ end
 
 ---First-load card metadata is adapter-owned. Plugin calls this synchronously
 ---once per adopted file/session and owns the sticky success/refusal record.
----Never reseed from current live state. Lazy import avoids LoadVersions -> Card.
+---Never reseed from current live state. Capture does not depend on the legacy facade.
 function Card.CaptureVersions(entry, session_id)
     local ok, capture, err = pcall(function()
-        local Versions = require("SpellHotReload.LoadVersions")
         local classes = rawget(_G, "_editor_class")
         local boss_api = rawget(_G, "boss")
         local card_api = type(boss_api) == "table" and rawget(boss_api, "card") or nil
         local defaults = type(card_api) == "table" and rawget(card_api, "_default_card") or nil
-        return Versions.Capture(entry, session_id, classes, defaults)
+        return Card.SeedVersions(entry, session_id, classes, defaults)
     end)
     local reason
     if not ok then
@@ -759,6 +758,43 @@ local function dense(v)
     end
     if count == maximum then return count end
 end
+---Explicit Card-owned FIRST-load aggregate. Original trailer identities,
+---complete Match/ownership and defaults are captured synchronously, never
+---reseeded from current live values. Plugin owns sticky once-only bookkeeping.
+---No source/body replay, join, setter, publication, restart or module cache.
+---Dependencies are lazy to avoid the CardVersions -> Card cycle.
+function Card.SeedVersions(entry, session_id, classes, defaults)
+    local Source = require("SpellHotReload.FunctionPlan")
+    local Functions = require("SpellHotReload.FunctionVersions")
+    local Cards = require("SpellHotReload.CardVersions")
+    local function fail(code, detail, e, key)
+        return nil, {phase="capture", code=code, message=detail,
+            file=plain(e) and rawget(e,"file") or nil, unit_key=key}
+    end
+    if not plain(entry) or type(rawget(entry, "file")) ~= "string" or entry.file == ""
+        or entry.reloadable ~= true or entry.missing or not plain(entry.map)
+        or type(session_id) ~= "string" or session_id == "" then
+        return fail("unsupported", "genuine reloadable first load and session required", entry)
+    end
+    if not plain(classes) or not plain(defaults) then
+        return fail("unsupported", "plain first-load class registry and standard defaults required", entry)
+    end
+    local scan, err = Source.Inspect(entry.loaded_source)
+    if not scan then return nil, err end
+    local initial = {}
+    for name in next, scan.definitions do initial[name] = rawget(entry.map, name) end
+    local functions, ferr = Functions.Seed(entry, session_id, initial)
+    if not functions then return nil, ferr end
+    local match, merr = Card.Match(scan.analysis, { content = entry.loaded_source })
+    if not match then return nil, merr end
+    local owners, ownership = Card.CaptureOwnership(match, classes, entry)
+    if not owners then return nil, ownership end
+    local snapshot, cerr = Cards.Seed(functions, owners, defaults)
+    if not snapshot then return nil, cerr end
+    return { kind = "SpellHotReload.LoadVersions", version = 1, snapshot = snapshot,
+        classes = classes, ownership = ownership }
+end
+
 ---Card-specific selection/capture shape, publication bases and located-root
 ---proof. Preserve the original guard's exact ordering and diagnostics. Called
 ---before sealing AND after flush/fresh by CommitCheck; not a phase capability.
