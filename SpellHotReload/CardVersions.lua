@@ -564,6 +564,79 @@ function M.Next(selection)
     return result
 end
 
+---Detached scalar-only presentation of a trusted current-root selection.
+---No live/source read, compilation, proposed versions, commit or authorization.
+function M.Describe(selection)
+    if not plain(selection) or selection.kind ~= M.Kind .. ".Selection"
+        or selection.version ~= M.Version or not valid(selection.base)
+        or not plain(selection.report) or selection.report.base ~= selection.base
+        or not plain(selection.functions) or dense(selection.selected) == nil
+        or dense(selection.pending) == nil or dense(selection.affected) == nil then
+        return fail("unsupported", "a prepared card selection is required")
+    end
+    local function set(list)
+        local result = {};for _, key in ipairs(list or {}) do result[key] = true end
+        return result
+    end
+    local function observations(values)
+        local names, result = {}, {}
+        for name in next, values do names[#names + 1] = name end
+        table.sort(names)
+        for _, name in ipairs(names) do
+            result[#result + 1] = {name=name, version=values[name]}
+        end
+        return result
+    end
+    local base, report = selection.base, selection.report
+    local selected, pending, affected = set(selection.selected), set(selection.pending), set(selection.affected)
+    local result = {kind=M.Kind .. ".Description", version=M.Version, file=base.file,
+        session_id=base.session_id, revision=base.revision, cards={}, functions={},
+        initializers={}, pending_sources={}, tombstones={}}
+    local common = selection.discovery and selection.discovery.common
+    result.generation = common and common.candidate_generation
+    if selection.location then
+        local location, target = selection.location, selection.location.target
+        result.target = {key=target.key, class_key=target.class_key, live_slot=target.slot,
+            source_slot=location.candidate_slot, name=target.name, match=location.match}
+    end
+    for _, key in ipairs(base.order) do
+        local unit, item = base.units[key], report.by_key[key]
+        local row = {key=key, class_key=unit.class_key, slot=unit.slot,
+            definition_version=unit.definition_version, action=item.action,
+            selected=selected[key]==true, pending=pending[key]==true, affected=affected[key]==true,
+            observed=observations(unit.observed), callbacks={}}
+        for _, name in ipairs(CALLBACKS) do
+            row.callbacks[#row.callbacks + 1] = {name=name,
+                definition_version=unit.callbacks[name].definition_version,
+                changed=item.callbacks[name].changed==true}
+        end
+        result.cards[#result.cards + 1] = row
+    end
+    selected, pending, affected = set(selection.functions.selected),
+        set(selection.functions.pending), set(selection.functions.affected)
+    for _, name in ipairs(base.functions.names) do
+        local unit, item = base.functions.units[name], report.functions.by_name[name]
+        result.functions[#result.functions + 1] = {key="local:" .. name,
+            definition_version=unit.definition_version, action=item.action,
+            selected=selected[name]==true, pending=pending[name]==true, affected=affected[name]==true,
+            observed=observations(unit.observed)}
+    end
+    for _, item in ipairs(report.functions.initializers) do
+        result.initializers[#result.initializers + 1] = {
+            name=item.name, action=item.action, requires_restart=item.requires_restart==true}
+    end
+    for _, item in ipairs(selection.pending_sources or {}) do
+        result.pending_sources[#result.pending_sources + 1] = {
+            source_key=item.source_key, candidate_slot=item.candidate_slot,
+            action=item.action, reason=item.reason}
+    end
+    for _, item in ipairs(selection.tombstones or {}) do
+        result.tombstones[#result.tombstones + 1] = {key=item.key,
+            definition_version=item.definition_version, action=item.action, reason=item.reason}
+    end
+    return result
+end
+
 function M.Compare(state, content) return compare(state, content) end
 ---Complete FileMatch snapshot carrying this actual publication baseline in
 ---common. Class keys are NOT the per-card publication keys in this report.

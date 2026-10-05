@@ -40,26 +40,51 @@ end
 
 local MonitorTab = {}
 
----Bounded class-key cache. Candidate content is immutable once stable, so
----re-scanning a multi-hundred-KB generated file on every frame would cause
----massive per-frame garbage. Compute once per (file, content-hash) and reuse.
-local scan_cache = {}
-local scan_cache_keys = {}
-
-local function cached_class_keys(cand, file_name)
-    if cand == nil or cand.first_content == nil then return nil end
-    local key = file_name .. "|" .. (cand.first_hash or "")
-    local hit = scan_cache[key]
-    if hit ~= nil then return hit end
-    local Scanner = require("SpellHotReload.GeneratedBossScanner")
-    local keys = Scanner.ClassKeys(cand.first_content)
-    scan_cache[key] = keys
-    scan_cache_keys[#scan_cache_keys + 1] = key
-    if #scan_cache_keys > 32 then
-        local oldest = table.remove(scan_cache_keys, 1)
-        scan_cache[oldest] = nil
+-- Scalar projection produced by CardVersions, not a second semantic parser.
+local function describe_inspection(ImGui, model, id)
+    ImGui.Text(string.format("    Inspected g%s / published r%d (not commit authorization)",
+        tostring(model.generation),model.revision))
+    local target = model.target
+    if target then
+        ImGui.TextWrapped(string.format("    Selection: %s; live slot %d -> source slot %d (%s)",
+            target.key,target.live_slot,target.source_slot,target.match))
     end
-    return keys
+    ImGui.TextDisabled("    Names/constructors are not published; old live metadata is retained.")
+    if not ImGui.CollapsingHeader("Published units + candidate actions##versions_" .. id) then return end
+    local function row(unit)
+        local flags = (unit.selected and "selected" or (unit.pending and "pending" or "keep"))
+            .. (unit.affected and "; selection impact" or "")
+        ImGui.TextWrapped(string.format("%s  published v%d  candidate: %s  [%s]",
+            unit.key,unit.definition_version,unit.action,flags))
+        local observed = {}
+        for _, item in ipairs(unit.observed) do
+            observed[#observed + 1] = item.name .. "=v" .. item.version
+        end
+        if #observed > 0 then
+            ImGui.TextDisabled("    Published observations: " .. table.concat(observed,", "))
+        end
+    end
+    for _, unit in ipairs(model.functions) do row(unit) end
+    for _, unit in ipairs(model.cards) do
+        row(unit)
+        local callbacks = {}
+        for _, item in ipairs(unit.callbacks) do
+            callbacks[#callbacks + 1] = item.name .. "=v" .. item.definition_version
+                .. (item.changed and " (candidate changed)" or "")
+        end
+        ImGui.TextWrapped("    Published callbacks: " .. table.concat(callbacks,", "))
+    end
+    for _, item in ipairs(model.initializers) do
+        ImGui.TextWrapped("local:" .. item.name .. "  preserve-state; initialization change requires game restart")
+    end
+    for _, item in ipairs(model.pending_sources) do
+        ImGui.TextWrapped(string.format("%s source slot %d  unowned / restart-required: %s",
+            item.source_key,item.candidate_slot,item.reason))
+    end
+    for _, item in ipairs(model.tombstones) do
+        ImGui.TextWrapped(string.format("%s published v%d  source absent / live retained: %s",
+            item.key,item.definition_version,item.reason))
+    end
 end
 
 ---@param view SpellHotReload.View
@@ -122,7 +147,7 @@ function MonitorTab.layout(view)
         ImGui.TextDisabled("No candidate snapshots")
     else
         ImGui.Text("Candidates (" .. #files .. "):")
-        local matches_current = false
+        local has_stable = false
         for idx, file_name in ipairs(files) do
             local cand = store:GetCandidate(file_name)
             local size = cand and cand.first_content and #cand.first_content or 0
@@ -131,17 +156,27 @@ function MonitorTab.layout(view)
             ImGui.Text("    hash: " .. hash_short(cand and cand.first_hash))
             ImGui.TextDisabled("    " .. preview(cand and cand.first_content))
 
-            if current ~= nil then
-                local has_class = false
-                local keys = cached_class_keys(cand, file_name)
-                if keys ~= nil then
-                    has_class = stable and keys[current.class_key] ~= nil
-                end
-                matches_current = matches_current or has_class
-                if has_class then
-                    ImGui.TextColored(color(0.5, 1, 0.5, 1), "    matches current class")
-                else
-                    ImGui.TextDisabled("    (other class)")
+            has_stable = has_stable or stable
+            local capture, why = plugin:GetVersions(file_name)
+            if capture then
+                ImGui.Text(string.format("    Published file revision: %d (not whole-file acceptance)",
+                    capture.snapshot.revision))
+            else
+                ImGui.TextDisabled("    Versions unavailable: " .. tostring(why))
+            end
+            local partial = store:GetPartialPublication(file_name)
+            if partial then
+                ImGui.Text(string.format("    Last partial publication: r%d / g%d; candidate retained",
+                    partial.revision,partial.generation))
+            end
+            local model = plugin:GetCandidateInspection(file_name,current)
+            if model then describe_inspection(ImGui,model,file_name)
+            else ImGui.TextDisabled("    Not inspected / inspection invalidated; Apply checks independently") end
+            if stable and current and plugin:IsSandboxOk() and not Binding.IsReplay() then
+                if ImGui.Button("Inspect Current##inspect_" .. file_name) then
+                    local result, reason = plugin:InspectCandidate(file_name)
+                    view.last_result = result and ("inspected " .. file_name .. "; not committed")
+                        or ("inspection refused: " .. tostring(reason))
                 end
             end
 
@@ -150,13 +185,15 @@ function MonitorTab.layout(view)
             end
         end
 
-        local can_apply = matches_current and plugin:IsSandboxOk() and current ~= nil and not Binding.IsReplay()
+        -- A cheap UI hint is not routing/commit authority. Apply performs full discovery.
+        local can_apply = has_stable and plugin:IsSandboxOk() and current ~= nil
+            and not Binding.IsReplay() and not plugin:HasRestartPending()
         if can_apply then
             if ImGui.Button("Apply & Restart Current") then
                 view.last_result = plugin:ApplyFromUI()
             end
         else
-            ImGui.TextDisabled("Apply disabled (no candidate for current class / replay / sandbox)")
+            ImGui.TextDisabled("Apply disabled (no stable candidate / replay / sandbox / retry pending)")
         end
     end
 
