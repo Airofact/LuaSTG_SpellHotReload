@@ -27,6 +27,7 @@ local AnchorRegistry = require("SpellHotReload.AnchorRegistry")
 local Driver = require("SpellHotReload.Driver")
 local Card = require("SpellHotReload.Card")
 local LoadVersions = require("SpellHotReload.LoadVersions")
+local CardCommit = require("SpellHotReload.CardCommit")
 local session_serial = 0
 
 local Plugin = {}
@@ -56,6 +57,7 @@ function Plugin.New()
 	self._loads = {} -- full first-load entries, including non-capturable files
 	session_serial = session_serial + 1
 	self._session_id = "SpellHotReload:" .. session_serial
+	self._commit, self._commit_error = CardCommit.New(self._session_id)
 	self._versions = {} -- first-load success/refusal; never lazily reseeded
 	self._released = false
 	self._watcher = nil
@@ -142,6 +144,11 @@ function Plugin:IsReleased() return self._released end
 ---StopWatching and Tool visibility are deliberately not session termination.
 function Plugin:Release(reason)
 	if self._released then return true end
+	if self._commit then
+		local ok, err = self._commit:Release()
+		if not ok then return nil, err end -- do not tear down an active transaction
+	end
+	self._commit, self._commit_error = nil, nil
 	self._released = true
 	self._activation_requested = false
 	self._activation_attempted = true
@@ -423,17 +430,40 @@ function Plugin:_activate()
 	self._activated = true
 end
 
+---Trusted post-logic Monitor layout entry only; not proof of engine phase.
+---Whitelist actions, never accept arbitrary callbacks. Tick must not open scopes.
+---Apply still uses the legacy driver until the separate versioned wiring batch.
+function Plugin:_RunUIAction(action)
+	if self._released then return "session ended" end
+	if action ~= "apply" and action ~= "retry" then return "unknown UI action" end
+	if not self._commit then return "UI commit scope unavailable" end
+	local ran, result = self._commit:Run(function(token)
+		if action == "apply" then return self:Apply(token) end
+		return self:RetryRestart()
+	end)
+	if not ran then
+		local message = type(result) == "table" and rawget(result, "message") or nil
+		result = "UI phase: " .. (type(message) == "string" and message or "scope refused")
+		self._last_result = result
+		log(self, "warn", result)
+	end
+	return result
+end
+
+function Plugin:ApplyFromUI() return self:_RunUIAction("apply") end
+function Plugin:RetryRestartFromUI() return self:_RunUIAction("retry") end
+
 ---Apply the current candidate to the current card and restart the practice.
 ---@return string
-function Plugin:Apply()
+function Plugin:Apply(token)
 	if self._released then return "session ended" end
-	local result = self:_apply()
+	local result = self:_apply(token)
 	self._last_result = result
 	log(self, (result == "applied" or result:sub(1, 7) == "applied") and "ok" or "warn", result)
 	return result
 end
 
-function Plugin:_apply()
+function Plugin:_apply(token)
 	if self._released then return "session ended" end
 	if not self._activated then return "not activated" end
 	if not self._supported then return "unsupported: " .. tostring(self._unsupported_reason) end

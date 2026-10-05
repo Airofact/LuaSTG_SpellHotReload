@@ -153,7 +153,7 @@ function MonitorTab.layout(view)
         local can_apply = matches_current and plugin:IsSandboxOk() and current ~= nil and not Binding.IsReplay()
         if can_apply then
             if ImGui.Button("Apply & Restart Current") then
-                view.last_result = plugin:Apply()
+                view.last_result = plugin:ApplyFromUI()
             end
         else
             ImGui.TextDisabled("Apply disabled (no candidate for current class / replay / sandbox)")
@@ -162,7 +162,7 @@ function MonitorTab.layout(view)
 
     if plugin:HasRestartPending() then
         if ImGui.Button("Retry Restart") then
-            view.last_result = plugin:RetryRestart()
+            view.last_result = plugin:RetryRestartFromUI()
         end
     end
 
