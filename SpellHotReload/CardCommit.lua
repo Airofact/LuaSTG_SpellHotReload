@@ -10,12 +10,11 @@
 -- failed selection. OOM/hostile debug hooks/native side effects are not atomic.
 local Phase = require("SpellHotReload.CommitPhase")
 local Guard = require("SpellHotReload.CommitCheck")
-local Cards = require("SpellHotReload.CardVersions")
 local Card = require("SpellHotReload.Card")
 local Cache = require("SpellHotReload.CodeCache")
 local M = { Kind = "SpellHotReload.CardCommit", Version = 1 }
 local phase_new, guard_check, next_version, invalidate =
-    Phase.New, Guard.Check, Cards.Next, Cache.Invalidate
+    Phase.New, Guard.Check, Card.ProposeVersion, Cache.Invalidate
 local check_destinations = Card.CheckJoinDestinations
 local raw_write, protected_call = rawset, pcall
 local busy, poisoned = nil, {} -- only poisoned primitive ids, never business refs

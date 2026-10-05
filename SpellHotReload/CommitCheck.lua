@@ -16,7 +16,6 @@
 --- cache invalidation. Legacy fixed-layout selections need no binding.
 --- Inputs are read-only by contract, not a hostile-plan sandbox. upvalueid is
 --- optional: absent it, physical external rejoin cannot be proved, not probed.
-local Target = require("SpellHotReload.CardTarget")
 local Card = require("SpellHotReload.Card")
 local M = { Kind = "SpellHotReload.CommitCheck", Version = 1 }
 local function plain(v) return type(v) == "table" and getmetatable(v) == nil end
@@ -36,35 +35,10 @@ local function fail(code, message, file, key)
     return nil, { phase="commit", code=code, message=message, file=file, unit_key=key }
 end
 local function check(selection, capture, live)
-    if not plain(selection) or selection.kind ~= "SpellHotReload.CardVersions.Selection"
-        or selection.version ~= 1 or not plain(selection.base)
-        or not plain(capture) or capture.kind ~= "SpellHotReload.LoadVersions"
-        or capture.version ~= 1 or not plain(live) then
-        return fail("unsupported", "card selection, load capture and fresh live view required")
-    end
+    local valid, input_error = Card.CheckCommitInput(selection, capture, live)
+    if not valid then return nil, input_error end
     local base, entry = selection.base, live.entry
     local file = type(base.file) == "string" and base.file or nil
-    if live.released or live.poisoned or not rawequal(live.capture, capture)
-        or not rawequal(live.snapshot, base) or not rawequal(capture.snapshot, base)
-        or live.session_id ~= base.session_id or selection.session_id ~= base.session_id
-        or not plain(entry) or not rawequal(entry, base.entry) or not rawequal(selection.entry, entry)
-        or entry.reloadable ~= true or entry.missing
-        or entry.anchor ~= base.anchor or selection.anchor ~= base.anchor
-        or type(base.anchor) ~= "function" or not plain(entry.slots)
-        or entry.file ~= base.file or entry.loaded_source ~= base.loaded_source
-        or selection.base_revision ~= base.revision
-        or not plain(base.functions) or not plain(selection.functions)
-        or not rawequal(selection.functions.base, base.functions)
-        or selection.functions.base_revision ~= base.functions.revision then
-        return fail("stale", "session, capture, anchor or publication revision changed", file)
-    end
-    if type(selection.content) ~= "string" or live.content ~= selection.content then
-        return fail("stale", "candidate bytes changed", file)
-    end
-    if selection.location ~= nil then
-        local checked, err = Target.CheckDiscovery(selection.location, live.binding, capture, live)
-        if not checked then return fail(err.code, err.message, file, selection.location.key) end
-    end
     if type(debug) ~= "table" or type(debug.getupvalue) ~= "function"
         or type(debug.setupvalue) ~= "function" or type(debug.upvaluejoin) ~= "function" then
         return fail("capability", "shared-cell debug APIs unavailable", file)

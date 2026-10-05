@@ -741,8 +741,9 @@ end
 --------------------------------------------------------------------------------
 --- Card-owned first-load and commit policy. Trusted, already-validated inputs;
 --- these helpers read raw identities only, never call business code or mutate.
---- Transaction services still own session/byte/cell checks, sealing, phase,
---- cache invalidation, joins/writes/version install and reverse recovery.
+--- Card validates its selection/capture metadata and proposes aggregate versions.
+--- Transaction services own capability/cell checks, sealing, phase, cache
+--- invalidation, joins/writes/version install and reverse recovery.
 --------------------------------------------------------------------------------
 
 local function plain(v) return type(v) == "table" and getmetatable(v) == nil end
@@ -758,6 +759,54 @@ local function dense(v)
     end
     if count == maximum then return count end
 end
+---Card-specific selection/capture shape, publication bases and located-root
+---proof. Preserve the original guard's exact ordering and diagnostics. Called
+---before sealing AND after flush/fresh by CommitCheck; not a phase capability.
+---No source execution, compilation, joins, writes or version installation.
+function Card.CheckCommitInput(selection, capture, live)
+    local function fail(code, detail, file, key)
+        return nil, {phase="commit", code=code, message=detail, file=file, unit_key=key}
+    end
+    if not plain(selection) or selection.kind ~= "SpellHotReload.CardVersions.Selection"
+        or selection.version ~= 1 or not plain(selection.base)
+        or not plain(capture) or capture.kind ~= "SpellHotReload.LoadVersions"
+        or capture.version ~= 1 or not plain(live) then
+        return fail("unsupported", "card selection, load capture and fresh live view required")
+    end
+    local base, entry = selection.base, live.entry
+    local file = type(base.file) == "string" and base.file or nil
+    if live.released or live.poisoned or not rawequal(live.capture, capture)
+        or not rawequal(live.snapshot, base) or not rawequal(capture.snapshot, base)
+        or live.session_id ~= base.session_id or selection.session_id ~= base.session_id
+        or not plain(entry) or not rawequal(entry, base.entry) or not rawequal(selection.entry, entry)
+        or entry.reloadable ~= true or entry.missing
+        or entry.anchor ~= base.anchor or selection.anchor ~= base.anchor
+        or type(base.anchor) ~= "function" or not plain(entry.slots)
+        or entry.file ~= base.file or entry.loaded_source ~= base.loaded_source
+        or selection.base_revision ~= base.revision
+        or not plain(base.functions) or not plain(selection.functions)
+        or not rawequal(selection.functions.base, base.functions)
+        or selection.functions.base_revision ~= base.functions.revision then
+        return fail("stale", "session, capture, anchor or publication revision changed", file)
+    end
+    if type(selection.content) ~= "string" or live.content ~= selection.content then
+        return fail("stale", "candidate bytes changed", file)
+    end
+    if selection.location ~= nil then
+        local Target = require("SpellHotReload.CardTarget")
+        local checked, err = Target.CheckDiscovery(selection.location, live.binding, capture, live)
+        if not checked then return fail(err.code, err.message, file, selection.location.key) end
+    end
+    return true
+end
+
+---Card owns the aggregate version format. This ONLY proposes the next snapshot;
+---CardCommit still seals actions, journals and atomically installs it last.
+---Lazy import avoids CardVersions -> Card initialization cycles.
+function Card.ProposeVersion(selection)
+    return require("SpellHotReload.CardVersions").Next(selection)
+end
+
 local callbacks = { before=true, init=true, frame=true, render=true,
     beforedel=true, del=true, after=true }
 local CALLBACKS = { "before", "init", "frame", "render", "beforedel", "del", "after" }

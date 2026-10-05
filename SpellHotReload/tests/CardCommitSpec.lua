@@ -314,7 +314,10 @@ function M.run(opts)
         eq(cell_attempts,2,"failed cell restore attempted")
         -- Preparation errors do not consume or mutate; unsafe objects stay opaque.
         local failing_next=isolated({require=function(name)
-            if name=="SpellHotReload.CardVersions" then return {Next=function() error(hostile) end} end
+            if name=="SpellHotReload.Card" then
+                return setmetatable({ProposeVersion=function() error(hostile) end},
+                    {__index=require(name)})
+            end
             return require(name)
         end})
         tx,s,c,l=fixture("raw",failing_next);b=baseline(s,c,l)
