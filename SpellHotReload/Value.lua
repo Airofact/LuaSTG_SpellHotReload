@@ -13,7 +13,7 @@
 ---     a function expression and evaluated (the `:` form gets `self` inserted,
 ---     matching Lua's own desugaring);
 ---   * a `local function NAME` slot is extracted and rebuilt through
----     GeneratedBossLoader.BuildFunction, which also injects the captured
+---     Legacy.Functions.BuildFunction, which also injects the captured
 ---     sibling upvalues.
 --- Every evaluation runs in a write-isolating sandbox (reads fall through to
 --- _G, writes stay in the sandbox) so injecting can never mutate the live game.
@@ -28,7 +28,7 @@
 --- value. `Value.Restartable` is therefore false.
 --------------------------------------------------------------------------------
 
-local Loader = require("SpellHotReload.GeneratedBossLoader")
+local Lexer = require("SpellHotReload.Lexer")
 
 local Value = {}
 
@@ -140,7 +140,7 @@ function Value.Parse(node)
         return nil, "node has no source text"
     end
     local text = node.text
-    local tokens = Loader.Tokenize(text)
+    local tokens = Lexer.Tokenize(text)
     if #tokens == 0 then return nil, "empty statement" end
 
     if node.kind == "function" and node.carrier == "local" then
@@ -234,11 +234,13 @@ function Value.Inject(handle, node, env)
         if type(env.content) ~= "string" then
             return nil, "env.content is required to rebuild a local function"
         end
-        local fragment = Loader.ExtractFunction(env.content, site.name)
+        -- Historical value-map construction, never the versioned Anchor path.
+        local Functions = require("SpellHotReload.Legacy.Functions")
+        local fragment = Functions.ExtractFunction(env.content, site.name)
         if fragment == nil then
             return nil, "local function '" .. tostring(site.name) .. "' not found in the new source"
         end
-        local fn, ferr = Loader.BuildFunction(fragment, site.name, sibs)
+        local fn, ferr = Functions.BuildFunction(fragment, site.name, sibs)
         if fn == nil then return nil, ferr end
         return { value = fn, target = site.target, local_target = true, site = site }
     end

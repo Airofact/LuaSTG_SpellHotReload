@@ -413,7 +413,7 @@ end
 -- Preparation never invokes callback bodies or changes a live upvalue.
 function M.Build(descriptor, card, content, registry)
     -- Legacy constructors are loaded only when the legacy Build is requested.
-    local Loader = require("SpellHotReload.GeneratedBossLoader")
+    local Functions = require("SpellHotReload.Legacy.Functions")
     registry = registry or {}
     local captured, references = {}, {}
     for _, name in ipairs(CALLBACKS) do
@@ -455,9 +455,9 @@ function M.Build(descriptor, card, content, registry)
             end
             if type(registry[up.name]) == "function" and (not old or old.value == registry[up.name]) then
                 if not functions[up.name] then
-                    local fragment = Loader.ExtractFunction(content, up.name)
+                    local fragment = Functions.ExtractFunction(content, up.name)
                     if not fragment then return nil, "local function removed: " .. up.name end
-                    local fn, ferr = Loader.BuildFunction(fragment, up.name, registry)
+                    local fn, ferr = Functions.BuildFunction(fragment, up.name, registry)
                     if not fn then return nil, ferr end
                     functions[up.name] = fn
                 end

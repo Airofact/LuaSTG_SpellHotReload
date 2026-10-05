@@ -37,7 +37,7 @@
 --- `TopLevelIR.HostCalls`.
 --------------------------------------------------------------------------------
 
-local Loader = require("SpellHotReload.GeneratedBossLoader")
+local Lexer = require("SpellHotReload.Lexer")
 local TopLevelIR = require("SpellHotReload.TopLevelIR")
 
 local Host = {}
@@ -100,7 +100,7 @@ function Host.Parse(node)
         return nil, "node has no source text"
     end
     local text = node.text
-    local tokens = Loader.Tokenize(text)
+    local tokens = Lexer.Tokenize(text)
     if #tokens == 0 then return nil, "empty statement" end
 
     -- The callee is a dotted path, so the first `(` opens the argument list.
