@@ -59,6 +59,7 @@ function SnapshotStore.New(options)
 	instance._accepted = {}
 	instance._candidates = {}
 	instance._dismissed = {}
+	instance._partial = {} -- sticky: accepted bytes no longer prove live definitions
 	instance._next_generation = 0
 	return instance
 end
@@ -127,13 +128,51 @@ function SnapshotStore:GetAccepted(file_name)
 	return copy_record(self._accepted[file_name])
 end
 
----Set an accepted snapshot directly (used to establish a baseline without events).
+---Record an actual partial publication, not a whole-file acknowledgement. The
+---caller supplies the successful transaction revision; this bookkeeping API is
+---not commit authority and never advances accepted bytes or discards pending.
+---Only the current stable generation/exact bytes can be recorded. Once partial,
+---baseline equality cannot prove "unchanged" for the rest of this session.
+function SnapshotStore:RecordPartialPublication(file_name, generation, content, revision)
+	local current = self._candidates[file_name]
+	if current == nil or current.generation ~= generation then
+		return nil, "superseded"
+	end
+	if current.stable ~= true or type(content) ~= "string" or content ~= current.first_content then
+		return nil, "stable candidate bytes required"
+	end
+	if type(revision) ~= "number" or revision < 1 or revision % 1 ~= 0 then
+		return nil, "positive integer revision required"
+	end
+	local previous = self._partial[file_name]
+	if previous ~= nil and revision <= previous.revision then
+		return nil, "publication revision did not advance"
+	end
+	local record = { generation = generation, revision = revision }
+	self._partial[file_name] = record
+	return copy_record(record)
+end
+
+---Metadata only; per-unit versions remain the authority for published content.
+function SnapshotStore:GetPartialPublication(file_name)
+	return copy_record(self._partial[file_name])
+end
+
+function SnapshotStore:HasPartialPublication(file_name)
+	return self._partial[file_name] ~= nil
+end
+
+---Set an accepted snapshot directly (baseline or legacy full-file publication).
+---After a partial publication, only Clear/new session may establish a baseline.
 ---@param file_name string
 ---@param content string
 ---@param source string?
----@return SpellHotReload.Snapshot
+---@return SpellHotReload.Snapshot?, string?
 function SnapshotStore:SetAccepted(file_name, content, source)
 	assert(type(content) == "string", "content must be a string")
+	if self:HasPartialPublication(file_name) then
+		return nil, "partial publication cannot acknowledge the whole file"
+	end
 	local accepted = {
 		file_name = file_name,
 		content = content,
@@ -201,7 +240,8 @@ end
 ---identical the candidate is marked stable and KEPT in the candidate set — the
 ---user-facing Apply action later promotes it to accepted. A differing second read
 ---supersedes the candidate and starts a fresh generation. A stable read that
----equals the current accepted baseline is dropped as "unchanged" (no real change).
+---equals the accepted baseline is dropped only before any partial publication:
+---after that, even original bytes may need to undo already-published definitions.
 ---@param file_name string
 ---@param generation integer
 ---@param content string
@@ -227,9 +267,10 @@ function SnapshotStore:VerifyStable(file_name, generation, content, read_update,
 		return nil, "changed"
 	end
 
-	-- stable: drop it if it equals the accepted baseline (nothing actually changed)
+	-- Byte equality proves nothing about per-unit publication after partial Apply.
 	local previous = self._accepted[file_name]
-	if previous ~= nil and previous.hash == content_hash and previous.content == content then
+	if not self:HasPartialPublication(file_name) and previous ~= nil
+		and previous.hash == content_hash and previous.content == content then
 		self._candidates[file_name] = nil
 		return nil, "unchanged"
 	end
@@ -250,12 +291,14 @@ function SnapshotStore:VerifyStable(file_name, generation, content, read_update,
 	return copy_record(current), "stable"
 end
 
----Drop accepted, candidate and dismissed bytes at session end. Keep generation
+---Drop accepted, candidate, dismissed bytes and partial metadata at session end.
+---Keep generation
 ---monotonic so a stale first-read ticket cannot match a future candidate.
 function SnapshotStore:Clear()
 	self._accepted = {}
 	self._candidates = {}
 	self._dismissed = {}
+	self._partial = {}
 	return true
 end
 

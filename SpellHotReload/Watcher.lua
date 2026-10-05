@@ -350,7 +350,8 @@ end
 
 ---Conservative drift scan. Only starts a candidate when nothing is already in
 ---flight; a showing candidate is restarted only if its bytes changed again. Used
----as a periodic fallback for lost watcher events.
+---as a periodic fallback for lost watcher events. After partial publication,
+---accepted-byte equality cannot suppress a candidate (including source reverts).
 function Watcher:_drift_scan()
     if self._released then return end
     for _, name in ipairs(tracked_files(self)) do
@@ -373,7 +374,8 @@ function Watcher:_drift_scan()
                     local accepted = self._store:GetAccepted(name)
                     -- skip bytes the user already dismissed; otherwise every drift
                     -- scan resurrects the same candidate after a Dismiss
-                    if (accepted == nil or accepted.content ~= content)
+                    if (self._store:HasPartialPublication(name)
+                        or accepted == nil or accepted.content ~= content)
                         and not self._store:IsDismissed(name, content) then
                         begin_pending(self, name, "drift")
                     end
@@ -390,7 +392,8 @@ function Watcher:rescan()
     for _, name in ipairs(tracked_files(self)) do
         local accepted = self._store:GetAccepted(name)
         local content = self:ReadFile(name)
-        if content ~= nil and (accepted == nil or accepted.content ~= content)
+        if content ~= nil and (self._store:HasPartialPublication(name)
+            or accepted == nil or accepted.content ~= content)
             and not self._store:IsDismissed(name, content) then
             begin_pending(self, name, "rescan")
         elseif content == nil and self._pending[name] == nil and not self._missing[name] then
