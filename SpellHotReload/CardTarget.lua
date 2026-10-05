@@ -7,9 +7,11 @@
 -- Target owns copied names/restart scalars, not an alias to binding.names.
 -- Full FIRST-load ownership (including other classes/placeholders) is checked.
 -- No parsing, compiling, debug API, game calls, joins, writes, cache or restart.
--- Candidate rename/reorder/SC Debug-to-full-source remapping is NOT enabled:
--- CardVersions.Compare's fixed-layout refusal still applies independently.
+-- LocateDiscovery / CheckDiscovery prove a CURRENT root source correspondence.
+-- CardVersions.Compare still refuses non-fixed layouts; production is unchanged.
+-- The complete discovery stays attached; this gate is NOT all-unit remapping.
 -- Pure tables are read-only by contract; release targets with their session.
+local Card = require("SpellHotReload.Card")
 local M = { Kind="SpellHotReload.CardTarget", Version=1 }
 local function plain(v) return type(v)=="table" and getmetatable(v)==nil end
 local function integer(v, minimum)
@@ -138,6 +140,159 @@ local function check(target,binding,capture,live)
     end
     return true
 end
+-- Pure current-root source remapping. This locates ONE captured live owner;
+-- it is not a bijection of all published units or permission to drop pending.
+-- Callers must still compare versions, validate bindings and transact in a
+-- trusted phase. Metadata/constructors are never replayed or published here.
+local function layout_valid(layout)
+    if dense(layout)==nil then return false end
+    for _,desc in ipairs(layout) do
+        if not plain(desc) or type(desc.kind)~="string"
+            or type(desc.constructor)~="string" or not plain(desc.callbacks)
+            or (desc.name~=nil and type(desc.name)~="string") then return false end
+    end
+    return true
+end
+local function shape(a,b)
+    return a.kind==b.kind and a.constructor==b.constructor and a.perform==b.perform
+end
+local function source_slot(before,after,target)
+    local slot,label=target.slot,target.name
+    local function combat(i)
+        local d=after[i]
+        return d and d.kind=="card" and type(d.callbacks.init)=="string"
+    end
+    -- Moves are positional placeholders (SC Debug collapses its prefix).
+    -- Named roots permit prefix/suffix cropping; unnamed roots require all
+    -- old non-move siblings to remain in the one proven aligned layout.
+    local function aligns(offset,crop)
+        for i,desc in ipairs(before) do
+            if i~=slot and desc.kind~="move" then
+                local at=i+offset
+                if at>=1 and at<=#after then
+                    local collapsed=crop and offset<0 and at==1 and after[at].kind=="move"
+                    if not collapsed and not shape(desc,after[at]) then return false end
+                elseif not crop then return false end
+            end
+        end
+        return true
+    end
+    if label~="" then
+        local old_count,new_count,hit=0,0,nil
+        for _,n in ipairs(target.names) do if n==label then old_count=old_count+1 end end
+        for i,d in ipairs(after) do
+            if name(d.name)==label then new_count,hit=new_count+1,i end
+        end
+        -- Duplicate names remain usable only with unchanged sibling shape
+        -- and the exact live slot; never turn one surviving name into identity.
+        if #before==#after and combat(slot) and name(after[slot].name)==label
+            and aligns(0,false) then return slot,"slot" end
+        local offset=hit and hit-slot
+        local delta=#after-#before
+        local edge_shift=offset and offset>=math.min(0,delta) and offset<=math.max(0,delta)
+        if old_count==1 and new_count==1 and combat(hit) and edge_shift
+            and aligns(offset,true) then return hit,"unique-name alignment" end
+        if new_count==0 and #before==#after and combat(slot)
+            and aligns(0,false) then return slot,"renamed in place" end
+        return nil,"named root has no unique shape-preserving correspondence"
+    end
+    if #before==#after and combat(slot) and name(after[slot].name)==""
+        and aligns(0,false) then return slot,"slot" end
+    local found,reason
+    for _,offset in ipairs({0,#after-#before}) do
+        local at=slot+offset
+        if (offset~=0 or found==nil) and combat(at) and name(after[at].name)==""
+            and aligns(offset,false) then
+            if found and found~=at then return nil,"unnamed layout aligns from both ends" end
+            found,reason=at,offset==0 and "forward index" or "reverse index"
+        end
+    end
+    if found then return found,reason end
+    return nil,"unnamed root has no unique head/tail alignment"
+end
+local function locate_discovery(target,snapshot,binding,capture,live)
+    local ok,err=check(target,binding,capture,live)
+    if not ok then return nil,err end
+    local base,file=target.snapshot,target.file
+    local common=plain(snapshot) and snapshot.common
+    if not plain(common) or common.file~=file or common.session_id~=target.session_id
+        or common.registry_entry~=target.entry or common.loaded_source~=base.loaded_source
+        or common.base_revision~=target.base_revision or common.published_units~=base
+        or type(common.content)~="string" or live.content~=common.content then
+        return fail("stale","candidate discovery or fresh bytes disagree",file)
+    end
+    local analysis=snapshot.analysis
+    local source=common.content
+    if source:sub(1,3)=="\239\187\191" then source=source:sub(4) end
+    if not plain(analysis) or common.analysis~=analysis or analysis.source~=source
+        or analysis.source_offset~=#common.content-#source
+        or dense(snapshot.entries)==nil or not plain(snapshot.by_key)
+        or not plain(snapshot.adapter_contexts) then
+        return fail("unsupported","complete source discovery required",file)
+    end
+    local file_context=snapshot.adapter_contexts.card
+    if not plain(file_context) or file_context.carrier~="card"
+        or not integer(file_context.classes,0) then
+        return fail("unsupported","registered Card discovery required",file)
+    end
+    local indexed,classes,chosen={},0,nil
+    for _,entry in ipairs(snapshot.entries) do
+        local unit=plain(entry) and entry.unit
+        if not plain(unit) or type(unit.key)~="string" or indexed[unit.key]
+            or snapshot.by_key[unit.key]~=entry then
+            return fail("ownership","discovery entry/index disagree",file)
+        end
+        indexed[unit.key]=true
+        if entry.adapter==Card then
+            local ctx,context=unit.context,entry.context
+            if not plain(ctx) or type(ctx.class_key)~="string"
+                or unit.key~="card:"..ctx.class_key or unit.carrier~="card"
+                or not layout_valid(ctx.layout) or not plain(context)
+                or context.common~=common or not plain(context.adapter)
+                or context.adapter.file~=file_context or context.adapter.unit~=ctx then
+                return fail("ownership","Card discovery context disagrees",file)
+            end
+            classes=classes+1
+            if ctx.class_key==target.class_key then chosen=entry end
+        elseif unit.carrier=="card" then
+            return fail("ownership","card discovery has another owner",file)
+        end
+    end
+    for key in next,snapshot.by_key do
+        if not indexed[key] then return fail("ownership","unindexed discovery entry",file) end
+    end
+    if classes~=file_context.classes then
+        return fail("unsupported","filtered Card discovery",file)
+    end
+    if not chosen then return fail("ambiguous","current class is absent from candidate",file) end
+    local before=plain(base.layout) and base.layout[target.class_key]
+    if not layout_valid(before) or #before~=#target.names
+        or not before[target.slot] or before[target.slot].kind~="card" then
+        return fail("ownership","captured source layout unavailable",file)
+    end
+    local after=chosen.unit.context.layout
+    local slot,reason=source_slot(before,after,target)
+    if not slot then return fail("ambiguous",reason,file) end
+    return {kind=M.Kind..".DiscoveryLocation",version=M.Version,target=target,
+        discovery=snapshot,content=common.content,generation=common.candidate_generation,
+        key=target.key,source_key=chosen.unit.key,entry=chosen,descriptor=after[slot],
+        candidate_slot=slot,candidate_name=name(after[slot].name),match=reason}
+end
+local function check_discovery(location,binding,capture,live)
+    if not plain(location) or location.kind~=M.Kind..".DiscoveryLocation"
+        or location.version~=M.Version then
+        return fail("unsupported","resolved discovery location required",file_of(live))
+    end
+    local fresh,err=locate_discovery(location.target,location.discovery,binding,capture,live)
+    if not fresh then return nil,err end
+    for _,field in ipairs({"target","discovery","content","generation","key","source_key",
+        "entry","descriptor","candidate_slot","candidate_name","match"}) do
+        if not rawequal(rawget(location,field),rawget(fresh,field)) then
+            return fail("stale","candidate location changed",fresh.target.file)
+        end
+    end
+    return true
+end
 local function protected(fn,live,...)
     local ok,value,err=pcall(fn,...)
     if ok then return value,err end
@@ -148,5 +303,13 @@ function M.Resolve(binding,capture,live)
 end
 function M.Check(target,binding,capture,live)
     return protected(check,live,target,binding,capture,live)
+end
+-- live.content is freshly re-read candidate bytes, not an accepted-source hash.
+-- Resolve/Check retain live restart identity; candidate_slot is source-only.
+function M.LocateDiscovery(target,snapshot,binding,capture,live)
+    return protected(locate_discovery,live,target,snapshot,binding,capture,live)
+end
+function M.CheckDiscovery(location,binding,capture,live)
+    return protected(check_discovery,live,location,binding,capture,live)
 end
 return M
