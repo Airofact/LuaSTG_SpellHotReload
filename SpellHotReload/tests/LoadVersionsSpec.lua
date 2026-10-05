@@ -306,8 +306,8 @@ function M.run()
         end
         eq(metamethod_calls, 0, "fault metadata never invokes __index")
 
-        -- The legacy runner can enter Restart inside Commit: baseline must be
-        -- retired BEFORE that call, not after Commit returns or only in _Publish.
+        -- A genuine first-load entry must NOT enter legacy Card.Plan/Commit or
+        -- retire its captured history, even when production preflight refuses.
         local Scanner = require("SpellHotReload.GeneratedBossScanner")
         local Binding = require("SpellHotReload.PracticeBinding")
         local Card = require("SpellHotReload.Card")
@@ -319,36 +319,33 @@ function M.run()
             local captured = must(plugin:GetVersions("Seed_Boss.lua"))
             plugin._activated, plugin._supported, plugin._sandbox_ok = true, true, true
             local store = plugin:GetStore()
-            store:GetCandidateFileNames() -- query is side-effect free
-            store.GetCandidateFileNames = function() return { "Seed_Boss.lua" } end
-            store.GetCandidate = function() return { stable=true, first_content=SOURCE } end
-            plugin._watcher = { ReadFile=function() return SOURCE end, Release=function() end }
-            Scanner.Scan = function() return { ok=true } end
-            Scanner.ClassKeys = function() return { K=true } end
-            local current = { class_key="K", card=captured.snapshot.units["card:1:K:2"].card,
-                slot=2, name="A", names={"","A","B"}, include_previous=false }
-            Binding.CaptureCurrent = function() return current end
+            local ticket = store:BeginCandidate("Seed_Boss.lua",0,"spec")
+            store:RecordFirstRead("Seed_Boss.lua",ticket.generation,SOURCE,1)
+            must(store:VerifyStable("Seed_Boss.lua",ticket.generation,SOURCE,2,1))
+            plugin._watcher = { ReadFile=function() return "stale disk" end, Release=function() end }
+            Scanner.Scan = function() return {ok=true} end
+            local legacy_calls = 0
+            Scanner.ClassKeys = function() legacy_calls=legacy_calls+1;error("legacy route") end
+            Binding.CaptureCurrent = function()
+                return {class_key="K",card=captured.snapshot.units["card:1:K:2"].card,
+                    slot=2,name="A",names={"","A","B"},mode="practice",include_previous=false}
+            end
             Binding.IsReplay = function() return false end
-            Card.Plan = function() return nil, "prepare fault" end
-            has(plugin:_apply(), "prepare fault", "prepare refusal preserved")
-            eq(plugin:GetVersions("Seed_Boss.lua"), captured, "prepare failure does not retire")
-            Card.Plan = function() return {} end
-            local commits = 0
-            plugin._driver = { Commit=function()
-                commits=commits+1
-                eq(plugin:GetVersions("Seed_Boss.lua"), nil, "retired before legacy Commit/Restart")
-                return { committed=0, failed={{reason="commit fault"}} }
-            end }
-            has(plugin:_apply(), "commit fault", "legacy commit refusal preserved")
-            eq(commits, 1, "one legacy commit attempt")
-            local state, reason = plugin:GetVersions("Seed_Boss.lua")
-            eq(state, nil, "failed commit keeps baseline retired")
-            has(reason, "legacy Apply attempted", "legacy attempt diagnostic")
+            Card.Plan = function() legacy_calls=legacy_calls+1;error("legacy plan") end
+            local driver_commit = plugin._driver.Commit
+            plugin._driver.Commit = function() legacy_calls=legacy_calls+1;error("legacy commit") end
+            has(plugin:_apply(), "versioned UI scope", "production direct API lacks token")
+            eq(plugin:GetVersions("Seed_Boss.lua"), captured, "phase refusal never retires first-load capture")
+            has(plugin:ApplyFromUI(), "candidate generation or bytes changed", "production stale disk refused")
+            eq(plugin:GetVersions("Seed_Boss.lua"), captured, "production refusal retains actual capture")
+            eq(captured.snapshot.revision,0,"failed production preflight does not advance revision")
+            eq(legacy_calls,0,"production never falls back to legacy route/plan/commit")
+            plugin._driver.Commit = driver_commit
             plugin:Release()
         end)
         Scanner.Scan, Scanner.ClassKeys, Binding.CaptureCurrent, Binding.IsReplay, Card.Plan =
             old_scan, old_keys, old_current, old_replay, old_plan
-        check(apply_ok, "legacy Apply fixture: " .. tostring(apply_error))
+        check(apply_ok, "versioned Apply refusal fixture: " .. tostring(apply_error))
 
         local plugin = Plugin.New()
         local hooked = engine_for("return 1,nil,3,nil", plugin)

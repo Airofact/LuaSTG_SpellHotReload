@@ -1,6 +1,7 @@
 -- Atomic CardVersions commit kernel. Trusted plans/fresh live views, not a sandbox.
 -- One owner per Plugin session; Run is for trusted post-logic UI ONLY.
--- No hooks, current-card remapping, source/body execution, restart or watcher ACK.
+-- No source/body execution, restart or watcher ACK. Production may supply one
+-- trusted refresh callback: after cache flush, BEFORE final checks/Consume only.
 -- Commit installs capture.snapshot only after all joins/cells/raw callbacks.
 -- Failure restores attempted writes (including throw-after-write) in reverse.
 -- Failed restoration poisons the session id for this module's VM lifetime.
@@ -88,6 +89,12 @@ function M.New(session_id)
         if not ok then return nil, problem end
         return gate_run(gate, callback, ...)
     end
+    -- Read-only scope proof for production preflight and restart-only UI actions.
+    function controller:Check(token)
+        local ok, problem = owner(self)
+        if not ok then return nil, problem end
+        return gate_check(gate, token, session_id)
+    end
     function controller:Poisoned() return poisoned[session_id] == true end
     function controller:Release()
         if not rawequal(self, controller) then return fail("phase", "wrong commit controller") end
@@ -98,9 +105,12 @@ function M.New(session_id)
         return true
     end
 
-    function controller:Commit(token, selection, capture, live)
+    function controller:Commit(token, selection, capture, live, refresh)
         local ok, problem = owner(self)
         if not ok then return nil, problem end
+        if refresh ~= nil and type(refresh) ~= "function" then
+            return fail("unsupported", "trusted live refresh callback required")
+        end
         local file = plain(live) and plain(live.entry) and rawget(live.entry, "file") or nil
         if type(file) ~= "string" then file = nil end
         local function phase_check()
@@ -125,7 +135,14 @@ function M.New(session_id)
                 local flushed, ferr = invalidate()
                 if not flushed then return fail("capability", type(ferr)=="string" and ferr or "cache invalidation failed", file) end
             end
-            -- Recheck AFTER flush, before Consume: no user callback follows.
+            -- Disk/generation/binding may change during compilation or flush.
+            -- Allocate/read now, never after final Guard or token consumption.
+            if refresh then
+                local fresh, ferr = refresh()
+                if not fresh then return nil, ferr end
+                live = fresh
+            end
+            -- Recheck AFTER flush/refresh, before Consume: no user callback follows.
             if debug.getupvalue ~= get or debug.setupvalue ~= set
                 or debug.upvaluejoin ~= join or debug.upvalueid ~= id then
                 return fail("capability", "debug APIs changed during preparation", file)

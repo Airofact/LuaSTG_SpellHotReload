@@ -7,12 +7,11 @@
 --- implements the Apply / Retry / Dismiss / Rescan / Start-Stop Watching
 --- transactions.
 ---
---- Apply routes the candidate file and validates the live binding itself (a
---- driver run plans exactly one file and cannot tell which candidate owns the
---- current card), then hands a `Card.Plan` run to the generic `Driver`, which
---- owns the Locate -> Inject -> Commit -> Restart phase discipline. A failed
---- stage restart keeps the committed run so `Driver:Restart` can retry it
---- without recompiling.
+--- Production: complete Driver discovery -> current-root location -> actual
+--- published-unit diff/selection -> CardCommit transaction -> frozen restart.
+--- First-load entries never fall back to legacy planning/maps after refusal.
+--- Partial publication retains complete candidate bytes; no whole-file ACK.
+--- No-entry legacy callers remain isolated for historical regression fixtures.
 --------------------------------------------------------------------------------
 
 local Watcher = require("SpellHotReload.Watcher")
@@ -28,6 +27,8 @@ local Driver = require("SpellHotReload.Driver")
 local Card = require("SpellHotReload.Card")
 local LoadVersions = require("SpellHotReload.LoadVersions")
 local CardCommit = require("SpellHotReload.CardCommit")
+local Target = require("SpellHotReload.CardTarget")
+local Cards = require("SpellHotReload.CardVersions")
 local session_serial = 0
 
 local Plugin = {}
@@ -77,7 +78,11 @@ function Plugin.New()
 	if not registered then
 		self._driver_error = register_error
 	end
-	-- The committed run whose stage restart failed; Driver:Restart retries it.
+	local discovered, discovery_error = self._driver:RegisterDiscovery(Card)
+	if not discovered then self._driver_error = discovery_error end
+	self._publication_error = nil -- sticky post-commit bookkeeping refusal
+	self._restart_active = false
+	-- Committed frozen versioned target (or an isolated legacy Driver run).
 	self._pending_restart_run = nil
 	return self
 end
@@ -87,7 +92,8 @@ function Plugin:GetRegistry() return self._registry end
 function Plugin:GetAnchors() return self._anchors end
 function Plugin:GetLoad(file) return self._loads[file] end
 ---Read-only first-load capture or its sticky unavailability reason. Query never
----reads live to manufacture history. Legacy publication retires this capture.
+---reads live to manufacture history. New transactions install capture.snapshot;
+---only isolated legacy publication retires this capture.
 function Plugin:GetVersions(file)
 	if self._released then return nil, "session ended" end
 	local record = self._versions[file]
@@ -156,6 +162,7 @@ function Plugin:Release(reason)
 	self._supported = false
 	self._unsupported_reason = reason or "session ended"
 	self._pending_restart_run = nil
+	self._publication_error, self._restart_active = nil, false
 	if self._watcher then self._watcher:Release() end
 	self._watcher, self._view = nil, nil
 	self._loads, self._versions, self._session_id = {}, {}, nil
@@ -432,14 +439,14 @@ end
 
 ---Trusted post-logic Monitor layout entry only; not proof of engine phase.
 ---Whitelist actions, never accept arbitrary callbacks. Tick must not open scopes.
----Apply still uses the legacy driver until the separate versioned wiring batch.
+---The same scoped token protects production Apply and restart-only retry.
 function Plugin:_RunUIAction(action)
 	if self._released then return "session ended" end
 	if action ~= "apply" and action ~= "retry" then return "unknown UI action" end
 	if not self._commit then return "UI commit scope unavailable" end
 	local ran, result = self._commit:Run(function(token)
 		if action == "apply" then return self:Apply(token) end
-		return self:RetryRestart()
+		return self:RetryRestart(token)
 	end)
 	if not ran then
 		local message = type(result) == "table" and rawget(result, "message") or nil
@@ -463,55 +470,218 @@ function Plugin:Apply(token)
 	return result
 end
 
+local function message(err)
+    if type(err) == "string" then return err end
+    if type(err) == "table" and getmetatable(err) == nil and type(rawget(err, "message")) == "string" then
+        return rawget(err, "message")
+    end
+    return "operation refused"
+end
+
+-- Actual physical read + fresh binding, not a cached table passed as "live".
+-- Called before planning and AGAIN inside CardCommit after any cache callback.
+function Plugin:_FreshVersioned(file, candidate, capture)
+    if self._released then return nil, {code="stale", message="session ended"} end
+    if self._publication_error then return nil, {code="stale", message=self._publication_error} end
+    local ok, err = self:_CheckLoad(file)
+    if not ok then return nil, {code="stale", message=message(err)} end
+    if self:GetVersions(file) ~= capture then return nil, {code="stale", message="first-load capture changed"} end
+    if Binding.IsReplay() then return nil, {code="stale", message="replay mode not supported"} end
+    local content, rerr = self._watcher:ReadFile(file)
+    if content == nil then return nil, {code="stale", message="read: " .. message(rerr)} end
+    local current = self._store:GetCandidate(file)
+    if not current or not current.stable or current.generation ~= candidate.generation
+        or current.first_content ~= candidate.first_content or content ~= candidate.first_content then
+        return nil, {code="stale", message="candidate generation or bytes changed since snapshot"}
+    end
+    local binding, berr = Binding.CaptureCurrent()
+    if not binding then return nil, {code="stale", message="re-capture: " .. message(berr)} end
+    return {capture=capture, snapshot=capture.snapshot, entry=self._loads[file],
+        session_id=self._session_id, classes=rawget(_G,"_editor_class"), content=content,
+        binding=binding, released=self._released, poisoned=self._commit:Poisoned()}
+end
+
+-- Restart is intentionally not a commit/Match/compile/read-disk path. Missing
+-- may disable future Apply while the already-committed frozen target survives.
+function Plugin:_RestartVersioned(run)
+    if self._restart_active then return nil, "restart is already active" end
+    if self._released or not self._commit or self._commit:Poisoned()
+        or self._publication_error or run.session_id ~= self._session_id
+        or self._loads[run.file] ~= run.entry or run.entry.anchor ~= run.anchor
+        or (run.entry.reloadable ~= true and not run.entry.missing)
+        or rawget(_G,"_editor_class") ~= run.classes
+        or rawget(run.classes,run.class_key) ~= run.class
+        or rawget(run.class,"cards") ~= run.list or rawget(run.list,run.slot) ~= run.card
+        or rawget(run.card,"name") ~= run.raw_name or run.capture.snapshot ~= run.snapshot then
+        return nil, "frozen restart target or session changed; restart game"
+    end
+    if Binding.IsReplay() then return nil, "replay mode not supported" end
+    -- include_previous can consume preceding slots too. Check original complete
+    -- ownership, not merely a still-present selected card in a changed list.
+    for _, owner in ipairs(run.capture.ownership) do
+        if rawget(run.classes,owner.class_key) ~= owner.class
+            or getmetatable(owner.class) ~= nil or getmetatable(owner.list) ~= nil
+            or rawget(owner.class,"cards") ~= owner.list or #owner.list ~= #owner.slots then
+            return nil, "frozen class/list ownership changed; restart game"
+        end
+        local count = 0
+        for slot in next, owner.list do
+            if type(slot) ~= "number" or slot < 1 or slot > #owner.slots or slot ~= math.floor(slot)
+                or rawget(owner.list,slot) ~= owner.slots[slot] then
+                return nil, "frozen slot ownership changed; restart game"
+            end
+            count = count + 1
+        end
+        if count ~= #owner.slots then return nil, "frozen slot ownership changed; restart game" end
+    end
+    local unit = run.snapshot.units[run.key]
+    for name, cb in next, unit.callbacks do
+        if rawget(run.card,name) ~= cb.fn then return nil, "committed callback changed; restart game" end
+    end
+    self._restart_active = true
+    local ok, err = pcall(Binding.Restart, run.class_key, run.name, run.card, run.slot, run.include_previous)
+    self._restart_active = false
+    if not ok then return nil, message(err) end
+    return true
+end
+
+function Plugin:_ApplyVersioned(token, file, candidate, capture, discovery, initial)
+    if not self._commit then return "versioned UI scope unavailable" end
+    local scoped, scope_error = self._commit:Check(token)
+    if not scoped then return "versioned UI scope: " .. message(scope_error) end
+    if not capture then
+        local _, why = self:GetVersions(file)
+        return "first-load versions unavailable: " .. message(why) .. "; restart game"
+    end
+    local proof = {capture=capture, snapshot=capture.snapshot, entry=self._loads[file],
+        session_id=self._session_id, classes=rawget(_G,"_editor_class"), content=candidate.first_content,
+        released=self._released, poisoned=self._commit:Poisoned()}
+    local target, terr = Target.Resolve(initial,capture,proof)
+    if not target then return "locate: " .. message(terr) end
+    local live, err = self:_FreshVersioned(file,candidate,capture)
+    if not live then return "versioned preflight: " .. message(err) end
+    local checked, check_error = Target.Check(target,live.binding,capture,live)
+    if not checked then return "locate: " .. message(check_error) end
+    local location, lerr = Target.LocateDiscovery(target,discovery.snapshot,live.binding,capture,live)
+    if not location then return "locate: " .. message(lerr) end
+    local report, rerr = Cards.CompareLocated(capture.snapshot,location,live.binding,capture,live)
+    if not report then return "compare: " .. message(rerr) end
+    local selection, serr = Cards.Select(report,{target.key})
+    if not selection then return "select: " .. message(serr) end
+    -- Scalars/references allocated BEFORE commit. Constructor/name metadata is
+    -- NOT published: EXT_POS uses the genuine live name/slot, not candidate ones.
+    local run = {kind="versioned-card-restart", file=file, session_id=self._session_id,
+        entry=target.entry, anchor=target.entry.anchor, capture=capture, classes=target.classes,
+        class_key=target.class_key, class=target.class, list=target.list, card=target.card,
+        slot=target.slot, name=target.name, raw_name=rawget(target.card,"name"),
+        include_previous=target.include_previous, key=target.key}
+    local receipt, cerr = self._commit:Commit(token,selection,capture,live,function()
+        return self:_FreshVersioned(file,candidate,capture)
+    end)
+    if not receipt then return "commit: " .. message(cerr) end
+    run.snapshot = receipt.snapshot
+    self._pending_restart_run = run
+    if receipt.changed then
+        local recorded, record, record_error = pcall(self._store.RecordPartialPublication,
+            self._store,file,candidate.generation,candidate.first_content,receipt.snapshot.revision)
+        if not recorded or not record then
+            -- Do not ACK/cancel or roll back already-committed definitions.
+            -- Refuse further Apply/retry, preserve the actual capture and require
+            -- restart. Under the trusted synchronous path the record cannot go stale.
+            self._publication_error = "partial publication bookkeeping failed; restart game"
+            return "definitions committed; " .. self._publication_error .. ": " .. message(recorded and record_error or record)
+        end
+    end
+    local restarted, restart_error = self:_RestartVersioned(run)
+    if not restarted then return "definitions committed; restart failed: " .. message(restart_error) end
+    self._pending_restart_run = nil
+    return string.format("applied %s slot %d (%s): %s; candidate retained (partial file)",
+        target.class_key,target.slot,location.match,receipt.changed and "definitions committed" or "no definition changes")
+end
+
 function Plugin:_apply(token)
-	if self._released then return "session ended" end
-	if not self._activated then return "not activated" end
-	if not self._supported then return "unsupported: " .. tostring(self._unsupported_reason) end
-	if not self._sandbox_ok then return "patch capability unavailable: " .. tostring(self._sandbox_error) end
-	if self._driver_error ~= nil then return "driver: " .. tostring(self._driver_error) end
+    if self._released then return "session ended" end
+    if not self._activated then return "not activated" end
+    if not self._supported then return "unsupported: " .. tostring(self._unsupported_reason) end
+    if not self._sandbox_ok then return "patch capability unavailable: " .. tostring(self._sandbox_error) end
+    if self._driver_error ~= nil then return "driver: " .. tostring(self._driver_error) end
+    if self._publication_error then return self._publication_error end
+    if self._pending_restart_run and self._pending_restart_run.kind == "versioned-card-restart" then
+        return "definitions already committed; retry restart first"
+    end
+    local current, err = Binding.CaptureCurrent()
+    if current == nil then return "capture: " .. message(err) end
+    if Binding.IsReplay() then return "replay mode not supported" end
+    -- Freeze the initial UI choice before Match/IO can return a changed binding.
+    local names
+    if type(current.names) == "table" then
+        names = {};for i,value in ipairs(current.names) do names[i] = value end
+    end
+    current = {class_key=current.class_key,card=current.card,slot=current.slot,name=current.name,
+        mode=current.mode,names=names,include_previous=current.include_previous}
 
-	local current, err = Binding.CaptureCurrent()
-	if current == nil then return "capture: " .. tostring(err) end
-	if Binding.IsReplay() then return "replay mode not supported" end
+    local target_file, target_candidate, target_capture, target_discovery
+    for _, file in ipairs(self._store:GetCandidateFileNames()) do
+        local candidate = self._store:GetCandidate(file)
+        if candidate and candidate.stable and candidate.first_content then
+            local gate = Scanner.Scan(candidate.first_content,file)
+            if not gate.ok then log(self,"warn","apply: rejected " .. file .. ": " .. message(gate.error))
+            else
+                local entry, capture, discovery = self._loads[file]
+                local matches
+                if entry then
+                    -- Sticky load/Missing refusals remain visible even before
+                    -- entering a UI scope; this read-only gate grants no authority.
+                    local load_ok, load_error = self:_CheckLoad(file)
+                    if not load_ok then return "loaded file cannot reload: " .. message(load_error) end
+                    if not self._commit then return "versioned UI scope unavailable" end
+                    local scoped, scope_error = self._commit:Check(token)
+                    if not scoped then return "versioned UI scope: " .. message(scope_error) end
+                    capture = self:GetVersions(file)
+                    local base = capture and capture.snapshot
+                    local derr
+                    discovery, derr = self._driver:Discover(file,candidate.first_content,{
+                        session_id=self._session_id, candidate_generation=candidate.generation,
+                        loaded_source=entry.loaded_source, registry_entry=entry,
+                        base_revision=base and base.revision, published_units=base})
+                    if not discovery then return "discover: " .. message(derr) end
+                    matches = discovery.snapshot.by_key["card:" .. current.class_key] ~= nil
+                else
+                    -- No first-load entry: isolated legacy fixtures only. A
+                    -- production refusal above NEVER reaches this compatibility branch.
+                    matches = Scanner.ClassKeys(candidate.first_content)[current.class_key]
+                end
+                if matches then
+                    if target_file then return "multiple candidate files define the current class" end
+                    if not self:_LoadedSource(file) then return "loaded source unavailable; restart game" end
+                    target_file,target_candidate,target_capture,target_discovery = file,candidate,capture,discovery
+                end
+            end
+        end
+    end
+    if not target_file then return "no stable candidate defines the current class" end
+    local ok, why = self:_CheckLoad(target_file)
+    if not ok then return "loaded file cannot reload: " .. message(why) end
+    if self._loads[target_file] then
+        return self:_ApplyVersioned(token,target_file,target_candidate,target_capture,target_discovery,current)
+    end
+    if token ~= nil then
+        return "first-load entry unavailable; restart game" -- production UI never upgrades a legacy map
+    end
+    local content, rerr = self._watcher:ReadFile(target_file)
+    if not content then return "read: " .. message(rerr) end
+    local cand = self._store:GetCandidate(target_file)
+    if not cand or not cand.stable or content ~= cand.first_content then return "candidate bytes changed since snapshot" end
+    local cur2, cerr = Binding.CaptureCurrent()
+    if not cur2 then return "re-capture: " .. message(cerr) end
+    if cur2.class_key ~= current.class_key or cur2.card ~= current.card or cur2.slot ~= current.slot then
+        return "current binding changed (stale abort)"
+    end
+    return self:_ApplyLegacy(target_file,content,current)
+end
 
-	-- Route the candidates to the single file that owns the current class. This
-	-- stays at the plugin layer: a driver run plans one file and has no notion of
-	-- "which candidate defines this card".
-	local target_file
-	for _, file_name in ipairs(self._store:GetCandidateFileNames()) do
-		local cand = self._store:GetCandidate(file_name)
-		if cand and cand.stable and cand.first_content then
-			local gate = Scanner.Scan(cand.first_content, file_name)
-			if not gate.ok then
-				log(self, "warn", "apply: rejected " .. file_name .. ": " .. tostring(gate.error))
-			elseif Scanner.ClassKeys(cand.first_content)[current.class_key] then
-				if target_file then return "multiple candidate files define the current class" end
-				if not self:_LoadedSource(file_name) then
-					return "loaded source unavailable; restart game"
-				end
-				target_file = file_name
-			end
-		end
-	end
-	if not target_file then return "no stable candidate defines the current class" end
-	local load_ok, load_reason = self:_CheckLoad(target_file)
-	if not load_ok then return "loaded file cannot reload: " .. tostring(load_reason) end
-
-	-- Re-read the bytes shown in the UI and re-capture the live binding before
-	-- planning. The driver compares statement text, not the live binding, so a
-	-- card that moved under us must be caught here.
-	local content, rerr = self._watcher:ReadFile(target_file)
-	if not content then return "read: " .. tostring(rerr) end
-	local cand = self._store:GetCandidate(target_file)
-	if not cand or not cand.stable or content ~= cand.first_content then
-		return "candidate bytes changed since snapshot"
-	end
-	local cur2, cerr = Binding.CaptureCurrent()
-	if not cur2 then return "re-capture: " .. tostring(cerr) end
-	if cur2.class_key ~= current.class_key or cur2.card ~= current.card or cur2.slot ~= current.slot then
-		return "current binding changed (stale abort)"
-	end
-
+---No first-load entries only. Never a failure fallback for versioned production.
+function Plugin:_ApplyLegacy(target_file,content,current)
 	-- Locate + Inject only. Generated wiring is never executed, no callback body
 	-- runs, and the live card is untouched until Driver:Commit.
 	local request, qerr = Card.Request({
@@ -567,12 +737,23 @@ end
 
 ---Retry only the stage restart (definitions are already committed).
 ---@return string
-function Plugin:RetryRestart()
+function Plugin:RetryRestart(token)
 	if self._released then return "session ended" end
 	local run = self._pending_restart_run
 	if run == nil then
 		log(self, "warn", "retry: nothing to retry")
 		return "nothing to retry"
+	end
+	if run.kind == "versioned-card-restart" then
+		if not self._commit then return "versioned UI scope unavailable" end
+		local scoped, err = self._commit:Check(token)
+		if not scoped then return "versioned UI scope: " .. message(err) end
+		local ok, why = self:_RestartVersioned(run)
+		local result = ok and "restarted" or ("restart failed: " .. message(why))
+		if ok then self._pending_restart_run = nil end
+		self._last_result = result
+		log(self,ok and "ok" or "error",result)
+		return result
 	end
 	local report = self._driver:Restart(run)
 	if report.ok > 0 and #report.failed == 0 then
