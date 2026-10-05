@@ -1,4 +1,4 @@
---- R3 fixed-layout generated-card versions and explicit current-root planning.
+--- R3 generated-card versions and explicit current-root planning.
 --- PURE service: no source chunk/body, join, write, flush, publish or restart.
 --- Seed(functions, initial, defaults) requires a genuine FIRST-load function
 --- snapshot (revision 0) plus ALL discovered combat-card owners and all seven
@@ -6,15 +6,20 @@
 --- initial = dense { {class_key, slot, card, callbacks={name->first function}} }
 --- defaults = caller-owned standard callback identities, copied at first load.
 --- Card tables must be plain; raw slots only. Metadata/functions must be genuine
---- first capture, not live reads after setter/Apply. Production capture is NOT
---- integrated here. Callers must retain this snapshot and release all artifacts.
+--- first capture, not live reads after setter/Apply. LoadVersions owns production
+--- capture. Callers must retain this snapshot and release all artifacts.
 ---
 --- Compare(snapshot, complete_content) validates all saved raw callback identities
 --- and real capture slots/sharing (when upvalueid exists); prepares analysis
 --- closures by EACH callback definition point, never constructor-time locals.
---- Fixed initial class/card-list/constructor/perform layout is required. SC Debug
---- shifts, rename/reorder and general remapping remain a later integration slice;
---- legacy Select still supports them. New/deleted callbacks (except required init)
+--- Compare / CompareDiscovery require fixed first-load layout. CompareLocated
+--- consumes ONE checked CardTarget location with fresh binding/capture/live.
+--- Other changed-layout owners remain unmapped and pending, never guessed by key.
+--- Absent candidate classes yield source tombstones, NOT live deletions; unclaimed
+--- candidate cards stay unowned/pending_sources, NOT automatically seeded owners.
+--- Only the located current root is selectable in a located report. All published
+--- callbacks/captures are still checked, including absent/unmapped consumers.
+--- New/deleted callbacks (except required init)
 --- are modeled; deleted callbacks revert to the saved standard default identity.
 --- No unknown RHS, generated wiring, alias initialization or state replay occurs.
 ---
@@ -45,6 +50,7 @@ local Source = require("SpellHotReload.FunctionPlan")
 local Card = require("SpellHotReload.Card")
 local Compose = require("SpellHotReload.Compose")
 local Lexer = require("SpellHotReload.Lexer")
+local Target = require("SpellHotReload.CardTarget")
 local M = { Kind = "SpellHotReload.CardVersions", Version = 1 }
 local CALLBACKS = { "before", "init", "frame", "render", "beforedel", "del", "after" }
 local allowed = {}
@@ -314,7 +320,7 @@ function M.Seed(functions, initial, defaults)
 end
 
 ---Full candidate report; compares each actually published callback signature.
-local function compare(state, content, snapshot)
+local function compare(state, content, snapshot, location)
     if not valid(state) then return fail("unsupported", "a valid card snapshot is required", state) end
     if snapshot ~= nil then
         local common = plain(snapshot) and snapshot.common or nil
@@ -331,17 +337,55 @@ local function compare(state, content, snapshot)
     if not function_diff then return nil, ferr end
     local discovery, derr = discover(content, state, snapshot)
     if not discovery then return nil, derr end
-    if not fixed_layout(state.layout, discovery.layout) or not same(state.order, discovery.order) then
+    if not location and (not fixed_layout(state.layout, discovery.layout)
+        or not same(state.order, discovery.order)) then
         return fail("ambiguous", "fixed first-load card layout changed; restart/remapping required", state)
     end
     local report = { kind = M.Kind .. ".Diff", version = M.Version, base = state,
         content = content, discovery = snapshot, functions = function_diff, by_key = {}, changed = {},
         affected = {}, read_set = {}, capture_reads = {} }
+    local claimed = {}
+    if location then
+        report.location, report.unmapped, report.unowned, report.tombstones = location, {}, {}, {}
+    end
     local changed_functions = {}
     for _, name in ipairs(function_diff.affected) do changed_functions[name] = true end
     for _, key in ipairs(state.order) do
-        local old, descriptor = state.units[key], discovery.descriptors[key].descriptor
+        local old, source = state.units[key], discovery.descriptors[key]
+        if location then
+            local before, after = state.layout[old.class_key], discovery.layout[old.class_key]
+            -- Snapshot slot keys are lookup coordinates, not cross-version identity.
+            if key == location.key then
+                source = discovery.descriptors[key_of(old.class_key, location.candidate_slot)]
+                if not source or source.descriptor ~= location.descriptor then
+                    return fail("ownership", "located descriptor disagrees with full discovery", state, key)
+                end
+            elseif not after or not fixed_layout({[old.class_key]=before}, {[old.class_key]=after}) then
+                source = nil
+            end
+        end
+        local descriptor = source and source.descriptor
         local item = { key = key, previous = old, callbacks = {}, changed = false }
+        if location then
+            item.source_slot = source and source.slot
+            item.source_key = source and ("card:" .. source.class_key)
+            if source then
+                local source_key = key_of(source.class_key, source.slot)
+                if claimed[source_key] then
+                    return fail("ownership", "candidate card has multiple published owners", state, key)
+                end
+                claimed[source_key] = key
+            else
+                item.pending = true
+                item.source_status = discovery.layout[old.class_key] and "unmapped" or "source-absent"
+                report.unmapped[#report.unmapped + 1] = key
+                if item.source_status == "source-absent" then
+                    report.tombstones[#report.tombstones + 1] = { key=key, previous=old,
+                        definition_version=old.definition_version, action="restart-required",
+                        reason="class absent from candidate; live owner retained" }
+                end
+            end
+        end
         for _, name in ipairs(CALLBACKS) do
             local previous = old.callbacks[name]
             if rawget(old.card, name) ~= previous.fn then
@@ -351,8 +395,14 @@ local function compare(state, content, snapshot)
             local actual, aerr = captures(previous, state.entry, state, key)
             if not actual then return nil, aerr end
             for _, read in ipairs(actual) do report.capture_reads[#report.capture_reads + 1] = read end
-            local candidate, cerr = prepare(discovery, descriptor, name, state.entry, state.defaults, state, key)
-            if not candidate then return nil, cerr end
+            local candidate, cerr
+            if descriptor then
+                candidate, cerr = prepare(discovery, descriptor, name, state.entry, state.defaults, state, key)
+                if not candidate then return nil, cerr end
+            else
+                -- Keep real published captures for impact/observations; no guessed Inject.
+                candidate = copy(previous)
+            end
             if previous.body and candidate.body and not same(previous.visible, candidate.visible) then
                 return fail("unsupported", "callback definition-point binding changed", state, key)
             end
@@ -369,10 +419,21 @@ local function compare(state, content, snapshot)
                 end
             end
         end
-        item.action = item.changed and "compile-publish" or (impacted and "shared-impact" or "keep-definition")
+        item.action = item.source_status or (item.changed and "compile-publish"
+            or (impacted and "shared-impact" or "keep-definition"))
         report.by_key[key] = item
         if item.changed then report.changed[#report.changed + 1] = key end
         if impacted then report.affected[#report.affected + 1] = key end
+    end
+    if location then
+        for _, source_key in ipairs(discovery.order) do
+            if not claimed[source_key] then
+                local source = discovery.descriptors[source_key]
+                report.unowned[#report.unowned + 1] = { source_key="card:" .. source.class_key,
+                    candidate_slot=source.slot, descriptor=source.descriptor,
+                    action="restart-required", reason="no proven captured owner" }
+            end
+        end
     end
     return report
 end
@@ -387,6 +448,9 @@ function M.Select(report, keys)
     for _, key in ipairs(keys) do
         if type(key) ~= "string" or not report.by_key[key] or selected[key] then
             return fail("unsupported", "unknown or duplicate current card", report.base, key)
+        end
+        if report.location and (key ~= report.location.key or report.by_key[key].pending) then
+            return fail("ambiguous", "only the proven current root may be selected", report.base, key)
         end
         selected[key] = true
         local item = report.by_key[key]
@@ -413,6 +477,11 @@ function M.Select(report, keys)
         joins = copy(functions.joins), writes = copy(functions.writes),
         read_set = copy(functions.read_set), capture_reads = copy(functions.capture_reads),
         restarts = {} }
+    if report.location then
+        result.location = report.location
+        result.pending_sources = copy(report.unowned)
+        result.tombstones = copy(report.tombstones)
+    end
     for _, read in ipairs(report.read_set) do result.read_set[#result.read_set + 1] = read end
     for _, read in ipairs(report.capture_reads) do result.capture_reads[#result.capture_reads + 1] = read end
     for _, key in ipairs(report.base.order) do
@@ -431,7 +500,7 @@ function M.Select(report, keys)
                     }
                 end
             end
-        elseif item.changed then result.pending[#result.pending + 1] = key end
+        elseif item.changed or item.pending then result.pending[#result.pending + 1] = key end
     end
     -- Compute actual observations under this selection, not pending graph edges.
     local next_functions, nerr = Functions.Next(functions)
@@ -504,6 +573,18 @@ function M.CompareDiscovery(state, snapshot)
         return fail("stale", "discovery published baseline disagrees", state)
     end
     return compare(state, snapshot.common.content, snapshot)
+end
+
+---Explicit new entry: never overload legacy Compare or infer a location.
+---Fresh reads are supplied by trusted orchestration; they are not an I/O proof.
+function M.CompareLocated(state, location, binding, capture, live)
+    if not valid(state) then return fail("unsupported", "a valid card snapshot is required", state) end
+    local checked, err = Target.CheckDiscovery(location, binding, capture, live)
+    if not checked then return nil, err end
+    if location.target.snapshot ~= state then
+        return fail("stale", "located publication baseline disagrees", state)
+    end
+    return compare(state, location.content, location.discovery, location)
 end
 
 return M

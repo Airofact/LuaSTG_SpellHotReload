@@ -11,8 +11,12 @@
 --- immediately transact without yielding/calling user code between check/write.
 --- Phase lifetime, current-card remapping, journal/rollback/poison, version
 --- installation and production Plugin/Driver wiring are separate R4 work.
+--- Located selections additionally recheck their CardTarget source/current-root
+--- proof with live.binding freshly read by trusted orchestration, including after
+--- cache invalidation. Legacy fixed-layout selections need no binding.
 --- Inputs are read-only by contract, not a hostile-plan sandbox. upvalueid is
 --- optional: absent it, physical external rejoin cannot be proved, not probed.
+local Target = require("SpellHotReload.CardTarget")
 local M = { Kind = "SpellHotReload.CommitCheck", Version = 1 }
 local callbacks = { before=true, init=true, frame=true, render=true,
     beforedel=true, del=true, after=true }
@@ -57,6 +61,10 @@ local function check(selection, capture, live)
     end
     if type(selection.content) ~= "string" or live.content ~= selection.content then
         return fail("stale", "candidate bytes changed", file)
+    end
+    if selection.location ~= nil then
+        local checked, err = Target.CheckDiscovery(selection.location, live.binding, capture, live)
+        if not checked then return fail(err.code, err.message, file, selection.location.key) end
     end
     if type(debug) ~= "table" or type(debug.getupvalue) ~= "function"
         or type(debug.setupvalue) ~= "function" or type(debug.upvaluejoin) ~= "function" then
