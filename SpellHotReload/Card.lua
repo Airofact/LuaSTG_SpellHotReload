@@ -288,7 +288,7 @@ function Card.Match(analysis, common)
     end
     local units, claims = {}, {}
     for _, class in ipairs(classes) do
-        local ok, layout, perr = pcall(CardCallbacks.Read, content, class.class_key)
+        local ok, layout, perr = pcall(CardCallbacks.Read, content, class.class_key, analysis)
         if not ok then
             return nil, { code = "unsupported",
                 message = "card parse failed: " .. tostring(layout),

@@ -110,10 +110,23 @@ end
 -- actually builds (live index) instead of the textual order of every
 -- registration. Return the entire layout so insertion/removal/reordering is
 -- rejected.
-function M.Read(content, class_key)
-    local chunk, err = compile(content:gsub("^\239\187\191", ""), "@SpellHotReload.card_check")
+-- Optional shared TopLevelIR analysis belongs to these exact bytes. Tokens are
+-- read-only/trusted analysis, not a parser sandbox. Legacy two-arg reads re-lex.
+function M.Read(content, class_key, analysis)
+    local source = content:gsub("^\239\187\191", "")
+    local offset = 0
+    if analysis ~= nil then
+        local expected = #content - #source
+        if type(analysis) ~= "table" or getmetatable(analysis) ~= nil
+            or analysis.source ~= source or analysis.source_offset ~= expected
+            or type(analysis.tokens) ~= "table" or getmetatable(analysis.tokens) ~= nil then
+            return nil, "shared analysis does not match card source"
+        end
+        offset = expected
+    end
+    local chunk, err = compile(source, "@SpellHotReload.card_check")
     if not chunk then return nil, "syntax: " .. tostring(err) end
-    local tokens = Lexer.Tokenize(content)
+    local tokens = analysis and analysis.tokens or Lexer.Tokenize(content)
     local layout, locals, pending, held = {}, {}, nil, nil
     local found = false
     local i = 1
@@ -186,16 +199,16 @@ function M.Read(content, class_key)
                         if tokens[j].value == "end" and tokens[j].depth == 1 then last = j; break end
                     end
                     if not last then return nil, "unclosed card callback" end
-                    local params = tokens[paren].pos
-                    local tail = content:sub(params + 1, tokens[last].pos + 2)
+                    local params = tokens[paren].pos + offset
+                    local tail = content:sub(params + 1, tokens[last].pos + offset + 2)
                     if method then
                         local empty = tokens[paren + 1].value == ")"
                         tail = "self" .. (empty and "" or ",") .. tail
                     end
                     pending.callbacks[name] = "function(" .. tail
                     -- Byte offsets refer to the original input, including BOM.
-                    pending.callback_points[name] = { first = t.pos,
-                        last = tokens[last].pos + 2 }
+                    pending.callback_points[name] = { first = t.pos + offset,
+                        last = tokens[last].pos + offset + 2 }
                     i = last
                 elseif name == "perform" and matches(tokens, i + 3, "=") then
                     pending.perform = tokens[i + 4].value

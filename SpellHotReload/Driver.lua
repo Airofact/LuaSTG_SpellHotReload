@@ -20,6 +20,8 @@
 
 local LoadCapture = require("SpellHotReload.LoadCapture")
 local NodeRegistry = require("SpellHotReload.NodeRegistry")
+local FileMatch = require("SpellHotReload.FileMatch")
+local UnitIndex = require("SpellHotReload.UnitIndex")
 
 local Driver = {}
 Driver.__index = Driver
@@ -82,6 +84,94 @@ end
 ---@return string? reason
 function Driver:Register(carrier, adapter)
     return self.adapters:Register(carrier, adapter)
+end
+
+-- Discovery and explicit selection are the versioned pipeline's read-only
+-- front door. These artifacts are NOT legacy Plan runs and cannot authorize
+-- Commit/Restart. No candidate chunk, adapter execution hook or live read runs.
+local DISCOVERY_KIND = "SpellHotReload.Driver.Discovery"
+local SELECTION_KIND = "SpellHotReload.Driver.DiscoverySelection"
+local function plain(value)
+    return type(value) == "table" and getmetatable(value) == nil
+end
+local function discovery_error(phase, message, file, key)
+    return nil, { phase = phase, code = "unsupported", message = message,
+        file = file, unit_key = key }
+end
+
+---Explicit registration remains independent of legacy carrier routing.
+function Driver:RegisterDiscovery(adapter)
+    return self.adapters:RegisterDiscovery(adapter)
+end
+
+---Analyze the COMPLETE file through all registered discovery adapters, then
+---build the normalized/random-access index. supplied is copied, not mutated.
+---All units (including unchanged/unselected ones) and adapter contexts survive.
+---No cross-version identity, impact or publication decision is inferred here.
+function Driver:Discover(file, content, supplied, options)
+    if type(file) ~= "string" or file == "" or type(content) ~= "string"
+        or (supplied ~= nil and not plain(supplied)) then
+        return discovery_error("analyze", "file/content and plain common required")
+    end
+    if supplied and supplied.file ~= nil and supplied.file ~= file then
+        return discovery_error("analyze", "common file disagrees with requested file", file)
+    end
+    local common = {}
+    for key, value in next, supplied or {} do common[key] = value end
+    common.file = file
+    local snapshot, err = FileMatch.Discover(self.adapters, content, common, options)
+    if not snapshot then return nil, err end
+    local index, reason = UnitIndex.Build(snapshot)
+    if not index then
+        return discovery_error("match", reason, file)
+    end
+    return { kind = DISCOVERY_KIND, version = 1, owner = self, file = file,
+        content = content, snapshot = snapshot, index = index }
+end
+
+---Explicit keys belong to ONE discovery snapshot, never to another revision.
+---Validate the whole dense request before returning any selected entries.
+---Return source-ordered entries with their original adapter/common/unit contexts;
+---never re-Match, call Locate/Inject, use For/Fallback or filter the full snapshot.
+---Artifacts are caller-owned and read-only by contract; drop them on session end.
+function Driver:SelectDiscovery(discovery, keys)
+    if not plain(discovery) or discovery.kind ~= DISCOVERY_KIND
+        or discovery.version ~= 1 or discovery.owner ~= self
+        or not plain(discovery.snapshot) or not plain(discovery.index)
+        or discovery.index.snapshot ~= discovery.snapshot
+        or discovery.index.kind ~= "SpellHotReload.UnitIndex"
+        or discovery.index.version ~= 1 or not plain(discovery.snapshot.common)
+        or discovery.snapshot.common.file ~= discovery.file
+        or discovery.snapshot.common.content ~= discovery.content
+        or not plain(keys) then
+        return discovery_error("locate", "owned discovery and dense explicit keys required")
+    end
+    local count, maximum = 0, 0
+    for key in next, keys do
+        if type(key) ~= "number" or key < 1 or key == math.huge
+            or key ~= math.floor(key) then
+            return discovery_error("locate", "dense explicit keys required", discovery.file)
+        end
+        count, maximum = count + 1, math.max(maximum, key)
+    end
+    if count ~= maximum then
+        return discovery_error("locate", "dense explicit keys required", discovery.file)
+    end
+    local selected = {}
+    for _, key in ipairs(keys) do
+        if type(key) ~= "string" or key == "" or selected[key]
+            or discovery.index.by_key[key] == nil then
+            return discovery_error("locate", "unknown or duplicate unit key", discovery.file,
+                type(key) == "string" and key or nil)
+        end
+        selected[key] = true
+    end
+    local entries = {}
+    for _, record in ipairs(discovery.index.list) do
+        if selected[record.key] then entries[#entries + 1] = record.entry end
+    end
+    return { kind = SELECTION_KIND, version = 1, discovery = discovery,
+        entries = entries, file = discovery.file, content = discovery.content }
 end
 
 ---Analyze, locate and inject one file. No live object is touched.
