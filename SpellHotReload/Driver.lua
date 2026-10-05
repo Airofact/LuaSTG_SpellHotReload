@@ -174,6 +174,60 @@ function Driver:SelectDiscovery(discovery, keys)
         entries = entries, file = discovery.file, content = discovery.content }
 end
 
+---Read-only versioned preparation over explicit discovered keys, in source order.
+---Optional contexts are per-call adapter extensions, never a replacement for the
+---snapshot's shared common/file/unit identities. Validate ALL inputs before hooks.
+---No Match replay, legacy For/Plan, mutation, transaction, publication or restart.
+---Failure returns the original adapter error plus its hook phase (third result);
+---throws remain throws so callers retain their existing protected boundaries.
+function Driver:PrepareDiscovery(discovery, keys, contexts)
+    if getmetatable(self) ~= Driver or (contexts ~= nil and not plain(contexts)) then
+        return discovery_error("locate", "owned driver and plain context extensions required")
+    end
+    local selected, err = self:SelectDiscovery(discovery, keys)
+    if not selected then return nil, err, "locate" end
+    local requested, prepared = {}, {}
+    for _, entry in ipairs(selected.entries) do
+        if not plain(entry) or not plain(entry.unit) or type(entry.unit.key) ~= "string" then
+            return discovery_error("locate", "discovered entry/unit required", discovery.file)
+        end
+        requested[entry.unit.key] = true
+    end
+    for key in next, contexts or {} do
+        if not requested[key] then
+            return discovery_error("locate", "context for unselected unit", discovery.file,
+                type(key) == "string" and key or nil)
+        end
+    end
+    local Adapter = require("SpellHotReload.Adapter")
+    for _, entry in ipairs(selected.entries) do
+        local unit, base = entry.unit, entry.context
+        local context = base
+        if contexts and rawget(contexts, unit.key) ~= nil then context = rawget(contexts, unit.key) end
+        local valid = Adapter.ValidateDiscovery(entry.adapter)
+        if not valid or discovery.snapshot.by_key[unit.key] ~= entry
+            or not plain(base) or not plain(base.adapter)
+            or not plain(context) or not plain(context.adapter)
+            or context.common ~= discovery.snapshot.common or context.common ~= base.common
+            or context.adapter.file ~= base.adapter.file
+            or context.adapter.unit ~= unit.context or base.adapter.unit ~= unit.context
+            or base.adapter.file ~= discovery.snapshot.adapter_contexts[rawget(entry.adapter, "Id")] then
+            return discovery_error("locate", "discovered adapter/unit/context ownership changed",
+                discovery.file, unit.key)
+        end
+        prepared[#prepared+1] = {entry=entry, adapter=entry.adapter, unit=unit, context=context}
+    end
+    for _, record in ipairs(prepared) do
+        local handle, reason = rawget(record.adapter, "Locate")(record.unit, record.context)
+        if not handle then return nil, reason, "locate" end
+        local plan, why = rawget(record.adapter, "Inject")(handle, record.unit, record.context)
+        if not plan then return nil, why, "inject" end
+        record.handle, record.plan = handle, plan
+    end
+    return {kind="SpellHotReload.Driver.PreparedDiscovery", version=1, owner=self,
+        discovery=discovery, file=discovery.file, content=discovery.content, entries=prepared}
+end
+
 ---Analyze, locate and inject one file. No live object is touched.
 ---@param file string
 ---@param content string

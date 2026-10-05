@@ -43,10 +43,13 @@ function M.run()
     local proof={}
     local live={binding=initial,classes=classes,entry=entry,snapshot=snapshot,session_id=target.session_id}
     local common={file="Runtime_Boss.lua",content="synthetic candidate"}
-    local unit={key="card:K",carrier="card",context={class_key="K"}}
-    local discovered={unit=unit,adapter=Card,context={common=common,
-        adapter={file={carrier="card"},unit=unit.context}}}
-    local discovery={snapshot={common=common,by_key={["card:K"]=discovered}}}
+    local Driver=require("SpellHotReload.Driver")
+    local driver=Driver.New();assert(driver:RegisterDiscovery(Card))
+    local discovery=assert(driver:Discover(common.file,
+        "_editor_class['K'].cards={}\n_tmp_sc=boss.card.New('Live',1,2,3,4)\nfunction _tmp_sc:init() end\ntable.insert(_editor_class['K'].cards,_tmp_sc)"))
+    common=discovery.snapshot.common
+    local discovered=discovery.snapshot.by_key["card:K"]
+    local unit=discovered.unit
     local location,report,selection={match="identity",target=target,
         discovery=discovery.snapshot,entry=discovered},{},{}
     local model={selected={key}}

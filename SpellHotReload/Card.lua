@@ -591,16 +591,15 @@ end
 function Card.PrepareVersioned(capture, discovery, initial, proof, refresh)
     local unit, context = Card.RuntimeContext(capture, discovery, initial, proof, refresh)
     if not unit then return nil, "locate: " .. message(context) end
-    local handle, err = Card.Locate(unit, context)
-    if not handle then
+    local Driver = require("SpellHotReload.Driver")
+    local prepared, err, phase = Driver.PrepareDiscovery(discovery.owner, discovery,
+        {unit.key}, {[unit.key]=context})
+    if not prepared then
         local stage = type(err)=="table" and getmetatable(err)==nil and rawget(err,"stage") or nil
-        return nil, (type(stage)=="string" and stage or "locate") .. ": " .. message(err)
+        return nil, (type(stage)=="string" and stage or phase or "locate") .. ": " .. message(err)
     end
-    local selection, serr = Card.Inject(handle, unit, context)
-    if not selection then
-        local stage = type(serr)=="table" and getmetatable(serr)==nil and rawget(serr,"stage") or nil
-        return nil, (type(stage)=="string" and stage or "inject") .. ": " .. message(serr)
-    end
+    local record = prepared.entries[1]
+    local handle, selection = record.handle, record.plan
     return {target=handle.target, live=handle.live, location=handle.location, selection=selection,
         handle=handle, context=context}
 end
