@@ -505,10 +505,13 @@ function Plugin:_RestartVersioned(run)
         publication_error=self._publication_error, session_id=self._session_id,
         entry=self._loads[run.file], classes=rawget(_G,"_editor_class")}
     self._restart_active = true
-    local called, ok, err = pcall(Card.RestartVersioned,run,live)
+    local context = {common={file=run.file, session_id=live.session_id,
+        registry_entry=live.entry, published_units=run.snapshot}, adapter={restart=live}}
+    local called, ok, err = pcall(Card.Restart,run,nil,context)
     self._restart_active = false
     if not called then error(ok,0) end
-    return ok, err
+    if not ok then return nil, message(err) end
+    return true
 end
 
 -- One pure preparation path for Apply and explicit inspection. No commit scope
@@ -536,10 +539,18 @@ function Plugin:_ApplyVersioned(token, file, candidate, capture, discovery, init
     -- Scalars/references allocated BEFORE commit. Constructor/name metadata is
     -- NOT published: EXT_POS uses the genuine live name/slot, not candidate ones.
     local run = Card.FreezeRestart(target,capture)
-    local receipt, cerr = self._commit:Commit(token,selection,capture,live,function()
-        return self:_FreshVersioned(file,candidate,capture)
-    end)
-    if not receipt then return "commit: " .. message(cerr) end
+    local handle, context, controller = prepared.handle, prepared.context, self._commit
+    -- One-call writer, not an exposed controller/token or a general action API.
+    -- Bind all arguments before entering the adapter; the kernel owns every
+    -- recoverable operation and calls refresh only before final Guard/Consume.
+    context.adapter.transaction = function(h, plan, ctx)
+        if h~=handle or plan~=selection or ctx~=context then
+            return nil, {phase="commit",code="ownership",message="foreign Card transaction input",file=file}
+        end
+        return controller:Commit(token,selection,capture,live,handle.refresh)
+    end
+    local committed, cerr, receipt = Card.Commit(handle,selection,context)
+    if not committed then return "commit: " .. message(cerr) end
     run.snapshot = receipt.snapshot
     self._pending_restart_run = run
     if receipt.changed then

@@ -2,16 +2,17 @@
 --- SpellHotReload.Card
 ---
 --- Versioned runtime helpers below own current-root planning, frozen restart
---- and card-binding inspection rules. Locate/Inject also accept an explicit
---- versioned unit/context; legacy Commit/Restart refuse that path so it cannot
---- bypass the atomic transaction or committed frozen restart handoff.
+--- and card-binding inspection rules. Versioned Locate/Inject/Commit consume
+--- an explicit unit/context and caller-bound atomic transaction; Restart consumes
+--- only a committed frozen handoff with a fresh lifecycle context.
+--- Legacy entry points stay isolated and cannot bypass those requirements.
 ---
---- The card adapter: presents the card reload pipeline (CardCallbacks +
+--- The legacy card adapter presents the card reload pipeline (CardCallbacks +
 --- PracticeBinding) through the generic four-hook contract, so a card commit
 --- travels the same Locate -> Inject -> Commit -> Restart path the driver
 --- enforces for every other carrier.
 ---
---- Hook mapping:
+--- Hook mapping (legacy):
 ---   Locate  -> CardCallbacks.Select(original, candidate, class_key, binding)
 ---   Inject  -> CardCallbacks.Build(descriptor, live_card, candidate, registry)
 ---   Commit  -> CardCallbacks.Publish(live_card, plan)           (live mutation)
@@ -62,7 +63,7 @@ Card.carriers = { card = true }
 
 local RUNTIME_KIND = "SpellHotReload.Card.RuntimeContext"
 local HANDLE_KIND = "SpellHotReload.Card.VersionedHandle"
-local locate_versioned, inject_versioned
+local locate_versioned, inject_versioned, commit_versioned, restart_versioned
 local function runtime_of(context)
     local adapter = type(context) == "table" and rawget(context, "adapter") or nil
     if type(adapter) == "table" then return rawget(adapter, "runtime") end
@@ -462,16 +463,15 @@ function Card.Inject(handle, request, env)
     return plan, handle.match
 end
 
----The single live mutation: publish the rebuilt callbacks onto the live card and
----record the restart context. The stage restart itself stays out of Commit so a
----failed restart can be retried without recompiling (see Card.Restart).
+---Versioned publication delegates only to the caller-bound atomic writer.
+---Legacy publication remains isolated. Neither path restarts from Commit.
 ---@return boolean
----@return string? reason
+---@return string|table? reason
+---@return table? receipt -- versioned success only
 function Card.Commit(handle, plan, env)
     if runtime_of(env) ~= nil or versioned_handle(handle)
         or (type(plan) == "table" and rawget(plan, "kind") == "SpellHotReload.CardVersions.Selection") then
-        return versioned_refusal(handle, env, "commit",
-            "versioned publication requires the atomic transaction")
+        return commit_versioned(handle, plan, env)
     end
     if type(handle) ~= "table" or type(plan) ~= "table" then
         return false, "Commit expects a card handle and plan"
@@ -499,6 +499,11 @@ end
 ---@return boolean
 ---@return string? reason
 function Card.Restart(handle, plan, env)
+    if (type(handle) == "table" and rawget(handle, "kind") == "versioned-card-restart")
+        or (type(env) == "table" and type(rawget(env, "adapter")) == "table"
+            and rawget(rawget(env, "adapter"), "restart") ~= nil) then
+        return restart_versioned(handle, plan, env)
+    end
     if runtime_of(env) ~= nil or versioned_handle(handle)
         or (type(plan) == "table" and rawget(plan, "kind") == "SpellHotReload.CardVersions.Selection") then
         return versioned_refusal(handle, env, "restart",
@@ -596,7 +601,8 @@ function Card.PrepareVersioned(capture, discovery, initial, proof, refresh)
         local stage = type(serr)=="table" and getmetatable(serr)==nil and rawget(serr,"stage") or nil
         return nil, (type(stage)=="string" and stage or "inject") .. ": " .. message(serr)
     end
-    return {target=handle.target, live=handle.live, location=handle.location, selection=selection}
+    return {target=handle.target, live=handle.live, location=handle.location, selection=selection,
+        handle=handle, context=context}
 end
 
 
@@ -978,8 +984,8 @@ locate_versioned = function(unit, context)
         target=target, live=live, location=location}
 end
 
-inject_versioned = function(handle, unit, context)
-    local runtime, entry = runtime_context(unit, context, "inject")
+local function matching_handle(handle, unit, context, phase)
+    local runtime, entry = runtime_context(unit, context, phase)
     if not runtime then return nil, entry end
     local file = context.common.file
     if not plain(handle) or handle.kind~=HANDLE_KIND or handle.unit~=unit or handle.context~=context
@@ -989,15 +995,80 @@ inject_versioned = function(handle, unit, context)
         or not plain(handle.live) or not plain(handle.target) or not plain(handle.location)
         or handle.location.target~=handle.target or handle.location.discovery~=handle.discovery
         or handle.location.entry~=entry then
-        return stage_error("inject", "inject", "matching versioned Card handle required", file, unit.key)
+        return stage_error(phase, phase, "matching versioned Card handle required", file, unit.key)
     end
+    return runtime, entry
+end
+
+inject_versioned = function(handle, unit, context)
+    local runtime, err = matching_handle(handle, unit, context, "inject")
+    if not runtime then return nil, err end
+    local file = context.common.file
     local Cards = require("SpellHotReload.CardVersions")
     local report, rerr = Cards.CompareLocated(runtime.snapshot, handle.location,
         handle.live.binding, runtime.capture, handle.live)
     if not report then return stage_error("inject", "compare", rerr, file, unit.key) end
     local selection, serr = Cards.Select(report, {handle.target.key})
     if not selection then return stage_error("inject", "select", serr, file, unit.key) end
+    handle.selection = selection -- per-call output identity; not a module cache
     return selection
+end
+
+---The adapter consumes a caller-bound transaction, never publishes directly.
+---The writer accepts only this exact handle/selection/context. It delegates to
+---the existing atomic kernel; phase/cache/Guard/seal/rollback/poison remain there.
+---Success preserves the boolean/error contract; result 3 is the trusted receipt.
+commit_versioned = function(handle, plan, context)
+    local unit = plain(handle) and rawget(handle, "unit") or nil
+    local runtime, err = matching_handle(handle, unit, context, "commit")
+    if not runtime then return false, err end
+    if not plain(plan) or plan.kind~="SpellHotReload.CardVersions.Selection"
+        or plan~=handle.selection or plan.base~=runtime.snapshot
+        or plan.discovery~=handle.discovery or plan.location~=handle.location
+        or plan.entry~=runtime.snapshot.entry or plan.anchor~=runtime.snapshot.anchor
+        or plan.session_id~=runtime.snapshot.session_id then
+        local _, why = stage_error("commit", "commit", "matching injected Card selection required",
+            context.common.file, unit.key)
+        return false, why
+    end
+    local transaction = rawget(context.adapter, "transaction")
+    if type(transaction)~="function" then
+        return versioned_refusal(handle, context, "commit",
+            "versioned publication requires the atomic transaction")
+    end
+    local receipt, problem = transaction(handle, plan, context)
+    if not receipt then return false, problem end
+    return true, nil, receipt
+end
+
+---Retry consumes only the frozen run and an explicit current lifecycle view.
+---No candidate unit/selection/discovery/compiler is retained in the handoff.
+restart_versioned = function(run, plan, context)
+    local common = plain(context) and rawget(context, "common") or nil
+    local adapter = plain(context) and rawget(context, "adapter") or nil
+    local live = plain(adapter) and rawget(adapter, "restart") or nil
+    local file = plain(run) and rawget(run, "file") or nil
+    local function refuse(detail)
+        local _, err = stage_error("restart", "restart", detail, file)
+        return false, err
+    end
+    if not plain(run) or run.kind~="versioned-card-restart" or plan~=nil
+        or not plain(common) or not plain(adapter) or not plain(live)
+        or runtime_of(context)~=nil or not plain(run.entry) or not plain(run.capture)
+        or not plain(run.snapshot) or not plain(run.snapshot.units)
+        or not plain(rawget(run.snapshot.units, run.key))
+        or not plain(rawget(run.snapshot.units, run.key).callbacks)
+        or not plain(run.classes) or not plain(run.class) or not plain(run.list) or not plain(run.card)
+        or not plain(run.capture.ownership) then
+        return refuse("committed frozen Card restart and explicit lifecycle context required")
+    end
+    if common.file~=file or common.session_id~=live.session_id
+        or common.registry_entry~=live.entry or common.published_units~=run.snapshot then
+        return refuse("frozen restart context changed; restart game")
+    end
+    local ok, err = Card.RestartVersioned(run, live)
+    if not ok then return refuse(err) end
+    return true
 end
 
 return Card

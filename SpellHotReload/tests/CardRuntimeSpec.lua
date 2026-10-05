@@ -223,14 +223,17 @@ function M.run()
     package.loaded[names[3]],package.loaded[names[4]]=nil,nil
     local saved_classes=rawget(_G,"_editor_class")
     rawset(_G,"_editor_class",classes)
-    local methods={"FreezeBinding","PrepareVersioned","FreezeRestart","RestartVersioned","InspectPrepared","InspectionBindingMatches"}
+    local methods={"FreezeBinding","PrepareVersioned","FreezeRestart","Commit","Restart","RestartVersioned","InspectPrepared","InspectionBindingMatches"}
     local originals,counts={},{}
     for _,n in ipairs(methods) do originals[n],counts[n]=Card[n],0 end
     local replay,capture_current=Binding.IsReplay,Binding.CaptureCurrent
     local wired,werr=pcall(function()
         local Plugin=require("SpellHotReload.Plugin")
         local candidate={stable=true,generation=7,first_content="synthetic candidate"}
-        local prepared={target=target,live=live,location=location,selection=selection}
+        local context={adapter={}}
+        local handle={refresh=function() return live end}
+        local prepared={target=target,live=live,location=location,selection=selection,
+            handle=handle,context=context}
         local p=setmetatable({_loads={[target.file]=entry},_session_id=target.session_id,
             _candidate_inspections={},_activated=true,_supported=true,_sandbox_ok=true,
             _store={GetCandidate=function() return candidate end},
@@ -251,6 +254,12 @@ function M.run()
                     eq(proof.entry,entry,"controller proof entry")
                     eq(refresh(),live,"controller physical refresh remains caller-owned")
                     return prepared
+                elseif method=="Commit" then
+                    local h,plan,ctx=...
+                    eq(h,handle,"controller passes located handle");eq(plan,selection,"controller passes injected output")
+                    eq(ctx,context,"controller extends same per-call context")
+                    local receipt,err=ctx.adapter.transaction(h,plan,ctx)
+                    return receipt~=nil,err,receipt
                 elseif method=="InspectPrepared" then
                     local value,c,refresh=...
                     eq(value,prepared,"controller prepared selection");eq(c,capture,"controller inspect capture")
