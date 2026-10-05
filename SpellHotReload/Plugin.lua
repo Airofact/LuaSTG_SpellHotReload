@@ -27,8 +27,6 @@ local Driver = require("SpellHotReload.Driver")
 local Card = require("SpellHotReload.Card")
 local LoadVersions = require("SpellHotReload.LoadVersions")
 local CardCommit = require("SpellHotReload.CardCommit")
-local Target = require("SpellHotReload.CardTarget")
-local Cards = require("SpellHotReload.CardVersions")
 local session_serial = 0
 
 local Plugin = {}
@@ -481,14 +479,6 @@ local function message(err)
     return "operation refused"
 end
 
-local function freeze_binding(current)
-    local names
-    if type(current.names) == "table" then
-        names = {};for i,value in ipairs(current.names) do names[i] = value end
-    end
-    return {class_key=current.class_key,card=current.card,slot=current.slot,name=current.name,
-        mode=current.mode,names=names,include_previous=current.include_previous}
-end
 local function copy_display(value)
     if type(value) ~= "table" then return value end
     local result = {};for key,item in next,value do result[key] = copy_display(item) end
@@ -518,48 +508,19 @@ function Plugin:_FreshVersioned(file, candidate, capture)
         binding=binding, released=self._released, poisoned=self._commit:Poisoned()}
 end
 
--- Restart is intentionally not a commit/Match/compile/read-disk path. Missing
--- may disable future Apply while the already-committed frozen target survives.
+-- Generic reentry/lifecycle control stays here; Card owns the frozen target,
+-- full class/list/slot/callback checks and the actual practice handoff.
 function Plugin:_RestartVersioned(run)
     if self._restart_active then return nil, "restart is already active" end
-    if self._released or not self._commit or self._commit:Poisoned()
-        or self._publication_error or run.session_id ~= self._session_id
-        or self._loads[run.file] ~= run.entry or run.entry.anchor ~= run.anchor
-        or (run.entry.reloadable ~= true and not run.entry.missing)
-        or rawget(_G,"_editor_class") ~= run.classes
-        or rawget(run.classes,run.class_key) ~= run.class
-        or rawget(run.class,"cards") ~= run.list or rawget(run.list,run.slot) ~= run.card
-        or rawget(run.card,"name") ~= run.raw_name or run.capture.snapshot ~= run.snapshot then
-        return nil, "frozen restart target or session changed; restart game"
-    end
-    if Binding.IsReplay() then return nil, "replay mode not supported" end
-    -- include_previous can consume preceding slots too. Check original complete
-    -- ownership, not merely a still-present selected card in a changed list.
-    for _, owner in ipairs(run.capture.ownership) do
-        if rawget(run.classes,owner.class_key) ~= owner.class
-            or getmetatable(owner.class) ~= nil or getmetatable(owner.list) ~= nil
-            or rawget(owner.class,"cards") ~= owner.list or #owner.list ~= #owner.slots then
-            return nil, "frozen class/list ownership changed; restart game"
-        end
-        local count = 0
-        for slot in next, owner.list do
-            if type(slot) ~= "number" or slot < 1 or slot > #owner.slots or slot ~= math.floor(slot)
-                or rawget(owner.list,slot) ~= owner.slots[slot] then
-                return nil, "frozen slot ownership changed; restart game"
-            end
-            count = count + 1
-        end
-        if count ~= #owner.slots then return nil, "frozen slot ownership changed; restart game" end
-    end
-    local unit = run.snapshot.units[run.key]
-    for name, cb in next, unit.callbacks do
-        if rawget(run.card,name) ~= cb.fn then return nil, "committed callback changed; restart game" end
-    end
+    if not self._commit then return nil, "frozen restart target or session changed; restart game" end
+    local live = {released=self._released, poisoned=self._commit:Poisoned(),
+        publication_error=self._publication_error, session_id=self._session_id,
+        entry=self._loads[run.file], classes=rawget(_G,"_editor_class")}
     self._restart_active = true
-    local ok, err = pcall(Binding.Restart, run.class_key, run.name, run.card, run.slot, run.include_previous)
+    local called, ok, err = pcall(Card.RestartVersioned,run,live)
     self._restart_active = false
-    if not ok then return nil, message(err) end
-    return true
+    if not called then error(ok,0) end
+    return ok, err
 end
 
 -- One pure preparation path for Apply and explicit inspection. No commit scope
@@ -568,19 +529,9 @@ function Plugin:_PrepareVersioned(file, candidate, capture, discovery, initial)
     local proof = {capture=capture, snapshot=capture.snapshot, entry=self._loads[file],
         session_id=self._session_id, classes=rawget(_G,"_editor_class"), content=candidate.first_content,
         released=self._released, poisoned=self._commit:Poisoned()}
-    local target, terr = Target.Resolve(initial,capture,proof)
-    if not target then return nil, "locate: " .. message(terr) end
-    local live, err = self:_FreshVersioned(file,candidate,capture)
-    if not live then return nil, "versioned preflight: " .. message(err) end
-    local checked, check_error = Target.Check(target,live.binding,capture,live)
-    if not checked then return nil, "locate: " .. message(check_error) end
-    local location, lerr = Target.LocateDiscovery(target,discovery.snapshot,live.binding,capture,live)
-    if not location then return nil, "locate: " .. message(lerr) end
-    local report, rerr = Cards.CompareLocated(capture.snapshot,location,live.binding,capture,live)
-    if not report then return nil, "compare: " .. message(rerr) end
-    local selection, serr = Cards.Select(report,{target.key})
-    if not selection then return nil, "select: " .. message(serr) end
-    return {target=target, live=live, location=location, selection=selection}
+    return Card.PrepareVersioned(capture,discovery,initial,proof,function()
+        return self:_FreshVersioned(file,candidate,capture)
+    end)
 end
 
 function Plugin:_ApplyVersioned(token, file, candidate, capture, discovery, initial)
@@ -596,11 +547,7 @@ function Plugin:_ApplyVersioned(token, file, candidate, capture, discovery, init
     local target, live, location, selection = prepared.target, prepared.live, prepared.location, prepared.selection
     -- Scalars/references allocated BEFORE commit. Constructor/name metadata is
     -- NOT published: EXT_POS uses the genuine live name/slot, not candidate ones.
-    local run = {kind="versioned-card-restart", file=file, session_id=self._session_id,
-        entry=target.entry, anchor=target.entry.anchor, capture=capture, classes=target.classes,
-        class_key=target.class_key, class=target.class, list=target.list, card=target.card,
-        slot=target.slot, name=target.name, raw_name=rawget(target.card,"name"),
-        include_previous=target.include_previous, key=target.key}
+    local run = Card.FreezeRestart(target,capture)
     local receipt, cerr = self._commit:Commit(token,selection,capture,live,function()
         return self:_FreshVersioned(file,candidate,capture)
     end)
@@ -641,7 +588,7 @@ function Plugin:InspectCandidate(file)
         if not capture then return nil, "first-load versions unavailable: " .. message(why) end
         local initial, berr = Binding.CaptureCurrent()
         if not initial then return nil, "capture: " .. message(berr) end
-        initial = freeze_binding(initial)
+        initial = Card.FreezeBinding(initial)
         local live, lerr = self:_FreshVersioned(file,candidate,capture)
         if not live then return nil, "inspection: " .. message(lerr) end
         local discovery, derr = self._driver:Discover(file,candidate.first_content,{
@@ -651,13 +598,11 @@ function Plugin:InspectCandidate(file)
         if not discovery then return nil, "discover: " .. message(derr) end
         local prepared, perr = self:_PrepareVersioned(file,candidate,capture,discovery,initial)
         if not prepared then return nil, perr end
-        local model, merr = Cards.Describe(prepared.selection)
-        if not model then return nil, "describe: " .. message(merr) end
-        -- Analysis may invoke allocation/compilation callbacks. Re-read at its end.
-        live, lerr = self:_FreshVersioned(file,candidate,capture)
-        if not live then return nil, "inspection: " .. message(lerr) end
-        local checked, cerr = Target.CheckDiscovery(prepared.location,live.binding,capture,live)
-        if not checked then return nil, "inspection: " .. message(cerr) end
+        local model, fresh = Card.InspectPrepared(prepared,capture,function()
+            return self:_FreshVersioned(file,candidate,capture)
+        end)
+        if not model then return nil, fresh end
+        live = fresh
         self._candidate_inspections[file] = {model=model, content=candidate.first_content,
             generation=candidate.generation, capture=capture, snapshot=capture.snapshot,
             entry=live.entry, session_id=self._session_id, binding=initial,
@@ -674,7 +619,6 @@ function Plugin:GetCandidateInspection(file, current)
     local record = self._candidate_inspections[file]
     if not record then return nil end
     local candidate, capture = self._store:GetCandidate(file), self:GetVersions(file)
-    local binding = record.binding
     local valid = not self._released and self._activated and self._supported
         and self._sandbox_ok and self._commit and not self._commit:Poisoned() and not self._publication_error
         and not Binding.IsReplay() and self._loads[file] == record.entry
@@ -682,22 +626,7 @@ function Plugin:GetCandidateInspection(file, current)
         and self._session_id == record.session_id and capture == record.capture
         and capture.snapshot == record.snapshot and candidate and candidate.stable
         and candidate.generation == record.generation and candidate.first_content == record.content
-        and current ~= nil and rawget(_G,"_editor_class") == record.classes
-        and rawget(record.classes,binding.class_key) == record.class
-        and rawget(record.class,"cards") == record.list and rawget(record.list,binding.slot) == binding.card
-    if valid then
-        for _, field in ipairs({"class_key","card","slot","name","mode","include_previous"}) do
-            if current[field] ~= binding[field] then valid = false;break end
-        end
-        if valid then
-            if type(current.names) ~= "table" or #current.names ~= #binding.names then valid = false
-            else
-                for i,name in ipairs(binding.names) do
-                    if current.names[i] ~= name then valid = false;break end
-                end
-            end
-        end
-    end
+        and Card.InspectionBindingMatches(record,current,rawget(_G,"_editor_class"))
     if not valid then self._candidate_inspections[file] = nil;return nil end
     return copy_display(record.model)
 end
@@ -716,7 +645,7 @@ function Plugin:_apply(token)
     if current == nil then return "capture: " .. message(err) end
     if Binding.IsReplay() then return "replay mode not supported" end
     -- Freeze the initial UI choice before Match/IO can return a changed binding.
-    current = freeze_binding(current)
+    current = Card.FreezeBinding(current)
 
     local target_file, target_candidate, target_capture, target_discovery
     for _, file in ipairs(self._store:GetCandidateFileNames()) do

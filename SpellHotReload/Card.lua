@@ -1,6 +1,9 @@
 --------------------------------------------------------------------------------
 --- SpellHotReload.Card
 ---
+--- Versioned runtime helpers below own current-root planning, frozen restart
+--- and card-binding inspection rules. The four hooks/Plan remain legacy.
+---
 --- The card adapter: presents the card reload pipeline (CardCallbacks +
 --- PracticeBinding) through the generic four-hook contract, so a card commit
 --- travels the same Locate -> Inject -> Commit -> Restart path the driver
@@ -514,6 +517,143 @@ function Card.Plan(request, env)
         unchanged = 0,
         declined = 0,
     }
+end
+
+--------------------------------------------------------------------------------
+--- versioned runtime: card-specific rules, explicit caller-owned context
+---
+--- Plugin owns fresh I/O/session views, the UI token/transaction, partial
+--- bookkeeping, pending run and cache lifetime. These helpers do not accept a
+--- Plugin receiver or store mutable adapter state. Only RestartVersioned calls
+--- game code; preparation and inspection never publish, join or restart.
+--- CardTarget/CardVersions import Card for source matching, so require those
+--- services at call time after this module has finished loading.
+--------------------------------------------------------------------------------
+
+local function message(err)
+    if type(err) == "string" then return err end
+    if type(err) == "table" and getmetatable(err) == nil and type(rawget(err, "message")) == "string" then
+        return rawget(err, "message")
+    end
+    return "operation refused"
+end
+
+function Card.FreezeBinding(current)
+    local names
+    if type(current.names) == "table" then
+        names = {};for i,value in ipairs(current.names) do names[i] = value end
+    end
+    return {class_key=current.class_key,card=current.card,slot=current.slot,name=current.name,
+        mode=current.mode,names=names,include_previous=current.include_previous}
+end
+
+---Same pure current-root path for Apply and explicit Inspect. The trusted
+---refresh callback supplies real fresh bytes/binding; it is not a capability.
+function Card.PrepareVersioned(capture, discovery, initial, proof, refresh)
+    local Target = require("SpellHotReload.CardTarget")
+    local Cards = require("SpellHotReload.CardVersions")
+    local target, terr = Target.Resolve(initial,capture,proof)
+    if not target then return nil, "locate: " .. message(terr) end
+    local live, err = refresh()
+    if not live then return nil, "versioned preflight: " .. message(err) end
+    local checked, check_error = Target.Check(target,live.binding,capture,live)
+    if not checked then return nil, "locate: " .. message(check_error) end
+    local location, lerr = Target.LocateDiscovery(target,discovery.snapshot,live.binding,capture,live)
+    if not location then return nil, "locate: " .. message(lerr) end
+    local report, rerr = Cards.CompareLocated(capture.snapshot,location,live.binding,capture,live)
+    if not report then return nil, "compare: " .. message(rerr) end
+    local selection, serr = Cards.Select(report,{target.key})
+    if not selection then return nil, "select: " .. message(serr) end
+    return {target=target, live=live, location=location, selection=selection}
+end
+
+
+---Allocate the frozen handoff BEFORE commit. Candidate names/slots never
+---replace the genuine live name/slot in the eventual EXT_POS handoff.
+function Card.FreezeRestart(target, capture)
+    return {kind="versioned-card-restart", file=target.file, session_id=target.session_id,
+        entry=target.entry, anchor=target.entry.anchor, capture=capture, classes=target.classes,
+        class_key=target.class_key, class=target.class, list=target.list, card=target.card,
+        slot=target.slot, name=target.name, raw_name=rawget(target.card,"name"),
+        include_previous=target.include_previous, key=target.key}
+end
+
+---Only a committed frozen run. Caller supplies its session/entry/lifecycle
+---view, not current practice selection; Missing may still permit this retry.
+function Card.RestartVersioned(run, live)
+    if live.released or live.poisoned
+        or live.publication_error or run.session_id ~= live.session_id
+        or live.entry ~= run.entry or run.entry.anchor ~= run.anchor
+        or (run.entry.reloadable ~= true and not run.entry.missing)
+        or live.classes ~= run.classes
+        or rawget(run.classes,run.class_key) ~= run.class
+        or rawget(run.class,"cards") ~= run.list or rawget(run.list,run.slot) ~= run.card
+        or rawget(run.card,"name") ~= run.raw_name or run.capture.snapshot ~= run.snapshot then
+        return nil, "frozen restart target or session changed; restart game"
+    end
+    if Binding.IsReplay() then return nil, "replay mode not supported" end
+    -- include_previous can consume preceding slots too. Check original complete
+    -- ownership, not merely a still-present selected card in a changed list.
+    for _, owner in ipairs(run.capture.ownership) do
+        if rawget(run.classes,owner.class_key) ~= owner.class
+            or getmetatable(owner.class) ~= nil or getmetatable(owner.list) ~= nil
+            or rawget(owner.class,"cards") ~= owner.list or #owner.list ~= #owner.slots then
+            return nil, "frozen class/list ownership changed; restart game"
+        end
+        local count = 0
+        for slot in next, owner.list do
+            if type(slot) ~= "number" or slot < 1 or slot > #owner.slots or slot ~= math.floor(slot)
+                or rawget(owner.list,slot) ~= owner.slots[slot] then
+                return nil, "frozen slot ownership changed; restart game"
+            end
+            count = count + 1
+        end
+        if count ~= #owner.slots then return nil, "frozen slot ownership changed; restart game" end
+    end
+    local unit = run.snapshot.units[run.key]
+    for name, cb in next, unit.callbacks do
+        if rawget(run.card,name) ~= cb.fn then return nil, "committed callback changed; restart game" end
+    end
+    local ok, err = pcall(Binding.Restart, run.class_key, run.name, run.card, run.slot, run.include_previous)
+    if not ok then return nil, message(err) end
+    return true
+end
+
+---Build scalar presentation, then revalidate after possible compiler/allocation
+---callbacks. No commit authority is returned; callers own/cache the record.
+function Card.InspectPrepared(prepared, capture, refresh)
+    local Cards = require("SpellHotReload.CardVersions")
+    local Target = require("SpellHotReload.CardTarget")
+    local model, merr = Cards.Describe(prepared.selection)
+    if not model then return nil, "describe: " .. message(merr) end
+    local live, lerr = refresh()
+    if not live then return nil, "inspection: " .. message(lerr) end
+    local checked, cerr = Target.CheckDiscovery(prepared.location,live.binding,capture,live)
+    if not checked then return nil, "inspection: " .. message(cerr) end
+    return model, live
+end
+
+---Cheap card-binding part of a PAST inspection's validity. Caller separately
+---checks bytes/generation/session/capture/revision and invalidates its cache.
+function Card.InspectionBindingMatches(record, current, classes)
+    local binding = record.binding
+    local valid = current ~= nil and classes == record.classes
+        and rawget(record.classes,binding.class_key) == record.class
+        and rawget(record.class,"cards") == record.list and rawget(record.list,binding.slot) == binding.card
+    if valid then
+        for _, field in ipairs({"class_key","card","slot","name","mode","include_previous"}) do
+            if current[field] ~= binding[field] then valid = false;break end
+        end
+        if valid then
+            if type(current.names) ~= "table" or #current.names ~= #binding.names then valid = false
+            else
+                for i,name in ipairs(binding.names) do
+                    if current.names[i] ~= name then valid = false;break end
+                end
+            end
+        end
+    end
+    return valid
 end
 
 return Card
