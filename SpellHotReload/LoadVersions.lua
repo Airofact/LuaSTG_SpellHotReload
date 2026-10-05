@@ -13,19 +13,7 @@ local Functions = require("SpellHotReload.FunctionVersions")
 local Cards = require("SpellHotReload.CardVersions")
 local Card = require("SpellHotReload.Card")
 local M = { Kind = "SpellHotReload.LoadVersions", Version = 1 }
-local CALLBACKS = { "before", "init", "frame", "render", "beforedel", "del", "after" }
 local function plain(v) return type(v) == "table" and getmetatable(v) == nil end
-local function dense(v)
-    if not plain(v) then return nil end
-    local count, maximum = 0, 0
-    for k in next, v do
-        if type(k) ~= "number" or k < 1 or k == math.huge
-            or k ~= math.floor(k) then return nil end
-        count, maximum = count + 1, math.max(maximum, k)
-    end
-    if count ~= maximum then return nil end
-    return count
-end
 local function fail(code, message, entry, key)
     return nil, { phase = "capture", code = code, message = message,
         file = plain(entry) and rawget(entry, "file") or nil, unit_key = key }
@@ -47,34 +35,8 @@ function M.Capture(entry, session_id, classes, defaults)
     if not functions then return nil, ferr end
     local match, merr = Card.Match(scan.analysis, { content = entry.loaded_source })
     if not match then return nil, merr end
-    local owners, ownership, seen = {}, {}, {}
-    for _, unit in ipairs(match.units) do
-        local ctx = unit.context
-        local cls = rawget(classes, ctx.class_key)
-        local list = plain(cls) and rawget(cls, "cards") or nil
-        if not plain(cls) or dense(list) ~= #ctx.layout then
-            return fail("ownership", "first-load class/list layout unavailable", entry, unit.key)
-        end
-        local slots = {}
-        ownership[#ownership + 1] = {
-            class_key = ctx.class_key, class = cls, list = list, slots = slots }
-        for slot, descriptor in ipairs(ctx.layout) do
-            local card = rawget(list, slot)
-            if not plain(card) or seen[card] then
-                return fail("ownership", "invalid or multiply owned first-load card", entry, unit.key)
-            end
-            seen[card], slots[slot] = true, card
-            if descriptor.kind == "card" and descriptor.callbacks.init then
-                if rawget(card, "is_combat") ~= true then
-                    return fail("ownership", "combat descriptor does not own a combat card", entry, unit.key)
-                end
-                local callbacks = {}
-                for _, name in ipairs(CALLBACKS) do callbacks[name] = rawget(card, name) end
-                owners[#owners + 1] = { class_key = ctx.class_key, slot = slot,
-                    card = card, callbacks = callbacks }
-            end
-        end
-    end
+    local owners, ownership = Card.CaptureOwnership(match, classes, entry)
+    if not owners then return nil, ownership end
     local snapshot, cerr = Cards.Seed(functions, owners, defaults)
     if not snapshot then return nil, cerr end
     return { kind = M.Kind, version = M.Version, snapshot = snapshot,

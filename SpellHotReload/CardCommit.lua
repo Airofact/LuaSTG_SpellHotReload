@@ -11,10 +11,12 @@
 local Phase = require("SpellHotReload.CommitPhase")
 local Guard = require("SpellHotReload.CommitCheck")
 local Cards = require("SpellHotReload.CardVersions")
+local Card = require("SpellHotReload.Card")
 local Cache = require("SpellHotReload.CodeCache")
 local M = { Kind = "SpellHotReload.CardCommit", Version = 1 }
 local phase_new, guard_check, next_version, invalidate =
     Phase.New, Guard.Check, Cards.Next, Cache.Invalidate
+local check_destinations = Card.CheckJoinDestinations
 local raw_write, protected_call = rawset, pcall
 local busy, poisoned = nil, {} -- only poisoned primitive ids, never business refs
 local function plain(v) return type(v) == "table" and getmetatable(v) == nil end
@@ -40,19 +42,8 @@ local function prepare(selection, capture)
     local frozen = seal(selection)
     local snapshot, err = next_version(frozen)
     if not snapshot then return nil, err end
-    local published, destinations = {[selection.anchor]=true}, {}
-    for _, fn in next, selection.base.defaults do published[fn] = true end
-    for _, unit in next, selection.base.functions.units do published[unit.fn] = true end
-    for _, unit in next, selection.base.units do
-        for _, cb in next, unit.callbacks do published[cb.fn] = true end
-    end
-    for _, op in ipairs(frozen.writes) do destinations[op.value] = true end
-    for _, op in ipairs(frozen.publications) do destinations[op.value] = true end
-    for _, op in ipairs(frozen.joins) do
-        if published[op.fn] or not destinations[op.fn] then
-            return fail("unsupported", "joins require unpublished destination closures", selection.base.file)
-        end
-    end
+    local valid, destination_error = check_destinations(frozen)
+    if not valid then return nil, destination_error end
     local journal = {}
     for _, op in ipairs(frozen.writes) do
         journal[#journal+1] = { anchor=op.anchor, index=op.index, name=op.name,

@@ -17,9 +17,8 @@
 --- Inputs are read-only by contract, not a hostile-plan sandbox. upvalueid is
 --- optional: absent it, physical external rejoin cannot be proved, not probed.
 local Target = require("SpellHotReload.CardTarget")
+local Card = require("SpellHotReload.Card")
 local M = { Kind = "SpellHotReload.CommitCheck", Version = 1 }
-local callbacks = { before=true, init=true, frame=true, render=true,
-    beforedel=true, del=true, after=true }
 local function plain(v) return type(v) == "table" and getmetatable(v) == nil end
 local function integer(v)
     return type(v) == "number" and v >= 1 and v < math.huge and v == math.floor(v)
@@ -72,33 +71,8 @@ local function check(selection, capture, live)
     end
     local thread, main = coroutine.running()
     if thread and not main then return fail("unsupported", "commit check cannot run in a coroutine", file) end
-    if not plain(live.classes) or not rawequal(live.classes, capture.classes)
-        or dense(capture.ownership) == nil or not plain(base.units) then
-        return fail("ownership", "class registry or ownership unavailable", file)
-    end
-    local owners, seen = {}, {}
-    for _, owner in ipairs(capture.ownership) do
-        if not plain(owner) or type(owner.class_key) ~= "string" or owners[owner.class_key]
-            or not plain(owner.class) or not rawequal(rawget(live.classes, owner.class_key), owner.class)
-            or not rawequal(rawget(owner.class, "cards"), owner.list)
-            or dense(owner.slots) == nil or dense(owner.list) ~= #owner.slots then
-            return fail("ownership", "first-load class/list ownership changed", file)
-        end
-        owners[owner.class_key] = owner
-        for slot, card in ipairs(owner.slots) do
-            if not plain(card) or seen[card] or not rawequal(rawget(owner.list, slot), card) then
-                return fail("ownership", "first-load slot ownership changed", file)
-            end
-            seen[card] = true
-        end
-    end
-    for key, unit in next, base.units do
-        local owner = plain(unit) and owners[unit.class_key] or nil
-        if not owner or not integer(unit.slot) or not rawequal(rawget(owner.slots, unit.slot), unit.card)
-            or rawget(unit.card, "is_combat") ~= true then
-            return fail("ownership", "published card no longer owns its combat slot", file, key)
-        end
-    end
+    local seen, ownership_error = Card.CheckOwnership(capture, base, live.classes)
+    if not seen then return nil, ownership_error end
     for _, name in ipairs({ "read_set", "capture_reads", "joins", "writes", "publications" }) do
         if dense(selection[name]) == nil then return fail("unsupported", "dense plan arrays required", file) end
     end
@@ -109,10 +83,8 @@ local function check(selection, capture, live)
     for _, read in ipairs(selection.read_set) do
         if not plain(read) then return fail("unsupported", "invalid read record", file) end
         if read.target ~= nil then
-            if not plain(read.target) or not seen[read.target] or not callbacks[read.key]
-                or not rawequal(rawget(read.target, read.key), read.value) then
-                return fail("stale", "raw callback read changed", file)
-            end
+            local valid, callback_error = Card.CheckCallbackRead(read, seen, file)
+            if not valid then return nil, callback_error end
         else
             if not cell(read.anchor, read.index, read.name) then
                 return fail("stale", "anchor read slot changed", file)
@@ -152,21 +124,8 @@ local function check(selection, capture, live)
         if not rawequal(value, write.before) then return fail("stale", "function write preimage changed", file) end
         writes[write.name] = true
     end
-    local targets = {}
-    for _, pub in ipairs(selection.publications) do
-        if not plain(pub) or not plain(pub.target) or not callbacks[pub.key]
-            or type(pub.value) ~= "function" then
-            return fail("unsupported", "raw callback publication required", file)
-        end
-        local unit = base.units[pub.unit_key]
-        if not plain(unit) or not rawequal(pub.target, unit.card) or not seen[pub.target]
-            or not rawequal(rawget(pub.target, pub.key), pub.before) then
-            return fail("stale", "callback publication owner/preimage changed", file, pub.unit_key)
-        end
-        local keys = targets[pub.target] or {}
-        if keys[pub.key] then return fail("ownership", "duplicate raw publication", file, pub.unit_key) end
-        targets[pub.target], keys[pub.key] = keys, true
-    end
+    local valid, publication_error = Card.CheckPublications(selection.publications, base, seen)
+    if not valid then return nil, publication_error end
     return true
 end
 

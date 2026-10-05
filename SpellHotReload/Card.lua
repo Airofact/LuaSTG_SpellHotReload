@@ -700,4 +700,162 @@ function Card.DefinesCurrent(discovery, current)
     return discovery.snapshot.by_key["card:" .. current.class_key] ~= nil
 end
 
+--------------------------------------------------------------------------------
+--- Card-owned first-load and commit policy. Trusted, already-validated inputs;
+--- these helpers read raw identities only, never call business code or mutate.
+--- Transaction services still own session/byte/cell checks, sealing, phase,
+--- cache invalidation, joins/writes/version install and reverse recovery.
+--------------------------------------------------------------------------------
+
+local function plain(v) return type(v) == "table" and getmetatable(v) == nil end
+local function integer(v)
+    return type(v) == "number" and v >= 1 and v < math.huge and v == math.floor(v)
+end
+local function dense(v)
+    if not plain(v) then return nil end
+    local count, maximum = 0, 0
+    for k in next, v do
+        if not integer(k) then return nil end
+        count, maximum = count + 1, math.max(maximum, k)
+    end
+    if count == maximum then return count end
+end
+local callbacks = { before=true, init=true, frame=true, render=true,
+    beforedel=true, del=true, after=true }
+local CALLBACKS = { "before", "init", "frame", "render", "beforedel", "del", "after" }
+
+---Called synchronously from the genuine first load's complete Card.Match.
+---Returns fresh metadata, including placeholder ownership, never a live reseed.
+function Card.CaptureOwnership(match, classes, entry)
+    local function fail(code, detail, e, key)
+        return nil, {phase="capture", code=code, message=detail,
+            file=plain(e) and rawget(e,"file") or nil, unit_key=key}
+    end
+    local owners, ownership, seen = {}, {}, {}
+    for _, unit in ipairs(match.units) do
+        local ctx = unit.context
+        local cls = rawget(classes, ctx.class_key)
+        local list = plain(cls) and rawget(cls, "cards") or nil
+        if not plain(cls) or dense(list) ~= #ctx.layout then
+            return fail("ownership", "first-load class/list layout unavailable", entry, unit.key)
+        end
+        local slots = {}
+        ownership[#ownership + 1] = {
+            class_key = ctx.class_key, class = cls, list = list, slots = slots }
+        for slot, descriptor in ipairs(ctx.layout) do
+            local card = rawget(list, slot)
+            if not plain(card) or seen[card] then
+                return fail("ownership", "invalid or multiply owned first-load card", entry, unit.key)
+            end
+            seen[card], slots[slot] = true, card
+            if descriptor.kind == "card" and descriptor.callbacks.init then
+                if rawget(card, "is_combat") ~= true then
+                    return fail("ownership", "combat descriptor does not own a combat card", entry, unit.key)
+                end
+                local callbacks = {}
+                for _, name in ipairs(CALLBACKS) do callbacks[name] = rawget(card, name) end
+                owners[#owners + 1] = { class_key = ctx.class_key, slot = slot,
+                    card = card, callbacks = callbacks }
+            end
+        end
+    end
+    return owners, ownership
+end
+
+---Complete first-load ownership proof, not just the current selected slot.
+---The returned set is transient; it grants no phase or mutation authority.
+function Card.CheckOwnership(capture, base, classes)
+    local file = type(base.file) == "string" and base.file or nil
+    local function fail(code, detail, f, key)
+        return nil, {phase="commit", code=code, message=detail, file=f, unit_key=key}
+    end
+    if not plain(classes) or not rawequal(classes, capture.classes)
+        or dense(capture.ownership) == nil or not plain(base.units) then
+        return fail("ownership", "class registry or ownership unavailable", file)
+    end
+    local owners, seen = {}, {}
+    for _, owner in ipairs(capture.ownership) do
+        if not plain(owner) or type(owner.class_key) ~= "string" or owners[owner.class_key]
+            or not plain(owner.class) or not rawequal(rawget(classes, owner.class_key), owner.class)
+            or not rawequal(rawget(owner.class, "cards"), owner.list)
+            or dense(owner.slots) == nil or dense(owner.list) ~= #owner.slots then
+            return fail("ownership", "first-load class/list ownership changed", file)
+        end
+        owners[owner.class_key] = owner
+        for slot, card in ipairs(owner.slots) do
+            if not plain(card) or seen[card] or not rawequal(rawget(owner.list, slot), card) then
+                return fail("ownership", "first-load slot ownership changed", file)
+            end
+            seen[card] = true
+        end
+    end
+    for key, unit in next, base.units do
+        local owner = plain(unit) and owners[unit.class_key] or nil
+        if not owner or not integer(unit.slot) or not rawequal(rawget(owner.slots, unit.slot), unit.card)
+            or rawget(unit.card, "is_combat") ~= true then
+            return fail("ownership", "published card no longer owns its combat slot", file, key)
+        end
+    end
+    return seen
+end
+
+function Card.CheckCallbackRead(read, seen, file)
+    local function fail(code, detail, f)
+        return nil, {phase="commit", code=code, message=detail, file=f}
+    end
+    if not plain(read.target) or not seen[read.target] or not callbacks[read.key]
+        or not rawequal(rawget(read.target, read.key), read.value) then
+        return fail("stale", "raw callback read changed", file)
+    end
+    return true
+end
+
+---Only the seven supported callbacks on their captured raw combat card.
+---Raw target/key values are checked before the transaction registers writes.
+function Card.CheckPublications(publications, base, seen)
+    local file = type(base.file) == "string" and base.file or nil
+    local function fail(code, detail, f, key)
+        return nil, {phase="commit", code=code, message=detail, file=f, unit_key=key}
+    end
+    local targets = {}
+    for _, pub in ipairs(publications) do
+        if not plain(pub) or not plain(pub.target) or not callbacks[pub.key]
+            or type(pub.value) ~= "function" then
+            return fail("unsupported", "raw callback publication required", file)
+        end
+        local unit = base.units[pub.unit_key]
+        if not plain(unit) or not rawequal(pub.target, unit.card) or not seen[pub.target]
+            or not rawequal(rawget(pub.target, pub.key), pub.before) then
+            return fail("stale", "callback publication owner/preimage changed", file, pub.unit_key)
+        end
+        local keys = targets[pub.target] or {}
+        if keys[pub.key] then return fail("ownership", "duplicate raw publication", file, pub.unit_key) end
+        targets[pub.target], keys[pub.key] = keys, true
+    end
+    return true
+end
+
+---A candidate join may target only an unpublished closure selected for install.
+---Defaults and unselected published callbacks are live too, not valid scratch.
+function Card.CheckJoinDestinations(selection)
+    local frozen = selection
+    local function fail(code, detail, file)
+        return nil, {phase="commit", code=code, message=detail, file=file}
+    end
+    local published, destinations = {[selection.anchor]=true}, {}
+    for _, fn in next, selection.base.defaults do published[fn] = true end
+    for _, unit in next, selection.base.functions.units do published[unit.fn] = true end
+    for _, unit in next, selection.base.units do
+        for _, cb in next, unit.callbacks do published[cb.fn] = true end
+    end
+    for _, op in ipairs(frozen.writes) do destinations[op.value] = true end
+    for _, op in ipairs(frozen.publications) do destinations[op.value] = true end
+    for _, op in ipairs(frozen.joins) do
+        if published[op.fn] or not destinations[op.fn] then
+            return fail("unsupported", "joins require unpublished destination closures", selection.base.file)
+        end
+    end
+    return true
+end
+
 return Card
