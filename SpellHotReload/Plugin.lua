@@ -25,7 +25,6 @@ local Anchor = require("SpellHotReload.Anchor")
 local AnchorRegistry = require("SpellHotReload.AnchorRegistry")
 local Driver = require("SpellHotReload.Driver")
 local Card = require("SpellHotReload.Card")
-local LoadVersions = require("SpellHotReload.LoadVersions")
 local CardCommit = require("SpellHotReload.CardCommit")
 local session_serial = 0
 
@@ -110,19 +109,8 @@ end
 function Plugin:_CaptureVersions(file, entry)
 	if self._released or self._loads[file] ~= entry or self._versions[file] ~= nil then return end
 	entry.file = file
-	local classes = rawget(_G, "_editor_class")
-	local boss_api = rawget(_G, "boss")
-	local card_api = type(boss_api) == "table" and rawget(boss_api, "card") or nil
-	local defaults = type(card_api) == "table" and rawget(card_api, "_default_card") or nil
-	local ok, capture, err = pcall(LoadVersions.Capture, entry, self._session_id, classes, defaults)
-	local reason
-	if not ok then
-		reason = "first-load metadata failed: " .. (type(capture) == "string" and capture or "non-string error")
-	elseif capture == nil then
-		local message = type(err) == "table" and rawget(err, "message") or err
-		reason = type(message) == "string" and message or "first-load metadata unavailable"
-	end
-	self._versions[file] = { capture = ok and capture or nil, reason = reason }
+	local capture, reason = Card.CaptureVersions(entry, self._session_id)
+	self._versions[file] = { capture = capture, reason = reason }
 end
 
 function Plugin:GetDriver() return self._driver end
@@ -493,7 +481,7 @@ function Plugin:_FreshVersioned(file, candidate, capture)
     local ok, err = self:_CheckLoad(file)
     if not ok then return nil, {code="stale", message=message(err)} end
     if self:GetVersions(file) ~= capture then return nil, {code="stale", message="first-load capture changed"} end
-    if Binding.IsReplay() then return nil, {code="stale", message="replay mode not supported"} end
+    if Card.IsReplay() then return nil, {code="stale", message="replay mode not supported"} end
     local content, rerr = self._watcher:ReadFile(file)
     if content == nil then return nil, {code="stale", message="read: " .. message(rerr)} end
     local current = self._store:GetCandidate(file)
@@ -501,7 +489,7 @@ function Plugin:_FreshVersioned(file, candidate, capture)
         or current.first_content ~= candidate.first_content or content ~= candidate.first_content then
         return nil, {code="stale", message="candidate generation or bytes changed since snapshot"}
     end
-    local binding, berr = Binding.CaptureCurrent()
+    local binding, berr = Card.CaptureCurrent()
     if not binding then return nil, {code="stale", message="re-capture: " .. message(berr)} end
     return {capture=capture, snapshot=capture.snapshot, entry=self._loads[file],
         session_id=self._session_id, classes=rawget(_G,"_editor_class"), content=content,
@@ -586,7 +574,7 @@ function Plugin:InspectCandidate(file)
         if not candidate or not candidate.stable then return nil, "stable candidate required" end
         local capture, why = self:GetVersions(file)
         if not capture then return nil, "first-load versions unavailable: " .. message(why) end
-        local initial, berr = Binding.CaptureCurrent()
+        local initial, berr = Card.CaptureCurrent()
         if not initial then return nil, "capture: " .. message(berr) end
         initial = Card.FreezeBinding(initial)
         local live, lerr = self:_FreshVersioned(file,candidate,capture)
@@ -621,7 +609,7 @@ function Plugin:GetCandidateInspection(file, current)
     local candidate, capture = self._store:GetCandidate(file), self:GetVersions(file)
     local valid = not self._released and self._activated and self._supported
         and self._sandbox_ok and self._commit and not self._commit:Poisoned() and not self._publication_error
-        and not Binding.IsReplay() and self._loads[file] == record.entry
+        and not Card.IsReplay() and self._loads[file] == record.entry
         and record.entry.reloadable == true and not record.entry.missing
         and self._session_id == record.session_id and capture == record.capture
         and capture.snapshot == record.snapshot and candidate and candidate.stable
@@ -641,9 +629,9 @@ function Plugin:_apply(token)
     if self._pending_restart_run and self._pending_restart_run.kind == "versioned-card-restart" then
         return "definitions already committed; retry restart first"
     end
-    local current, err = Binding.CaptureCurrent()
+    local current, err = Card.CaptureCurrent()
     if current == nil then return "capture: " .. message(err) end
-    if Binding.IsReplay() then return "replay mode not supported" end
+    if Card.IsReplay() then return "replay mode not supported" end
     -- Freeze the initial UI choice before Match/IO can return a changed binding.
     current = Card.FreezeBinding(current)
 
@@ -651,7 +639,7 @@ function Plugin:_apply(token)
     for _, file in ipairs(self._store:GetCandidateFileNames()) do
         local candidate = self._store:GetCandidate(file)
         if candidate and candidate.stable and candidate.first_content then
-            local gate = Scanner.Scan(candidate.first_content,file)
+            local gate = Card.CheckCandidateSource(candidate.first_content,file)
             if not gate.ok then log(self,"warn","apply: rejected " .. file .. ": " .. message(gate.error))
             else
                 local entry, capture, discovery = self._loads[file]
@@ -672,7 +660,7 @@ function Plugin:_apply(token)
                         loaded_source=entry.loaded_source, registry_entry=entry,
                         base_revision=base and base.revision, published_units=base})
                     if not discovery then return "discover: " .. message(derr) end
-                    matches = discovery.snapshot.by_key["card:" .. current.class_key] ~= nil
+                    matches = Card.DefinesCurrent(discovery,current)
                 else
                     -- No first-load entry: isolated legacy fixtures only. A
                     -- production refusal above NEVER reaches this compatibility branch.

@@ -656,4 +656,48 @@ function Card.InspectionBindingMatches(record, current, classes)
     return valid
 end
 
+---First-load card metadata is adapter-owned. Plugin calls this synchronously
+---once per adopted file/session and owns the sticky success/refusal record.
+---Never reseed from current live state. Lazy import avoids LoadVersions -> Card.
+function Card.CaptureVersions(entry, session_id)
+    local ok, capture, err = pcall(function()
+        local Versions = require("SpellHotReload.LoadVersions")
+        local classes = rawget(_G, "_editor_class")
+        local boss_api = rawget(_G, "boss")
+        local card_api = type(boss_api) == "table" and rawget(boss_api, "card") or nil
+        local defaults = type(card_api) == "table" and rawget(card_api, "_default_card") or nil
+        return Versions.Capture(entry, session_id, classes, defaults)
+    end)
+    local reason
+    if not ok then
+        reason = "first-load metadata failed: " .. (type(capture) == "string" and capture or "non-string error")
+    elseif capture == nil then
+        local detail = type(err) == "table" and rawget(err, "message") or err
+        reason = type(detail) == "string" and detail or "first-load metadata unavailable"
+    end
+    return ok and capture or nil, reason
+end
+
+---Engine-facing queries stay behind Card. No freezing/cache here: callers
+---choose the read boundary and FreezeBinding before discovery, as before.
+function Card.CaptureCurrent()
+    return Binding.CaptureCurrent()
+end
+
+function Card.IsReplay()
+    return Binding.IsReplay()
+end
+
+---Generated-source support is Card's rule, not a generic file-store verdict.
+---This format gate grants no runtime identity or publication authority.
+function Card.CheckCandidateSource(content, file)
+    return require("SpellHotReload.GeneratedBossScanner").Scan(content, file)
+end
+
+---Only consumes an already-complete discovery. The snapshot-local class key
+---is adapter syntax, not cross-version live identity; PrepareVersioned rechecks.
+function Card.DefinesCurrent(discovery, current)
+    return discovery.snapshot.by_key["card:" .. current.class_key] ~= nil
+end
+
 return Card
