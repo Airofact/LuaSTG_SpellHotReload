@@ -605,15 +605,20 @@ function Card.PrepareVersioned(capture, discovery, initial, proof, refresh)
 end
 
 ---One Card aggregate for the entire captured file, not one transaction per
----class. Fixed-layout comparison proves all owners; no current binding/restart.
+---class. Per-card correspondence plus binding checks; no current binding/restart.
 function Card.PrepareFileVersioned(capture, discovery, proof, refresh)
-    local owner = type(capture)=="table" and type(capture.ownership)=="table"
-        and capture.ownership[1] or nil
-    if type(owner)~="table" or type(owner.class_key)~="string" then
-        return nil, "locate: captured card class required"
+    local function complete(v) return type(v)=="table" and getmetatable(v)==nil end
+    local snapshot=complete(discovery) and discovery.snapshot
+    local class_key
+    if complete(snapshot) and complete(snapshot.entries) then
+        for _,entry in ipairs(snapshot.entries) do
+            if complete(entry) and entry.adapter==Card and complete(entry.unit)
+                and complete(entry.unit.context) then class_key=entry.unit.context.class_key;break end
+        end
     end
+    if type(class_key)~="string" then return nil,"locate: no genuine Card discovery entry; nothing published" end
     return Card.PrepareVersioned(capture,discovery,
-        {class_key=owner.class_key,scope="file"},proof,refresh)
+        {class_key=class_key,scope="file"},proof,refresh)
 end
 
 ---Allocate the frozen handoff BEFORE commit. Candidate names/slots never
@@ -842,6 +847,21 @@ function Card.CheckCommitInput(selection, capture, live)
         local Target = require("SpellHotReload.CardTarget")
         local checked, err = Target.CheckDiscovery(selection.location, live.binding, capture, live)
         if not checked then return fail(err.code, err.message, file, selection.location.key) end
+    end
+    if selection.file_location~=nil then
+        local checked,err=require("SpellHotReload.CardTarget").CheckFileDiscovery(selection.file_location,capture,live)
+        if not checked then return fail(err.code,err.message,file) end
+        if not plain(selection.report) or selection.report.file_location~=selection.file_location
+            or selection.file_location.discovery~=selection.discovery or selection.file_location.snapshot~=base then
+            return fail("stale","file correspondence scope changed",file)
+        end
+        if dense(selection.file_class_reads)==nil then return fail("unsupported","class binding read-set required",file) end
+        for _,read in ipairs(selection.file_class_reads) do
+            if not plain(read) or read.registry~=live.classes or type(read.key)~="string"
+                or not plain(read.value) or not rawequal(rawget(live.classes,read.key),read.value) then
+                return fail("stale","candidate class registry binding changed",file)
+            end
+        end
     end
     return true
 end
@@ -1074,9 +1094,11 @@ locate_versioned = function(unit, context)
         end
         local owned, oerr = Card.CheckOwnership(capture,runtime.snapshot,live.classes)
         if not owned then return stage_error("locate", "file preflight", oerr, file, unit.key) end
+        local location,why=Target.LocateFileDiscovery(runtime.discovery.snapshot,capture,live)
+        if not location then return stage_error("locate","file correspondence",why,file,unit.key) end
         return {kind=HANDLE_KIND, unit=unit, context=context, runtime=runtime,
             capture=capture, snapshot=runtime.snapshot, discovery=runtime.discovery.snapshot, entry=entry,
-            initial=runtime.initial, proof=runtime.proof, refresh=runtime.refresh, live=live}
+            initial=runtime.initial, proof=runtime.proof, refresh=runtime.refresh, live=live,file_location=location}
     end
     local target, terr = Target.Resolve(runtime.initial, capture, runtime.proof)
     if not target then return stage_error("locate", "locate", terr, file, unit.key) end
@@ -1106,7 +1128,9 @@ local function matching_handle(handle, unit, context, phase)
         or handle.discovery~=runtime.discovery.snapshot or handle.entry~=entry
         or handle.initial~=runtime.initial or handle.proof~=runtime.proof or handle.refresh~=runtime.refresh
         or not plain(handle.live)
-        or (runtime.file_scope and (handle.target~=nil or handle.location~=nil))
+        or (runtime.file_scope and (handle.target~=nil or handle.location~=nil
+            or not plain(handle.file_location) or handle.file_location.discovery~=handle.discovery
+            or handle.file_location.snapshot~=runtime.snapshot))
         or (not runtime.file_scope and (not plain(handle.target) or not plain(handle.location)
             or handle.location.target~=handle.target or handle.location.discovery~=handle.discovery
             or handle.location.entry~=entry)) then
@@ -1121,13 +1145,14 @@ inject_versioned = function(handle, unit, context)
     local file = context.common.file
     local Cards = require("SpellHotReload.CardVersions")
     local report, rerr
-    if runtime.file_scope then report, rerr = Cards.CompareDiscovery(runtime.snapshot,handle.discovery)
+    if runtime.file_scope then report,rerr=Cards.CompareFileLocated(runtime.snapshot,handle.file_location,
+        runtime.capture,handle.live)
     else report, rerr = Cards.CompareLocated(runtime.snapshot, handle.location,
         handle.live.binding, runtime.capture, handle.live) end
     if not report then return stage_error("inject", "compare", rerr, file, unit.key) end
-    local keys = runtime.file_scope and runtime.snapshot.order or {handle.target.key}
-    local functions = runtime.file_scope and runtime.snapshot.functions.names or nil
-    local selection, serr = Cards.Select(report,keys,functions)
+    local selection,serr
+    if runtime.file_scope then selection,serr=Cards.SelectFile(report)
+    else selection,serr=Cards.Select(report,{handle.target.key}) end
     if not selection then return stage_error("inject", "select", serr, file, unit.key) end
     handle.selection = selection -- per-call output identity; not a module cache
     return selection
@@ -1144,6 +1169,7 @@ commit_versioned = function(handle, plan, context)
     if not plain(plan) or plan.kind~="SpellHotReload.CardVersions.Selection"
         or plan~=handle.selection or plan.base~=runtime.snapshot
         or plan.discovery~=handle.discovery or plan.location~=handle.location
+        or plan.file_location~=handle.file_location
         or plan.entry~=runtime.snapshot.entry or plan.anchor~=runtime.snapshot.anchor
         or plan.session_id~=runtime.snapshot.session_id then
         local _, why = stage_error("commit", "commit", "matching injected Card selection required",

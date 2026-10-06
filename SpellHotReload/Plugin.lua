@@ -612,6 +612,20 @@ function Plugin:_applyFile(file, token)
     local prepared, perr = Card.PrepareFileVersioned(capture,discovery,live,refresh)
     if not prepared then return perr end
     local selection, controller = prepared.selection, self._commit
+    local remaining={}
+    for _,row in ipairs(selection.blocked or {}) do
+        remaining[#remaining+1]=row.key..": "..row.reason
+    end
+    for _,row in ipairs(selection.pending_sources or {}) do
+        remaining[#remaining+1]=row.source_key.." source slot "..row.candidate_slot..": "..row.reason
+    end
+    for _,row in ipairs(selection.structural_pending or {}) do
+        remaining[#remaining+1]=row.source_key..": "..row.reason
+    end
+    for _,row in ipairs(selection.report.functions.initializers or {}) do
+        remaining[#remaining+1]="local:"..row.name..": state initializer retained; restart to adopt"
+    end
+    local pending=#remaining>0 and ("; pending: "..table.concat(remaining," | ")) or ""
     local committed, cerr, receipt = self._driver:CommitDiscovery(prepared.driver_prepared,
         function()
             return controller:Commit(token,selection,capture,prepared.live,refresh)
@@ -625,8 +639,9 @@ function Plugin:_applyFile(file, token)
             return "definitions committed; " .. self._publication_error .. ": " .. message(recorded and record_error or record)
         end
     end
-    return string.format("applied file %s: %s; no restart; candidate retained (not whole-file acceptance)",
-        file,receipt.changed and "definitions committed" or "no definition changes")
+    local status=receipt.changed and "definitions committed" or "no definition changes"
+    return string.format("%s file %s: %s; no restart; candidate retained (not whole-file acceptance)%s",
+        receipt.changed and "applied" or (#remaining>0 and "pending" or "applied"),file,status,pending)
 end
 
 ---Explicit, potentially expensive ANALYSIS. Never opens/consumes a commit token.

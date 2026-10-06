@@ -3,7 +3,7 @@
 -- Lua5.1 checks real missing-join refusal; only LuaJIT performs shared commits.
 local M = {}
 function M.run()
-    local globals={"lstg","boss","_editor_class","_tmp_sc","_sc_table","ext","_va_runs","_va_api","jit","IsValid"}
+    local globals={"lstg","boss","_editor_class","_tmp_sc","_sc_table","ext","_va_runs","_va_api","_va_alias","jit","IsValid"}
     local saved={}
     for _,name in ipairs(globals) do saved[name]=rawget(_G,name) end
     local modules={"lstg.FileSystemWatcher","lstg.FileSystemWatcher.FileAction","SpellHotReload.Watcher","SpellHotReload.Plugin","imgui","SpellHotReload.Tab.MonitorTab"}
@@ -68,7 +68,7 @@ function M.run()
         must(f.p._store:RecordFirstRead(FILE,c.generation,content,1))
         return must(f.p._store:VerifyStable(FILE,c.generation,content,2,1))
     end
-    local function fixture()
+    local function fixture(first_source)
         debug.getupvalue,debug.setupvalue,debug.upvaluejoin=get,set,join
         _G.jit=saved.jit
         _va_runs=0
@@ -86,7 +86,7 @@ function M.run()
             return c
         end},move={New=function() return {is_combat=false} end}}
         f.p=Plugin.New();plugins[#plugins+1]=f.p
-        f.entry=must(Load.Capture(SOURCE,{name=FILE}))
+        f.entry=must(Load.Capture(first_source or SOURCE,{name=FILE}))
         must(f.p:AdoptLoad(FILE,f.entry))
         f.capture=f.p:GetVersions(FILE)
         f.p._activated,f.p._supported=true,true
@@ -201,7 +201,7 @@ function M.run()
             eq(f.p:RetryRestartFromUI(),"restarted","retry current handoff")
             eq(f.reads,reads,"Retry no disk");eq(f.creates,creates,"Retry no compile")
             eq(f.discoveries,discoveries,"Retry no discovery")
-            local faults={"disk","generation","missing","replay","layout","syntax","setter","flush"}
+            local faults={"disk","generation","missing","replay","declarations","syntax","setter","flush"}
             for _,fault in ipairs(faults) do
                 f=fixture();base=f.capture.snapshot
                 if fault=="disk" then f.disk=EDIT.."\n-- external drift"
@@ -211,7 +211,7 @@ function M.run()
                     end
                 elseif fault=="missing" then f.p:Missing(FILE)
                 elseif fault=="replay" then f.replay=true
-                elseif fault=="layout" then candidate(f,EDIT:gsub(SIDE:gsub("([^%w])","%%%1"),""))
+                elseif fault=="declarations" then candidate(f,"local added=1\n"..EDIT)
                 elseif fault=="syntax" then candidate(f,EDIT.."\nfunction broken(")
                 elseif fault=="setter" then
                     debug.setupvalue=function(fn,index,v)
@@ -229,6 +229,179 @@ function M.run()
                 unchanged(f,base,fault.." failure")
                 debug.setupvalue=set;_G.jit=saved.jit
             end
+            -- File layout no longer gates an unrelated, proved publication.
+            f=fixture();base=f.capture.snapshot;_va_api.set(9)
+            local kstart=assert(SOURCE:find("_editor_class['K'].cards",1,true))
+            local first_absent=SOURCE:sub(1,kstart-1)..SIDE
+            first_absent=first_absent:gsub("state%+n end","state+n+10 end")
+                :gsub("helper%(n%)%+300","helper(n)+330")
+            candidate(f,first_absent)
+            local result=f.p:ApplyFileFromUI(FILE)
+            has(result,"definitions committed; no restart","absent first class permits side publication")
+            has(result,"captured class is absent from candidate","absence diagnostic visible")
+            eq(f.capture.snapshot.revision,1,"partial file uses one version")
+            eq(f.classes.K.cards[2]:init(1),20,"absent-source actual consumer gets shared helper")
+            eq(f.classes.L.cards[1]:init(1),350,"remaining card wrapper published")
+            eq(f.capture.snapshot.units["card:1:K:2"].definition_version,1,"absent wrapper not falsely published")
+            eq(f.capture.snapshot.units["card:1:K:2"].observed.helper,2,"actual shared observation advances")
+            eq(f.capture.snapshot.loaded_source,SOURCE,"first-load structural baseline retained")
+            eq(f.constructions,3,"partial no construction replay")
+            eq(f.restarts,0,"partial no restart")
+            check(f.p._store:GetCandidate(FILE)~=nil,"absence remains pending")
+            candidate(f,first_absent:gsub("state%+n%+10","state+n+20"))
+            has(f.p:ApplyFileFromUI(FILE),"definitions committed; no restart","second partial Apply")
+            eq(f.capture.snapshot.revision,2,"second partial revision")
+            eq(f.classes.K.cards[2]:init(1),30,"retained old consumer sees second helper")
+            eq(Anchor.Get(f.entry,"state"),9,"state preserved twice")
+            local partial_revision=f.capture.snapshot.revision
+            has(f.p:ApplyFileFromUI(FILE),"pending file","repeated partial Apply shows remaining reasons")
+            eq(f.capture.snapshot.revision,partial_revision,"repeated partial no-op does not advance revision")
+            -- Added source slots never append live objects or claim completion.
+            local added=table.concat({"_tmp_sc=boss.card.New('Added',1,2,3,100)",
+                "function _tmp_sc:init(n) return helper(n)+900 end",
+                "table.insert(_editor_class['K'].cards,_tmp_sc)"},"\n")
+            f=fixture();candidate(f,(EDIT:gsub(SIDE:gsub("([^%w])","%%%1"),added.."\n"..SIDE)))
+            result=f.p:ApplyFileFromUI(FILE)
+            has(result,"definitions committed; no restart","new suffix leaves proved cards publishable")
+            has(result,"source slot 4","new source slot explicit")
+            eq(#f.classes.K.cards,3,"new slot not installed")
+            eq(f.constructions,3,"new constructor not called")
+            -- Same narrow generated format as the real 4B export: drop tuple,
+            -- perform flag and literal _sc_table registration. Still synthetic.
+            local exported=SOURCE:gsub(",100%)",",100,{0,0,0},false)")
+                :gsub("table.insert%(_editor_class%['([KL])'%].cards,_tmp_sc%)",function(class)
+                    return "_tmp_sc.perform=false\ntable.insert(_editor_class['"..class.."'].cards,_tmp_sc)\n"
+                        .."table.insert(_sc_table,{'"..class.."','Exported',_tmp_sc,#_editor_class['"..class.."'].cards,false})"
+                end)
+            local exported_added=added:gsub(",100%)",",100,{0,0,0},false)")
+                .."\ntable.insert(_sc_table,{'K','Added',_tmp_sc,#_editor_class['K'].cards,false})"
+            f=fixture(exported);base=f.capture.snapshot
+            candidate(f,(exported:gsub("_editor_class%['L'%].cards={}",
+                exported_added.."\n_editor_class['L'].cards={}")
+                :gsub("state%+n end","state+n+10 end")))
+            result=f.p:ApplyFileFromUI(FILE)
+            has(result,"definitions committed; no restart","real-format wiring permits safe roots")
+            has(result,"registration wiring is not published","registration remains explicit pending")
+            eq(#f.classes.K.cards,3,"real-format added slot never constructed")
+            eq(f.constructions,3,"real-format construction not replayed")
+            eq(f.classes.K.cards[2]:init(1),15,"real-format safe helper updated")
+            eq(f.capture.snapshot.loaded_source,exported,"real-format first load retained")
+            check(f.p._store:GetCandidate(FILE)~=nil,"real-format remainder retained")
+            -- Existing executable aliases are not rerun either. A retained
+            -- global alias to a pending class/list cannot authorize new code.
+            local aliased=SOURCE.."\n_va_alias=_editor_class['K']"
+            f=fixture(aliased);base=f.capture.snapshot
+            candidate(f,(aliased:gsub("_editor_class%['L'%].cards={}",
+                added.."\n_editor_class['L'].cards={}"):gsub("state%+n end","state+n+10 end")))
+            has(f.p:ApplyFileFromUI(FILE),"unbounded pending wiring binding","unmodeled alias binding refused")
+            unchanged(f,base,"unmodeled alias")
+            local suffix=EDIT:gsub(SIDE:gsub("([^%w])","%%%1"),added.."\n"..SIDE)
+            -- Changed bodies may not assume the retained live list reflects
+            -- pending wiring. This includes aliases and the generated temp.
+            for _,binding in ipairs({"_editor_class['K'].cards[4]",
+                "(function() local k=_editor_class['K']; return k.cards[4] end)()","_tmp_sc","_sc_table['Added']"}) do
+                f=fixture();base=f.capture.snapshot
+                candidate(f,(suffix:gsub("function _tmp_sc:init%(n%) return helper%(n%) end",
+                    "function _tmp_sc:init(n) return "..binding.." end")))
+                result=f.p:ApplyFileFromUI(FILE)
+                has(result,"definitions committed; no restart","pending binding permits independent publication")
+                has(result,"depends on unpublished","pending binding diagnosed")
+                eq(f.capture.snapshot.units["card:1:K:2"].definition_version,1,"dependent wrapper retained")
+                eq(f.classes.K.cards[2]:init(1),15,"retained wrapper only sees safe helper propagation")
+                eq(f.classes.L.cards[1]:init(1),315,"independent wrapper remains valid")
+            end
+            -- Literal metadata is retained, never executed; Lexer splits its
+            -- numeric tokens. Arithmetic/nonliteral effects are NOT whitelisted.
+            for _,literal in ipairs({"-10","1.5","1e+2","0x10"}) do
+                f=fixture();candidate(f,(EDIT:gsub("'B',1,2,3,100","'B',1,2,3,"..literal)))
+                result=f.p:ApplyFileFromUI(FILE)
+                has(result,"definitions committed; no restart","literal constructor metadata remains pending")
+                has(result,"constructor metadata is not published","literal metadata reason")
+                eq(f.constructions,3,"literal constructor never evaluated")
+            end
+            -- One unsupported helper blocks its candidate consumers, but not an
+            -- independently captured helper/new wrapper in the same aggregate.
+            f=fixture();base=f.capture.snapshot
+            local blocked_helper=SOURCE:gsub("local function idle", "helper=function(n) return n+999 end\nlocal function idle")
+                :gsub("n%+1000","n+2000"):gsub("helper%(n%)%+300","idle(n)+300")
+            candidate(f,blocked_helper);result=f.p:ApplyFileFromUI(FILE)
+            has(result,"definitions committed; no restart","independent roots survive helper refusal")
+            has(result,"one direct function definition/write required","helper-specific binding reason")
+            eq(f.classes.K.cards[2]:init(1),5,"blocked helper/card retained")
+            eq(Anchor.Get(f.entry,"helper"),base.functions.units.helper.fn,"blocked helper not written")
+            eq(f.classes.L.cards[1]:init(1),2301,"safe other helper and wrapper live")
+            eq(f.capture.snapshot.functions.units.helper.definition_version,1,"blocked helper version retained")
+            eq(f.capture.snapshot.functions.units.idle.definition_version,2,"independent helper version published")
+            eq(f.capture.snapshot.revision,1,"union is one publication")
+            f=fixture();base=f.capture.snapshot;candidate(f,blocked_helper)
+            local external=function() return 123 end
+            _G.jit={flush=function() set(f.entry.anchor,assert(Anchor.Slot(f.entry,"helper")),external) end}
+            has(f.p:ApplyFileFromUI(FILE),"published function read changed","blocked function identity guarded after flush")
+            eq(Anchor.Get(f.entry,"helper"),external,"external mutation not overwritten by rejection")
+            eq(Anchor.Get(f.entry,"idle"),base.functions.units.idle.fn,"independent helper not half-published")
+            set(f.entry.anchor,assert(Anchor.Slot(f.entry,"helper")),base.functions.units.helper.fn)
+            unchanged(f,base,"blocked identity drift")
+            _G.jit=saved.jit
+            -- A callback moved before declarations fails lexical visibility,
+            -- while later wrappers and their verified helper remain usable.
+            f=fixture();base=f.capture.snapshot
+            local prefix=SOURCE:sub(1,kstart-1)
+            local tail=SOURCE:sub(kstart)
+            local at=assert(tail:find("_tmp_sc=boss.card.New('B'",1,true))
+            local moved="-- Generated by LuaSTG Editor Sharp\n"..tail:sub(1,at-1)..prefix..tail:sub(at)
+            moved=moved:gsub("state%+n end","state+n+10 end")
+                :gsub("helper%(n%)%+100","helper(n)+200")
+            candidate(f,moved);result=f.p:ApplyFileFromUI(FILE)
+            has(result,"definitions committed; no restart","independent cards survive callback binding refusal")
+            has(result,"callback definition-point binding changed","callback-specific reason")
+            eq(f.capture.snapshot.units["card:1:K:2"].definition_version,1,"unsafe wrapper version retained")
+            eq(f.classes.K.cards[2]:init(1),15,"unsafe-source old callback uses actual shared update")
+            eq(f.classes.K.cards[3]:init(1),215,"later safe wrapper published")
+            -- Unbounded top-level edits never become safe by absent graph edges.
+            for _,bytes in ipairs({EDIT.."\nUNREPLAYED_UNKNOWN()",
+                (EDIT:gsub("_va_runs=_va_runs%+1","_va_runs=_va_runs+2")),
+                (EDIT:gsub("'B',1,2,3,100","'B',1,2,3,unproved()")),
+                (EDIT:gsub("'B',1,2,3,100","'B',1,2,3,1-2")),
+                (EDIT:gsub("'B',1,2,3,100","'B',1,2,3,1 - 2")),
+                (EDIT:gsub("'B',1,2,3,100","'B',1,2,3,100,{unproved(),0,0},false")),
+                (EDIT:gsub("'B',1,2,3,100","'B',1,2,3,100,{x=1,0,0},false")),
+                (EDIT:gsub("'B',1,2,3,100","'B',1,2,3,100,{{1},0,0},false")),
+                EDIT.."\ntable.insert(_sc_table,{'K',unproved(),_tmp_sc,#_editor_class['K'].cards,false})",
+                (EDIT:gsub("return helper%(n%)%+200 end","return helper(n)+200 end UNREPLAYED_UNKNOWN()")),
+                EDIT.."\n_editor_class['N']=Class(boss)"}) do
+                f=fixture();base=f.capture.snapshot;candidate(f,bytes)
+                has(f.p:ApplyFileFromUI(FILE),"unbounded top-level change","unknown effect refused")
+                unchanged(f,base,"unbounded effect")
+                eq(_va_runs,1,"unknown initializer not executed")
+            end
+            -- Pending new class creation cannot be assumed by a changed body.
+            f=fixture();base=f.capture.snapshot
+            local unavailable=SOURCE:gsub("function _tmp_sc:init%(n%) return helper%(n%) end",
+                "function _tmp_sc:init(n) return _editor_class['N'] end")
+                :gsub("helper%(n%)%+300","helper(n)+330")
+            candidate(f,unavailable);result=f.p:ApplyFileFromUI(FILE)
+            has(result,"definitions committed; no restart","unavailable class binding blocks only dependent card")
+            has(result,"candidate class binding is unavailable","missing binding diagnosed")
+            eq(f.classes.K.cards[2]:init(1),5,"missing class body not published")
+            eq(f.classes.L.cards[1]:init(1),335,"independent wrapper still published")
+            -- All file mappings are rechecked after flush, including retained
+            -- source-absent units, and explicit new registry reads are guarded.
+            f=fixture();base=f.capture.snapshot;candidate(f,first_absent)
+            _G.jit={flush=function() f.classes.K.cards[2].name="Changed during flush" end}
+            has(f.p:ApplyFileFromUI(FILE),"correspondence changed","postflush whole proof rechecked")
+            unchanged(f,base,"postflush proof")
+            _G.jit=saved.jit
+            f=fixture();base=f.capture.snapshot
+            f.classes.N={}
+            candidate(f,unavailable)
+            _G.jit={flush=function() f.classes.N={} end}
+            has(f.p:ApplyFileFromUI(FILE),"class registry binding changed","postflush external class binding rechecked")
+            unchanged(f,base,"postflush registry read")
+            _G.jit=saved.jit
+            -- No aggregate entry means no fabricated publication authority.
+            f=fixture();base=f.capture.snapshot;candidate(f,SOURCE:sub(1,kstart-1))
+            has(f.p:ApplyFileFromUI(FILE),"no genuine Card discovery entry","no entry refused")
+            unchanged(f,base,"no Card entry")
             f=fixture();base=f.capture.snapshot
             f.p._store.RecordPartialPublication=function() return nil,"bookkeeping fault" end
             has(f.p:ApplyFileFromUI(FILE),"definitions committed; partial publication bookkeeping failed","postcommit fact preserved")

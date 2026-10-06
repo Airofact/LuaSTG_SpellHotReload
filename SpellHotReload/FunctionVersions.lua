@@ -305,7 +305,7 @@ end
 ---All candidate literals may be compiled for binding/capture inspection; this
 ---does NOT schedule all of them for publication. There is no global cache.
 ---Only exact candidate bytes go in content, never a token hash for stale checks.
-local function compare(state, content, snapshot)
+local function compare(state, content, snapshot, partial)
     local problem = snapshot_problem(state)
     if problem then return fail("unsupported", problem, state) end
     local scan, err = inspect(content, state, snapshot)
@@ -320,7 +320,31 @@ local function compare(state, content, snapshot)
     local identities = {}
     for _, name in ipairs(state.names) do identities[name] = state.units[name].fn end
     local prepared, perr
-    if snapshot ~= nil then
+    local blocked={}
+    if partial then
+        -- Empty selection still proves the complete fixed declaration/Anchor
+        -- contract. Candidate definition failures below have per-name scope.
+        prepared, perr = Plan.PrepareDiscovery(snapshot, state.entry, {}, identities)
+        if not prepared then return nil, perr end
+        for _,name in ipairs(state.names) do
+            local current,why=Anchor.Get(state.entry,name)
+            if why or current~=identities[name] then
+                return fail("stale",why or "published function was externally replaced",state,name)
+            end
+            local slot,slot_error=Anchor.Slot(state.entry,name)
+            if not slot then return fail("stale",slot_error,state,name) end
+            -- Include blocked and zero-capture functions in the final identity
+            -- read-set too; old closures sharing cells is not a value check.
+            prepared.read_set[#prepared.read_set+1]={name=name,anchor=state.entry.anchor,
+                index=slot,value=current}
+            local one,err=Plan.PrepareDiscovery(snapshot,state.entry,{name},identities)
+            if not one then blocked[name]=err
+            else
+                prepared.functions[#prepared.functions+1]=one.functions[1]
+                prepared.writes[#prepared.writes+1]=one.writes[1]
+            end
+        end
+    elseif snapshot ~= nil then
         prepared, perr = Plan.PrepareDiscovery(snapshot, state.entry, state.names, identities)
     else
         prepared, perr = Plan.Prepare(content, state.entry, state.names, identities)
@@ -329,8 +353,17 @@ local function compare(state, content, snapshot)
     local report = { kind = M.Kind .. ".Diff", version = M.Version,
         base = state, content = content, prepared = prepared, by_name = {},
         changed = {}, affected = {}, initializers = {}, capture_reads = reads,
-        scope = "local-functions", discovery = snapshot }
+        scope = "local-functions", discovery = snapshot, scan = partial and scan or nil }
     local targets = {}
+    for _,name in ipairs(state.names) do
+        if blocked[name] then
+            local previous=state.units[name]
+            report.by_name[name]={name=name,previous=previous,blocked=blocked[name],changed=true,
+                signature=previous.signature,dependencies=copy(previous.dependencies),action="binding-blocked"}
+            report.changed[#report.changed+1]=name
+            targets[name]=true
+        end
+    end
     for _, item in ipairs(prepared.functions) do
         local name, previous = item.name, state.units[item.name]
         local sig = signature(item.definition.body)
@@ -370,11 +403,13 @@ function M.Select(report, roots)
         return fail("unsupported", "diff and dense roots required")
     end
     local seen, needed, root_set = {}, {}, {}
+    local problem
     local function visit(name)
         if seen[name] then return end
         seen[name] = true
         local current = report.by_name[name]
         if not current then return end
+        if current.blocked then problem=problem or current.blocked;return end
         if current.changed then needed[name] = true end
         local graph = current.changed and current or current.previous
         for _, dep in ipairs(graph.dependencies) do visit(dep) end
@@ -385,6 +420,7 @@ function M.Select(report, roots)
         end
         root_set[name] = true; visit(name)
     end
+    if problem then return nil,problem end
     local prepared, base = report.prepared, report.base
     local result = { kind = M.Kind .. ".Selection", version = M.Version,
         base = base, report = report, roots = copy(roots), content = report.content,
@@ -400,9 +436,10 @@ function M.Select(report, roots)
             result.functions[#result.functions + 1] = item
             result.writes[#result.writes + 1] = prepared.writes[i]
             for _, join in ipairs(item.join_plan.joins) do result.joins[#result.joins + 1] = join end
-        elseif report.by_name[item.name].changed then
-            result.pending[#result.pending + 1] = item.name
         end
+    end
+    for _,name in ipairs(base.names) do
+        if report.by_name[name].changed and not needed[name] then result.pending[#result.pending+1]=name end
     end
     -- A committed change propagates through the actual post-selection graph,
     -- not through still-pending candidate edges that have never been published.
@@ -456,6 +493,16 @@ function M.CompareDiscovery(state, snapshot)
         return fail("unsupported", "complete discovery required", state)
     end
     return compare(state, snapshot.common.content, snapshot)
+end
+---File-only explicit entry. Fixed declarations and ALL actual old sharing/
+---identities remain mandatory. Unsupported candidate definitions stay blocked;
+---Select rejects every root whose effective capture closure reaches them.
+---This is not permission to ignore changed unknown top-level effects.
+function M.CompareFileDiscovery(state,snapshot)
+    if not plain(snapshot) or not plain(snapshot.common) then
+        return fail("unsupported","complete discovery required",state)
+    end
+    return compare(state,snapshot.common.content,snapshot,true)
 end
 
 return M

@@ -319,8 +319,222 @@ function M.Seed(functions, initial, defaults)
     return state
 end
 
+-- Narrow file-layout allowance. Only exact safe generated wiring statements
+-- are excluded from the unknown-effect check; NEVER mask a whole class range.
+-- Nonliteral calls/field writes and changed class implementations remain a
+-- file-wide refusal when their effect on globals/bindings cannot be bounded.
+local function safe_wiring(tokens,first,last)
+    local function v(i) return tokens[i] and tokens[i].value end
+    while v(last)==";" do last=last-1 end
+    local function seq(at,values)
+        for i,value in ipairs(values) do if v(at+i-1)~=value then return false end end
+        return true
+    end
+    local function scalar(i,numeric)
+        local start=i
+        while i<=last and v(i)~="," and v(i)~=")" and v(i)~="}" do i=i+1 end
+        if i==start then return nil end
+        local token=tokens[start]
+        if not numeric and i==start+1 and (token.kind=="string"
+            or v(start)=="true" or v(start)=="false" or v(start)=="nil") then return i end
+        -- Lexer represents numeric digits as symbol tokens. Prove one
+        -- contiguous numeric literal, not an expression assembled by deleting
+        -- whitespace (e.g. `1 - 2` or `0 x10`). No evaluation.
+        local parts={}
+        for j=start,i-1 do
+            if j>start and tokens[j].pos~=tokens[j-1].pos+#tokens[j-1].value then return nil end
+            parts[#parts+1]=v(j)
+        end
+        local literal=table.concat(parts)
+        if literal:sub(1,1)=="-" then literal=literal:sub(2) end
+        if literal=="" or not literal:match("^[%d%.]") or not tonumber(literal) then return nil end
+        return i
+    end
+    local function constructor(at)
+        if not seq(at,{"boss","."}) or (v(at+2)~="card" and v(at+2)~="move")
+            or not seq(at+3,{".","New","("}) then return nil end
+        local i,argument=at+6,1
+        -- Literal scalars and the editor's sixth card argument {n,n,n} only.
+        -- No calls, lookups, keyed/nested tables or evaluation of any argument.
+        while i<=last and v(i)~=")" do
+            if v(i)=="{" and v(at+2)=="card" and argument==6 then
+                i=i+1
+                for element=1,3 do
+                    i=scalar(i,true)
+                    if not i then return nil end
+                    if element<3 then
+                        if v(i)~="," then return nil end
+                        i=i+1
+                    elseif v(i)~="}" then return nil end
+                end
+                i=i+1
+            else i=scalar(i);if not i then return nil end end
+            argument=argument+1
+            if v(i)=="," then
+                i=i+1
+                if v(i)==")" then return nil end
+            elseif v(i)~=")" then return nil end
+        end
+        return v(i)==")" and i+1 or nil
+    end
+    local function list(at)
+        if not seq(at,{"_editor_class","["}) or not tokens[at+2]
+            or tokens[at+2].kind~="string" or not seq(at+3,{"]",".","cards"}) then return nil end
+        return at+6
+    end
+    if seq(first,{"_tmp_sc","="}) then return constructor(first+2)==last+1 end
+    if seq(first,{"_tmp_sc",".","perform","="}) then
+        return first+4==last and (v(last)=="true" or v(last)=="false")
+    end
+    local at=list(first)
+    if at and seq(at,{"=","{"}) and v(last)=="}" then
+        local i=at+2
+        while i<last do
+            if v(i)=="_tmp_sc" then i=i+1 else i=constructor(i) end
+            if not i then return false end
+            if v(i)=="," then i=i+1 elseif i~=last then return false end
+        end
+        return i==last
+    end
+    if seq(first,{"table",".","insert","("}) then
+        if seq(first+4,{"_sc_table",",","{"}) and tokens[first+7]
+            and tokens[first+7].kind=="string" and v(first+8)=="," and tokens[first+9]
+            and tokens[first+9].kind=="string" and seq(first+10,{",","_tmp_sc",",","#"}) then
+            local stop=list(first+14)
+            return stop and v(stop)=="," and (v(stop+1)=="false" or v(stop+1)=="true")
+                and seq(stop+2,{"}",")"}) and stop+3==last or false
+        end
+        at=list(first+4)
+        if not at or v(at)~="," or v(last)~=")" then return false end
+        local stop=v(at+1)=="_tmp_sc" and at+2 or constructor(at+1)
+        return stop==last
+    end
+    return false
+end
+local function file_effects(state,scan,pending_classes)
+    local Source=require("SpellHotReload.FunctionPlan")
+    local loaded,err=Source.Inspect(state.loaded_source)
+    if not loaded then return nil,err end
+    local function residual(source)
+        local ignored,result,wiring={},{},{}
+        for _,definitions in next,source.definitions do
+            for _,definition in ipairs(definitions) do ignored[definition.statement]=true end
+        end
+        for _,declaration in ipairs(source.bindings.declarations) do
+            if not state.functions.units[declaration.name] then ignored[declaration.statement]=true end
+        end
+        for index,statement in ipairs(source.analysis.statements) do
+            local tokens=source.analysis.tokens
+            local first,last=statement.tok.first,statement.tok.last
+            while tokens[last] and tokens[last].value==";" do last=last-1 end
+            local function val(i) return tokens[i] and tokens[i].value end
+            local callback
+            if val(first)=="function" and val(first+1)=="_tmp_sc" and val(first+2)==":" then
+                callback=allowed[val(first+3)] and val(first+4)=="("
+            elseif val(first)=="_tmp_sc" and val(first+1)=="." then
+                callback=allowed[val(first+2)] and val(first+3)=="="
+                    and val(first+4)=="function" and val(first+5)=="("
+            end
+            if callback then
+                local stop
+                for i=first,last do
+                    if val(i)=="end" and tokens[i].depth==1 then stop=i;break end
+                end
+                callback=stop==last
+            end
+            local wire=safe_wiring(tokens,first,last)
+            if wire then
+                local values={}
+                for i=first,last do values[#values+1]=tokens[i].kind..":"..tokens[i].value end
+                wiring[#wiring+1]=table.concat(values,"|")
+            end
+            if not ignored[index] and not callback and not wire then
+                local assign
+                for i=first,last do if val(i)=="=" then assign=i;break end end
+                -- An unchanged executable alias/call can still couple new
+                -- definitions to pending wiring. Do not infer that its globals
+                -- were refreshed. Function bodies (depth>0) are not executed.
+                local binding_read=false
+                for i=(assign and assign+1 or first),last do
+                    local token=tokens[i]
+                    if token.depth==0 and token.kind=="word" then
+                        if token.value=="_tmp_sc" or token.value=="_sc_table" then binding_read=true end
+                        if token.value=="_editor_class" then
+                            local label=tokens[i+2]
+                            local decode=val(i+1)=="[" and label and label.kind=="string"
+                                and val(i+3)=="]" and (loadstring or load)("return "..label.value)
+                            local name=decode and decode()
+                            if not name or pending_classes[name] then binding_read=true end
+                        end
+                    end
+                end
+                -- Ranges refer to complete bytes; BOM is accounted for here.
+                local body=source.analysis.source:sub(statement.source_range.first-source.analysis.source_offset,
+                    statement.source_range.last-source.analysis.source_offset)
+                local visible={}
+                for name in next,source.bindings.statements[index].visible do visible[#visible+1]=name end
+                table.sort(visible)
+                result[#result+1]={signature=signature(body).."@"..table.concat(visible,","),
+                    first=statement.source_range.first,last=statement.source_range.last,binding_read=binding_read}
+            end
+        end
+        return result,table.concat(wiring,"\n")
+    end
+    -- Generated identities must not accidentally be lexical state cells.
+    for _,name in ipairs({"_tmp_sc","_sc_table","_editor_class","boss","table"}) do
+        if scan.bindings.by_name[name] or loaded.bindings.by_name[name] then
+            return fail("unsupported","generated wiring name is shadowed: "..name,state)
+        end
+    end
+    local before,old_wiring=residual(loaded)
+    local after,new_wiring=residual(scan)
+    local count=math.max(#before,#after)
+    for i=1,count do
+        if not before[i] or not after[i] or before[i].signature~=after[i].signature then
+            local point=after[i] or before[i]
+            return fail("unsupported",string.format("unbounded top-level change at bytes %d-%d; restart required",
+                point.first,point.last),state)
+        end
+        if old_wiring~=new_wiring and (before[i].binding_read or after[i].binding_read) then
+            return fail("unsupported",string.format("unbounded pending wiring binding at bytes %d-%d; restart required",
+                after[i].first,after[i].last),state)
+        end
+    end
+    return true,old_wiring~=new_wiring
+end
+-- Newly compiled code may not assume pending class creation/registration ran.
+-- Literal class lookups require the actual live registry target; dynamic class
+-- lookup is conservatively blocked for changed definitions in this file scope.
+local function class_binding(body,classes,state,key,pending_classes,wiring_changed)
+    local tokens=Lexer.Tokenize(body)
+    local reads={}
+    for i,token in ipairs(tokens) do
+        if wiring_changed and token.kind=="word"
+            and (token.value=="_tmp_sc" or token.value=="_sc_table") then
+            return fail("unsupported","candidate generated-card binding depends on unpublished wiring: "..token.value,state,key)
+        end
+        if token.kind=="word" and token.value=="_editor_class" then
+            local open,label,close=tokens[i+1],tokens[i+2],tokens[i+3]
+            if not open or open.value~="[" or not label or label.kind~="string"
+                or not close or close.value~="]" then
+                return fail("unsupported","dynamic class registry binding cannot be proved",state,key)
+            end
+            -- Evaluate a lexer-proved STRING literal only, not source/body/RHS.
+            local decode=(loadstring or load)("return "..label.value)
+            local name=decode and decode()
+            if type(name)~="string" or not plain(rawget(classes,name)) then
+                return fail("unsupported","candidate class binding is unavailable; registration remains pending",state,key)
+            end
+            if pending_classes[name] then
+                return fail("unsupported","candidate class binding depends on unpublished layout: "..name,state,key)
+            end
+            reads[#reads+1]={registry=classes,key=name,value=rawget(classes,name)}
+        end
+    end
+    return reads
+end
 ---Full candidate report; compares each actually published callback signature.
-local function compare(state, content, snapshot, location)
+local function compare(state, content, snapshot, location, file_location)
     if not valid(state) then return fail("unsupported", "a valid card snapshot is required", state) end
     if snapshot ~= nil then
         local common = plain(snapshot) and snapshot.common or nil
@@ -332,27 +546,58 @@ local function compare(state, content, snapshot, location)
         end
     end
     local function_diff, ferr
-    if snapshot ~= nil then function_diff, ferr = Functions.CompareDiscovery(state.functions, snapshot)
+    local class_reads={}
+    if file_location then function_diff,ferr=Functions.CompareFileDiscovery(state.functions,snapshot)
+    elseif snapshot ~= nil then function_diff, ferr = Functions.CompareDiscovery(state.functions, snapshot)
     else function_diff, ferr = Functions.Compare(state.functions, content) end
     if not function_diff then return nil, ferr end
     local discovery, derr = discover(content, state, snapshot)
     if not discovery then return nil, derr end
-    if not location and (not fixed_layout(state.layout, discovery.layout)
+    local pending_classes,wiring_changed={}
+    if file_location then
+        for class,layout in next,state.layout do
+            if not discovery.layout[class] or not fixed_layout({[class]=layout},
+                {[class]=discovery.layout[class]}) then pending_classes[class]=true end
+        end
+        for class in next,discovery.layout do
+            if not state.layout[class] then pending_classes[class]=true end
+        end
+        local safe,why=file_effects(state,function_diff.scan,pending_classes)
+        if not safe then return nil,why end
+        wiring_changed=why
+        for _,name in ipairs(state.functions.names) do
+            local item=function_diff.by_name[name]
+            if item.changed and not item.blocked then
+                local safe,err=class_binding(item.item.definition.body,file_location.classes,state,"local:"..name,
+                    pending_classes,wiring_changed)
+                if not safe then item.blocked=err;item.action="binding-blocked"
+                else for _,read in ipairs(safe) do class_reads[#class_reads+1]=read end end
+            end
+        end
+    end
+    if not location and not file_location and (not fixed_layout(state.layout, discovery.layout)
         or not same(state.order, discovery.order)) then
         return fail("ambiguous", "fixed first-load card layout changed; restart/remapping required", state)
     end
     local report = { kind = M.Kind .. ".Diff", version = M.Version, base = state,
         content = content, discovery = snapshot, functions = function_diff, by_key = {}, changed = {},
-        affected = {}, read_set = {}, capture_reads = {} }
+        affected = {}, read_set = {}, capture_reads = {}, class_reads=class_reads }
     local claimed = {}
-    if location then
+    if location or file_location then
         report.location, report.unmapped, report.unowned, report.tombstones = location, {}, {}, {}
     end
+    report.file_location=file_location
     local changed_functions = {}
     for _, name in ipairs(function_diff.affected) do changed_functions[name] = true end
     for _, key in ipairs(state.order) do
         local old, source = state.units[key], discovery.descriptors[key]
-        if location then
+        if file_location then
+            local proof=file_location.by_key[key]
+            source=proof.status=="located" and discovery.descriptors[key_of(old.class_key,proof.candidate_slot)] or nil
+            if source and source.descriptor~=proof.descriptor then
+                return fail("ownership","file descriptor disagrees with full discovery",state,key)
+            end
+        elseif location then
             local before, after = state.layout[old.class_key], discovery.layout[old.class_key]
             -- Snapshot slot keys are lookup coordinates, not cross-version identity.
             if key == location.key then
@@ -366,7 +611,7 @@ local function compare(state, content, snapshot, location)
         end
         local descriptor = source and source.descriptor
         local item = { key = key, previous = old, callbacks = {}, changed = false }
-        if location then
+        if location or file_location then
             item.source_slot = source and source.slot
             item.source_key = source and ("card:" .. source.class_key)
             if source then
@@ -377,7 +622,9 @@ local function compare(state, content, snapshot, location)
                 claimed[source_key] = key
             else
                 item.pending = true
-                item.source_status = discovery.layout[old.class_key] and "unmapped" or "source-absent"
+                item.source_status = file_location and file_location.by_key[key].status
+                    or (discovery.layout[old.class_key] and "unmapped" or "source-absent")
+                item.reason=file_location and file_location.by_key[key].reason
                 report.unmapped[#report.unmapped + 1] = key
                 if item.source_status == "source-absent" then
                     report.tombstones[#report.tombstones + 1] = { key=key, previous=old,
@@ -398,18 +645,38 @@ local function compare(state, content, snapshot, location)
             local candidate, cerr
             if descriptor then
                 candidate, cerr = prepare(discovery, descriptor, name, state.entry, state.defaults, state, key)
-                if not candidate then return nil, cerr end
+                if not candidate then
+                    if not file_location then return nil,cerr end
+                    item.blocked=item.blocked or cerr;candidate=copy(previous)
+                end
             else
                 -- Keep real published captures for impact/observations; no guessed Inject.
                 candidate = copy(previous)
             end
             if previous.body and candidate.body and not same(previous.visible, candidate.visible) then
-                return fail("unsupported", "callback definition-point binding changed", state, key)
+                local _,err=fail("unsupported","callback definition-point binding changed",state,key)
+                if not file_location then return nil,err end
+                item.blocked=item.blocked or err
             end
             candidate.changed = candidate.signature ~= previous.signature
+            if file_location and candidate.changed then
+                local safe,err=class_binding(candidate.body or "",file_location.classes,state,key,
+                    pending_classes,wiring_changed)
+                if not safe then item.blocked=item.blocked or err
+                else for _,read in ipairs(safe) do class_reads[#class_reads+1]=read end end
+            end
             candidate.previous = previous
             item.callbacks[name] = candidate
             item.changed = item.changed or candidate.changed
+        end
+        if item.blocked then
+            item.pending,item.changed,item.source_status=true,false,"binding-blocked"
+            item.reason=item.blocked.message
+            for _,name in ipairs(CALLBACKS) do
+                item.callbacks[name]=copy(old.callbacks[name])
+                item.callbacks[name].previous=old.callbacks[name]
+                item.callbacks[name].changed=false
+            end
         end
         local impacted = item.changed
         for _, name in ipairs(CALLBACKS) do
@@ -425,7 +692,7 @@ local function compare(state, content, snapshot, location)
         if item.changed then report.changed[#report.changed + 1] = key end
         if impacted then report.affected[#report.affected + 1] = key end
     end
-    if location then
+    if location or file_location then
         for _, source_key in ipairs(discovery.order) do
             if not claimed[source_key] then
                 local source = discovery.descriptors[source_key]
@@ -435,10 +702,32 @@ local function compare(state, content, snapshot, location)
             end
         end
     end
+    if file_location then
+        report.structural_pending={}
+        if wiring_changed then
+            report.structural_pending[#report.structural_pending+1]={source_key="file:"..state.file,
+                reason="generated card/list/registration wiring is not published; live wiring retained"}
+        end
+        local seen={}
+        for _,owner in ipairs(file_location.capture.ownership) do
+            local class=owner.class_key;seen[class]=true
+            if not discovery.layout[class] or not fixed_layout({[class]=state.layout[class]},
+                {[class]=discovery.layout[class]}) then
+                report.structural_pending[#report.structural_pending+1]={source_key="card:"..class,
+                    reason="card layout/constructor metadata is not published; live list retained"}
+            end
+        end
+        for _,entry in ipairs(file_location.discovery.entries) do
+            if entry.adapter==Card and not seen[entry.unit.context.class_key] then
+                report.structural_pending[#report.structural_pending+1]={source_key=entry.unit.key,
+                    reason="new class/list is not registered or published"}
+            end
+        end
+    end
     return report
 end
 
----Explicit current cards; no automatic selection of other edited wrappers.
+---Explicit proven cards; SelectFile supplies all safe file roots in one call.
 function M.Select(report, keys, function_keys)
     if not plain(report) or report.kind ~= M.Kind .. ".Diff" or report.version ~= M.Version
         or not valid(report.base) or not plain(report.by_key) or dense(keys) == nil then
@@ -451,6 +740,10 @@ function M.Select(report, keys, function_keys)
         end
         if report.location and (key ~= report.location.key or report.by_key[key].pending) then
             return fail("ambiguous", "only the proven current root may be selected", report.base, key)
+        end
+        if report.file_location and report.by_key[key].pending then
+            return nil,report.by_key[key].blocked or {phase="inject",code="ambiguous",file=report.base.file,
+                unit_key=key,message=report.by_key[key].reason or "file card has no safe correspondence"}
         end
         selected[key] = true
         local item = report.by_key[key]
@@ -467,7 +760,7 @@ function M.Select(report, keys, function_keys)
     -- cannot use this to expand their proven publication scope.
     if function_keys ~= nil then
         if report.location or dense(function_keys) == nil then
-            return fail("unsupported", "fixed-layout function keys required", report.base)
+            return fail("unsupported", "file-scope function keys required", report.base)
         end
         local seen = {}
         for _, name in ipairs(function_keys) do
@@ -496,6 +789,13 @@ function M.Select(report, keys, function_keys)
         result.location = report.location
         result.pending_sources = copy(report.unowned)
         result.tombstones = copy(report.tombstones)
+    end
+    if report.file_location then
+        result.file_location=report.file_location
+        result.file_class_reads=copy(report.class_reads)
+        result.pending_sources=copy(report.unowned)
+        result.tombstones=copy(report.tombstones)
+        result.structural_pending=copy(report.structural_pending)
     end
     for _, read in ipairs(report.read_set) do result.read_set[#result.read_set + 1] = read end
     for _, read in ipairs(report.capture_reads) do result.capture_reads[#result.capture_reads + 1] = read end
@@ -673,6 +973,36 @@ function M.CompareLocated(state, location, binding, capture, live)
         return fail("stale", "located publication baseline disagrees", state)
     end
     return compare(state, location.content, location.discovery, location)
+end
+---File correspondence remains a distinct permission scope from current-root.
+function M.CompareFileLocated(state,location,capture,live)
+    if not valid(state) then return fail("unsupported","a valid card snapshot is required",state) end
+    local checked,err=Target.CheckFileDiscovery(location,capture,live)
+    if not checked then return nil,err end
+    if location.snapshot~=state then return fail("stale","file publication baseline disagrees",state) end
+    return compare(state,location.content,location.discovery,nil,location)
+end
+---Select all individually safe roots, then build ONE aggregate. Singleton
+---selections are read-only graph checks, never separate commits/versions.
+function M.SelectFile(report)
+    if not plain(report) or not plain(report.file_location) or not valid(report.base) then
+        return fail("unsupported","file-located card report required")
+    end
+    local keys,names,blocked={},{},{}
+    for _,key in ipairs(report.base.order) do
+        local selected,err=M.Select(report,{key})
+        if selected then keys[#keys+1]=key
+        else blocked[#blocked+1]={key=key,reason=err.message,code=err.code} end
+    end
+    for _,name in ipairs(report.base.functions.names) do
+        local selected,err=M.Select(report,{}, {name})
+        if selected then names[#names+1]=name
+        else blocked[#blocked+1]={key="local:"..name,reason=err.message,code=err.code} end
+    end
+    local selection,err=M.Select(report,keys,names)
+    if not selection then return nil,err end
+    selection.blocked=blocked
+    return selection
 end
 
 return M
