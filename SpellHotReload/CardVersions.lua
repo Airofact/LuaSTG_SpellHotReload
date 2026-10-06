@@ -952,6 +952,178 @@ function M.Describe(selection)
     return result
 end
 
+---Read-only COMPLETE remainder against report.base's actual published ledger.
+---This is NOT a commit receipt, freshness check, ACK or removal authority.
+---Callers must obtain a fresh checked report against the committed snapshot,
+---then separately check receipt/session/capture/revision/generation/exact bytes.
+---Never pass a selection or treat Next's proposed state as publication history.
+---Only individually owned whole literal statements are removed from the token
+---remainder. Constructors, names, lists, registrations, state declarations and
+---unknown statements stay visible; no class-range or blanket callback mask.
+---Comments/whitespace/trailing statement semicolons are nonsemantic here.
+function M.Remaining(report)
+    if not plain(report) or report.kind ~= M.Kind .. ".Diff"
+        or report.version ~= M.Version or not valid(report.base)
+        or not plain(report.functions) or report.functions.base ~= report.base.functions
+        or not plain(report.by_key) or type(report.content) ~= "string" then
+        return fail("unsupported", "a checked card diff against actual publications is required")
+    end
+    local state = report.base
+    local loaded, lerr = discover(state.loaded_source, state)
+    if not loaded then return nil, lerr end
+    local candidate, cerr = discover(report.content, state, report.discovery)
+    if not candidate then return nil, cerr end
+    local result = {kind=M.Kind .. ".Remaining", version=M.Version, file=state.file,
+        session_id=state.session_id, revision=state.revision, content=report.content,
+        generation=report.discovery and report.discovery.common.candidate_generation,
+        pending={}}
+    local function pending(kind, key, reason, point, previous)
+        result.pending[#result.pending + 1] = {kind=kind, key=key, reason=reason,
+            first=point and point.first, last=point and point.last,
+            previous_first=previous and previous.first, previous_last=previous and previous.last}
+    end
+    local old_claims, new_claims = {}, {}
+    local function claim(scan, claims, point, key)
+        for index, statement in ipairs(scan.analysis.statements) do
+            local tokens, last = scan.analysis.tokens, statement.tok.last
+            while tokens[last] and tokens[last].value == ";" do last=last-1 end
+            local token = tokens[last]
+            if statement.source_range.first == point.first and token
+                and token.pos + #token.value - 1 + scan.analysis.source_offset == point.last then
+                if claims[index] then
+                    return fail("ownership", "definition statement has multiple coverage owners", state, key)
+                end
+                claims[index] = key
+                return true
+            end
+        end
+        return fail("unsupported", "definition does not occupy a whole source statement", state, key)
+    end
+    local function function_claim(scan, claims, definition, key)
+        local statement = scan.analysis.statements[definition.statement]
+        if not statement then return fail("unsupported", "definition statement unavailable", state, key) end
+        local last, tokens = statement.tok.last, scan.analysis.tokens
+        while tokens[last] and tokens[last].value == ";" do last=last-1 end
+        return claim(scan, claims, {first=statement.source_range.first,
+            last=tokens[last].pos + #tokens[last].value - 1 + scan.analysis.source_offset}, key)
+    end
+    for _, name in ipairs(state.functions.names) do
+        local key, item = "local:" .. name, report.functions.by_name[name]
+        local old = loaded.scan.definitions[name]
+        if not old or #old ~= 1 then return fail("ownership", "loaded function definition unavailable", state, key) end
+        local ok, err = function_claim(loaded.scan, old_claims, old[1], key)
+        if not ok then return nil, err end
+        if item.blocked or item.changed then
+            pending("function", key, item.blocked and item.blocked.message or "function definition not published")
+        end
+        -- Only a successfully prepared unique literal can claim its statement.
+        -- Blocked/multiple/dynamic writes otherwise remain in the token remainder.
+        if item.item then
+            local definitions = candidate.scan.definitions[name]
+            if not definitions or #definitions ~= 1
+                or definitions[1].body ~= item.item.definition.body then
+                return fail("ownership", "prepared function disagrees with candidate definition", state, key)
+            end
+            ok, err = function_claim(candidate.scan, new_claims, definitions[1], key)
+            if not ok then return nil, err end
+        end
+    end
+    for _, key in ipairs(state.order) do
+        local unit, item = state.units[key], report.by_key[key]
+        local old = loaded.descriptors[key]
+        if not old then return fail("ownership", "loaded callback owner unavailable", state, key) end
+        local source_slot = item.source_slot or unit.slot
+        local newer = not item.pending and candidate.descriptors[key_of(unit.class_key, source_slot)]
+        if item.pending then
+            pending("identity", key, item.reason or "source has no proven safe published correspondence")
+        end
+        for _, name in ipairs(CALLBACKS) do
+            local old_point = old.descriptor.callback_points and old.descriptor.callback_points[name]
+            if old_point then
+                local ok, err = claim(loaded.scan, old_claims, old_point, key .. ":" .. name)
+                if not ok then return nil, err end
+            end
+            local cb = item.callbacks[name]
+            if cb.changed then
+                local point = newer and newer.descriptor.callback_points
+                    and newer.descriptor.callback_points[name]
+                pending("callback", key .. ":" .. name, "callback definition not published", point, old_point)
+            end
+            local point = newer and newer.descriptor.callback_points and newer.descriptor.callback_points[name]
+            if point then
+                if newer.descriptor.callbacks[name] ~= cb.body then
+                    return fail("ownership", "callback disagrees with candidate definition", state, key)
+                end
+                local ok, err = claim(candidate.scan, new_claims, point, key .. ":" .. name)
+                if not ok then return nil, err end
+            end
+        end
+    end
+    for _, row in ipairs(report.unowned or {}) do
+        pending("identity", row.source_key .. ":" .. row.candidate_slot, row.reason,
+            row.descriptor.callback_points and row.descriptor.callback_points.init)
+    end
+    local function residual(scan, claims)
+        local rows, declarations, next_token = {}, {}, 1
+        for _, declaration in ipairs(scan.bindings.declarations) do
+            if not state.functions.units[declaration.name] then
+                declarations[declaration.statement] = declaration.name
+            end
+        end
+        for index, statement in ipairs(scan.analysis.statements) do
+            local tokens, first, last = scan.analysis.tokens, statement.tok.first, statement.tok.last
+            -- Every lexer token must belong to one whole statement, claimed or
+            -- retained. An analysis gap/overlap cannot silently count as coverage.
+            if first ~= next_token or last < first or last > #tokens then
+                return fail("unsupported", "source token partition is incomplete", state)
+            end
+            next_token = last + 1
+            if not claims[index] then
+                while tokens[last] and tokens[last].value == ";" do last=last-1 end
+                local pieces = {}
+                for i=first,last do
+                    local token=tokens[i]
+                    pieces[#pieces+1]=token.kind .. ":" .. #token.value .. ":" .. token.value
+                end
+                if #pieces > 0 then
+                    local visible = {}
+                    for name in next, scan.bindings.statements[index].visible do visible[#visible+1]=name end
+                    table.sort(visible)
+                    local kind = declarations[index] and "initializer" or "unknown"
+                    -- Classification is diagnostic only: these tokens are NEVER
+                    -- discarded even if they match the safe-wiring grammar.
+                    if safe_wiring(tokens, first, last) or tokens[first].value == "_BOSS_ESCAPE" then
+                        kind = "structure"
+                    end
+                    rows[#rows+1]={signature=table.concat(pieces,"|") .. "@" .. table.concat(visible,","),
+                        kind=kind, key=declarations[index] and ("local:" .. declarations[index]) or ("file:" .. state.file),
+                        first=statement.source_range.first,last=statement.source_range.last}
+                end
+            end
+        end
+        if next_token ~= #scan.analysis.tokens + 1 then
+            return fail("unsupported", "source has unaccounted tokens", state)
+        end
+        return rows
+    end
+    local before, berr = residual(loaded.scan, old_claims)
+    if not before then return nil, berr end
+    local after, aerr = residual(candidate.scan, new_claims)
+    if not after then return nil, aerr end
+    for i=1,math.max(#before,#after) do
+        local a, b = before[i], after[i]
+        if not a or not b or a.signature ~= b.signature then
+            local row = b or a
+            local reason = row.kind == "initializer" and "state initializer retained; restart game to adopt"
+                or (row.kind == "structure" and "constructor/name/list/registration retained; restart game to adopt"
+                    or "top-level change not published or not confirmed; restart game to adopt")
+            pending(row.kind, row.key, reason, b, a)
+        end
+    end
+    result.complete = #result.pending == 0
+    return result
+end
+
 function M.Compare(state, content) return compare(state, content) end
 ---Complete FileMatch snapshot carrying this actual publication baseline in
 ---common. Class keys are NOT the per-card publication keys in this report.
