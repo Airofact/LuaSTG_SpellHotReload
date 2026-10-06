@@ -60,6 +60,7 @@ function SnapshotStore.New(options)
 	instance._candidates = {}
 	instance._dismissed = {}
 	instance._partial = {} -- sticky: accepted bytes no longer prove live definitions
+	instance._completed = {} -- semantic completion, never accepted or Dismiss
 	instance._next_generation = 0
 	return instance
 end
@@ -149,6 +150,7 @@ function SnapshotStore:RecordPartialPublication(file_name, generation, content, 
 		return nil, "publication revision did not advance"
 	end
 	local record = { generation = generation, revision = revision }
+	self:ClearCompletion(file_name)
 	self._partial[file_name] = record
 	return copy_record(record)
 end
@@ -156,6 +158,47 @@ end
 ---Metadata only; per-unit versions remain the authority for published content.
 function SnapshotStore:GetPartialPublication(file_name)
 	return copy_record(self._partial[file_name])
+end
+
+---Bookkeeping only. The caller must first validate an actual receipt, complete
+---remainder and fresh live reads. Scope holds identity, not publication authority.
+function SnapshotStore:RecordCompletion(file_name, generation, content, scope)
+	local current = self._candidates[file_name]
+	if not current or current.generation ~= generation then return nil, "superseded" end
+	if not current.stable or current.first_content ~= content then return nil, "stable candidate bytes required" end
+	if type(scope) ~= "table" or getmetatable(scope) ~= nil
+		or type(scope.session_id) ~= "string" or scope.session_id == ""
+		or type(scope.capture) ~= "table" or type(scope.snapshot) ~= "table"
+		or type(scope.entry) ~= "table" or scope.capture.snapshot ~= scope.snapshot
+		or scope.snapshot.file ~= file_name or scope.snapshot.session_id ~= scope.session_id
+		or scope.snapshot.entry ~= scope.entry or scope.snapshot.revision ~= scope.revision
+		or type(scope.revision) ~= "number" or scope.revision < 0
+		or scope.revision >= math.huge or scope.revision % 1 ~= 0 then
+		return nil, "completion scope required"
+	end
+	self._completed[file_name] = {file_name=file_name, generation=generation, content=content,
+		hash=self._hash(content), scope=copy_record(scope)}
+	self._candidates[file_name] = nil -- only this exact stable generation
+	return true
+end
+
+function SnapshotStore:ClearCompletion(file_name)
+	self._completed[file_name] = nil
+end
+
+---Repeated same-byte exports can have newer candidate generations. The saved
+---generation records completion provenance, not permission to hide new bytes.
+---Any observed new bytes or changed identity/revision retires the old record.
+function SnapshotStore:IsCompleted(file_name, content, scope)
+	local record = self._completed[file_name]
+	if not record then return false end
+	local valid = type(content) == "string" and content == record.content
+		and self._hash(content) == record.hash and type(scope) == "table"
+	for _, key in ipairs({"session_id", "capture", "snapshot", "entry", "revision"}) do
+		valid = valid and scope[key] == record.scope[key]
+	end
+	if not valid then self:ClearCompletion(file_name) end
+	return valid == true
 end
 
 function SnapshotStore:HasPartialPublication(file_name)
@@ -181,6 +224,7 @@ function SnapshotStore:SetAccepted(file_name, content, source)
 		source = source,
 	}
 	self._accepted[file_name] = accepted
+	self:ClearCompletion(file_name)
 	-- a published baseline supersedes any earlier rejection of these bytes
 	self._dismissed[file_name] = nil
 	return copy_record(accepted)
@@ -223,6 +267,8 @@ function SnapshotStore:RecordFirstRead(file_name, generation, content, read_upda
 	if current == nil or current.generation ~= generation then
 		return nil, "superseded"
 	end
+	local completed = self._completed[file_name]
+	if completed and completed.content ~= content then self:ClearCompletion(file_name) end
 	local candidate = {
 		file_name = current.file_name,
 		generation = current.generation,
@@ -262,6 +308,8 @@ function SnapshotStore:VerifyStable(file_name, generation, content, read_update,
 	end
 
 	local content_hash = self._hash(content)
+	local completed = self._completed[file_name]
+	if completed and completed.content ~= content then self:ClearCompletion(file_name) end
 	if content_hash ~= current.first_hash or content ~= current.first_content then
 		self:BeginCandidate(file_name, read_update, "verification-mismatch")
 		return nil, "changed"
@@ -299,6 +347,7 @@ function SnapshotStore:Clear()
 	self._candidates = {}
 	self._dismissed = {}
 	self._partial = {}
+	self._completed = {}
 	return true
 end
 

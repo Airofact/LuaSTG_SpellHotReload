@@ -58,6 +58,8 @@ function Plugin.New()
 	self._commit, self._commit_error = CardCommit.New(self._session_id)
 	self._versions = {} -- first-load success/refusal; never lazily reseeded
 	self._candidate_inspections = {} -- detached display data, never cached plans
+	self._candidate_remainders = {} -- checked post-publication scalar display
+	self._completion_checks = {} -- no-op read witnesses, never a commit writer
 	self._released = false
 	self._watcher = nil
 	self._view = nil
@@ -100,6 +102,8 @@ function Plugin:GetVersions(file)
 end
 
 function Plugin:_RetireVersions(file, reason)
+	self:_ClearCompletion(file)
+	self._candidate_remainders[file] = nil
 	local record = self._versions[file]
 	if record then record.capture, record.reason = nil, reason end
 end
@@ -151,6 +155,7 @@ function Plugin:Release(reason)
 	self._pending_restart_run = nil
 	self._publication_error, self._restart_active = nil, false
 	self._candidate_inspections = {}
+	self._candidate_remainders, self._completion_checks = {}, {}
 	if self._watcher then self._watcher:Release() end
 	self._watcher, self._view = nil, nil
 	self._loads, self._versions, self._session_id = {}, {}, nil
@@ -397,6 +402,9 @@ function Plugin:_activate()
 		root = root,
 		store = self._store,
 		known_files = known_files,
+		is_completed = function(file_name, content)
+			return self:_IsCompleted(file_name, content)
+		end,
 		on_missing = function(file_name, reason)
 			self:Missing(file_name, reason)
 		end,
@@ -473,6 +481,128 @@ local function copy_display(value)
     if type(value) ~= "table" then return value end
     local result = {};for key,item in next,value do result[key] = copy_display(item) end
     return result
+end
+
+-- Completion records never stand in for accepted source or commit permission.
+function Plugin:_ClearCompletion(file)
+    self._completion_checks[file] = nil
+    self._store:ClearCompletion(file)
+end
+
+-- Cheap scope only: no disk, discovery, compilation or current-card capture.
+function Plugin:_CompletionScope(file)
+    if self._released or self._publication_error or not self._commit or self._commit:Poisoned() then return nil end
+    local ok = self:_CheckLoad(file)
+    local capture = self:GetVersions(file)
+    if not ok or type(capture)~="table" or getmetatable(capture)~=nil
+        or type(capture.snapshot)~="table" or getmetatable(capture.snapshot)~=nil then return nil end
+    return {session_id=self._session_id, capture=capture, snapshot=capture.snapshot,
+        entry=self._loads[file], revision=capture.snapshot.revision}
+end
+
+-- Watcher supplies the bytes it just read. A saved completion is not trusted
+-- when versions, ownership, function values or original shared cells changed.
+function Plugin:_IsCompleted(file, content)
+    local record = self._completion_checks[file]
+    if not record then return false end
+    local scope = self:_CompletionScope(file)
+    if not self._store:IsCompleted(file,content,scope) then self:_ClearCompletion(file);return false end
+    local checked = require("SpellHotReload.CommitCheck").Check(record.selection,scope.capture,
+        {capture=scope.capture, snapshot=scope.snapshot, entry=scope.entry, session_id=scope.session_id,
+            classes=rawget(_G,"_editor_class"), content=content, released=false, poisoned=false})
+    if not checked then self:_ClearCompletion(file);return false end
+    return true
+end
+
+-- Last checked remainder is display data, never Apply/removal permission.
+function Plugin:GetCandidateRemainder(file)
+    local record = self._candidate_remainders[file]
+    if not record then return nil end
+    local candidate, scope = self._store:GetCandidate(file), self:_CompletionScope(file)
+    if not scope or not candidate or not candidate.stable
+        or scope.capture~=record.capture or scope.snapshot~=record.snapshot
+        or scope.session_id~=record.model.session_id or scope.entry~=record.entry
+        or candidate.generation~=record.model.generation or candidate.first_content~=record.model.content then
+        self._candidate_remainders[file]=nil;return nil
+    end
+    return copy_display(record.model)
+end
+
+local function remainder_text(model, selection)
+    local rows = {}
+    for _, row in ipairs(selection.blocked or {}) do rows[#rows+1]=row.key .. ": " .. row.reason end
+    for _, row in ipairs(selection.pending_sources or {}) do
+        rows[#rows+1]=row.source_key .. " source slot " .. row.candidate_slot .. ": " .. row.reason
+    end
+    for _, row in ipairs(selection.structural_pending or {}) do rows[#rows+1]=row.source_key .. ": " .. row.reason end
+    for _, row in ipairs(model.pending) do
+        local point = row.first and (" bytes " .. row.first .. ".." .. tostring(row.last)) or ""
+        rows[#rows+1] = row.kind .. " " .. row.key .. point .. ": " .. row.reason
+    end
+    return "; candidate retained; pending: " .. table.concat(rows," | ")
+end
+
+-- Both Apply paths call only after a successful real Driver/CardCommit receipt.
+-- No SetAccepted, Dismiss, second commit, or partial-ledger reset is allowed.
+function Plugin:_AccountVersioned(file, candidate, capture, base, receipt)
+    self:_ClearCompletion(file)
+    self._candidate_remainders[file] = nil
+    local snapshot = type(receipt)=="table" and receipt.snapshot
+    if type(receipt)~="table" or getmetatable(receipt)~=nil
+        or receipt.kind~="SpellHotReload.CardCommit.Receipt" or receipt.version~=1
+        or type(snapshot)~="table" or getmetatable(snapshot)~=nil
+        or receipt.file~=file or snapshot~=capture.snapshot
+        or snapshot.session_id~=self._session_id or snapshot.entry~=self._loads[file]
+        or snapshot.file~=file or snapshot.anchor~=base.anchor
+        or (receipt.changed~=true and receipt.changed~=false)
+        or (receipt.changed and (snapshot==base or snapshot.revision~=base.revision+1))
+        or (not receipt.changed and snapshot~=base) then
+        self._publication_error="publication receipt bookkeeping failed; restart game"
+        return nil, self._publication_error
+    end
+    if receipt.changed then
+        local recorded, record, record_error = pcall(self._store.RecordPartialPublication,
+            self._store,file,candidate.generation,candidate.first_content,snapshot.revision)
+        if not recorded or not record then
+            self._publication_error="partial publication bookkeeping failed; restart game"
+            return nil, self._publication_error .. ": " .. message(recorded and record_error or record)
+        end
+    end
+    local refresh = function() return self:_FreshVersioned(file,candidate,capture,true) end
+    local live, lerr = refresh()
+    if not live then return nil, message(lerr) end
+    local discovery, derr = self._driver:Discover(file,candidate.first_content,{
+        session_id=self._session_id, candidate_generation=candidate.generation,
+        loaded_source=live.entry.loaded_source, registry_entry=live.entry,
+        base_revision=snapshot.revision, published_units=snapshot})
+    if not discovery then return nil, "discover: " .. message(derr) end
+    local model, witness, fresh = Card.InspectFileRemainder(capture,discovery,live,refresh)
+    if not model then return nil, message(witness) end
+    if capture.snapshot~=snapshot or model.file~=file or model.session_id~=self._session_id
+        or model.revision~=snapshot.revision or model.generation~=candidate.generation
+        or model.content~=candidate.first_content then return nil, "remainder scope changed" end
+    if not model.complete then
+        self._candidate_remainders[file]={model=model,capture=capture,snapshot=snapshot,entry=fresh.entry}
+        return remainder_text(model,witness)
+    end
+    if #model.pending~=0 then return nil, "complete remainder still contains pending changes" end
+    local scope = self:_CompletionScope(file)
+    if not scope or scope.snapshot~=snapshot then return nil, "completion scope changed" end
+    local done, err = self._store:RecordCompletion(file,candidate.generation,candidate.first_content,scope)
+    if not done then return nil, "completion bookkeeping: " .. message(err) end
+    self._completion_checks[file]={selection=witness}
+    return "; candidate complete; removed (published definitions + unchanged remainder)"
+end
+
+function Plugin:_FinishVersioned(file, candidate, capture, base, receipt)
+    local called, status, err = pcall(self._AccountVersioned,self,file,candidate,capture,base,receipt)
+    if not called then status,err=nil,status end
+    if not status then
+        self:_ClearCompletion(file)
+        if self._publication_error then return "; " .. message(err) .. "; candidate retained" end
+        return "; candidate retained (completion unavailable): " .. message(err)
+    end
+    return status
 end
 
 -- Actual physical read + fresh binding, not a cached table passed as "live".
@@ -554,22 +684,13 @@ function Plugin:_ApplyVersioned(token, file, candidate, capture, discovery, init
     if not committed then return "commit: " .. message(cerr) end
     run.snapshot = receipt.snapshot
     self._pending_restart_run = run
-    if receipt.changed then
-        local recorded, record, record_error = pcall(self._store.RecordPartialPublication,
-            self._store,file,candidate.generation,candidate.first_content,receipt.snapshot.revision)
-        if not recorded or not record then
-            -- Do not ACK/cancel or roll back already-committed definitions.
-            -- Refuse further Apply/retry, preserve the actual capture and require
-            -- restart. Under the trusted synchronous path the record cannot go stale.
-            self._publication_error = "partial publication bookkeeping failed; restart game"
-            return "definitions committed; " .. self._publication_error .. ": " .. message(recorded and record_error or record)
-        end
-    end
+    local accounting = self:_FinishVersioned(file,candidate,capture,selection.base,receipt)
+    if self._publication_error then return "definitions committed" .. accounting end
     local restarted, restart_error = self:_RestartVersioned(run)
-    if not restarted then return "definitions committed; restart failed: " .. message(restart_error) end
+    if not restarted then return "definitions committed; restart failed: " .. message(restart_error) .. accounting end
     self._pending_restart_run = nil
-    return string.format("applied %s slot %d (%s): %s; candidate retained (partial file)",
-        target.class_key,target.slot,location.match,receipt.changed and "definitions committed" or "no definition changes")
+    return string.format("applied %s slot %d (%s): %s%s",
+        target.class_key,target.slot,location.match,receipt.changed and "definitions committed" or "no definition changes",accounting)
 end
 
 ---Publish one explicitly named file's captured Card/function definitions.
@@ -612,36 +733,16 @@ function Plugin:_applyFile(file, token)
     local prepared, perr = Card.PrepareFileVersioned(capture,discovery,live,refresh)
     if not prepared then return perr end
     local selection, controller = prepared.selection, self._commit
-    local remaining={}
-    for _,row in ipairs(selection.blocked or {}) do
-        remaining[#remaining+1]=row.key..": "..row.reason
-    end
-    for _,row in ipairs(selection.pending_sources or {}) do
-        remaining[#remaining+1]=row.source_key.." source slot "..row.candidate_slot..": "..row.reason
-    end
-    for _,row in ipairs(selection.structural_pending or {}) do
-        remaining[#remaining+1]=row.source_key..": "..row.reason
-    end
-    for _,row in ipairs(selection.report.functions.initializers or {}) do
-        remaining[#remaining+1]="local:"..row.name..": state initializer retained; restart to adopt"
-    end
-    local pending=#remaining>0 and ("; pending: "..table.concat(remaining," | ")) or ""
     local committed, cerr, receipt = self._driver:CommitDiscovery(prepared.driver_prepared,
         function()
             return controller:Commit(token,selection,capture,prepared.live,refresh)
         end)
     if not committed then return "commit: " .. message(cerr) end
-    if receipt.changed then
-        local recorded, record, record_error = pcall(self._store.RecordPartialPublication,
-            self._store,file,candidate.generation,candidate.first_content,receipt.snapshot.revision)
-        if not recorded or not record then
-            self._publication_error = "partial publication bookkeeping failed; restart game"
-            return "definitions committed; " .. self._publication_error .. ": " .. message(recorded and record_error or record)
-        end
-    end
+    local accounting = self:_FinishVersioned(file,candidate,capture,selection.base,receipt)
+    if self._publication_error then return "definitions committed" .. accounting end
     local status=receipt.changed and "definitions committed" or "no definition changes"
-    return string.format("%s file %s: %s; no restart; candidate retained (not whole-file acceptance)%s",
-        receipt.changed and "applied" or (#remaining>0 and "pending" or "applied"),file,status,pending)
+    local prefix=not receipt.changed and self._candidate_remainders[file] and "pending" or "applied"
+    return string.format("%s file %s: %s; no restart%s",prefix,file,status,accounting)
 end
 
 ---Explicit, potentially expensive ANALYSIS. Never opens/consumes a commit token.
@@ -873,6 +974,7 @@ function Plugin:Dismiss(file_name)
 	-- Remember the rejected bytes so the drift scan does not resurrect the
 	-- candidate on the next interval.
 	self._candidate_inspections[file_name] = nil
+	self._candidate_remainders[file_name] = nil
 	self._store:DismissCandidate(file_name)
 	self._last_result = "dismissed " .. file_name
 	log(self, "info", "dismissed " .. file_name)

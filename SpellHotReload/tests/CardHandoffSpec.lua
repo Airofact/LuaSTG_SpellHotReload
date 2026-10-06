@@ -253,6 +253,12 @@ function M.run()
             eq(plugin._pending_restart_run,nil,"successful retry clears run")
             eq(plugin._restart_active,false,"success busy cleared")
             f.entry.missing=nil;f.entry.reloadable=true
+            -- The first successful definition publication completed this file.
+            -- Re-establish an explicit stable generation for the separate
+            -- refused-commit check; do not depend on blanket candidate retention.
+            candidate=plugin._store:BeginCandidate(f.entry.file,4,"handoff-refusal")
+            must(plugin._store:RecordFirstRead(f.entry.file,candidate.generation,source(5),3))
+            must(plugin._store:VerifyStable(f.entry.file,candidate.generation,source(5),4,1))
             Card.Commit=function()
                 commits=commits+1
                 return false,{phase="commit",code="publish",message="adapter refusal fixture"}

@@ -147,7 +147,7 @@ function MonitorTab.layout(view)
         ImGui.TextDisabled("No candidate snapshots")
     else
         ImGui.Text("Candidates (" .. #files .. "):")
-        ImGui.TextDisabled("Apply: safely mapped definitions; blocked changes stay pending; no restart. Dismiss: hide these bytes.")
+        ImGui.TextDisabled("Apply: safe definitions; complete candidates disappear; remaining changes stay pending; no restart. Dismiss: hide these bytes.")
         local has_stable = false
         for idx, file_name in ipairs(files) do
             local cand = store:GetCandidate(file_name)
@@ -167,8 +167,17 @@ function MonitorTab.layout(view)
             end
             local partial = store:GetPartialPublication(file_name)
             if partial then
-                ImGui.Text(string.format("    Last partial publication: r%d / g%d; candidate retained",
+                ImGui.Text(string.format("    Last partial publication: r%d / g%d (definition ledger; not whole-file acceptance)",
                     partial.revision,partial.generation))
+            end
+            local remainder = plugin:GetCandidateRemainder(file_name)
+            if remainder then
+                ImGui.Text(string.format("    Last checked remaining changes: g%d / r%d (not Apply permission)",
+                    remainder.generation,remainder.revision))
+                for _, row in ipairs(remainder.pending) do
+                    local point=row.first and (" bytes " .. row.first .. ".." .. tostring(row.last)) or ""
+                    ImGui.TextWrapped("    " .. row.kind .. " " .. row.key .. point .. ": " .. row.reason)
+                end
             end
             local model = plugin:GetCandidateInspection(file_name,current)
             if model then describe_inspection(ImGui,model,file_name)

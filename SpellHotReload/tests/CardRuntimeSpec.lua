@@ -247,6 +247,9 @@ function M.run()
             _candidate_inspections={},_activated=true,_supported=true,_sandbox_ok=true,
             _store={GetCandidate=function() return candidate end},
             _driver=driver},Plugin)
+        -- Dispatch-only synthetic receipt fixture, not publication evidence.
+        -- Real completion/receipt validation lives in CandidateCompletionSpec.
+        p._FinishVersioned=function() return "; synthetic accounting, not completion" end
         p._commit={Check=function() return true end,Poisoned=function() return false end,
             Commit=function() return {snapshot=snapshot,changed=false} end}
         p.GetVersions=function() return capture end

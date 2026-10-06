@@ -80,6 +80,7 @@ function Watcher.New(options)
     self._on_candidate = options.on_candidate
     self._on_error = options.on_error
     self._on_missing = options.on_missing
+    self._is_completed = options.is_completed -- trusted read-only live validator
     self._quiet_frames = options.quiet_frames or DEFAULT_QUIET_FRAMES
     self._read_gap = options.read_gap or DEFAULT_READ_GAP
     self._max_events = options.max_events or DEFAULT_MAX_EVENTS_PER_FRAME
@@ -157,6 +158,7 @@ function Watcher:Release()
     self:Stop()
     self._pending, self._known, self._missing = {}, {}, {}
     self._on_candidate, self._on_error, self._on_missing, self._store = nil, nil, nil, nil
+    self._is_completed = nil
     return true
 end
 
@@ -197,6 +199,14 @@ local function begin_pending(self, file_name, source)
     self._known[file_name] = true
 end
 
+-- No cached boolean: publication/ownership/cell identity may have changed since
+-- the last Apply. A validation fault fails open to a candidate, never hides it.
+local function completed(self, file_name, content)
+    if not self._is_completed then return false end
+    local ok, result = pcall(self._is_completed,file_name,content)
+    return ok and result == true
+end
+
 ---Exhaustion cancels the candidate, but only consecutive ENOENT opens invalidate
 ---reload. Permission/I/O/unknown failures are diagnostic, never Missing.
 local function failed_read(self, file_name, pending, err, code)
@@ -213,6 +223,7 @@ local function failed_read(self, file_name, pending, err, code)
     if pending.missing_count > self._max_read_failures then
         if not self._missing[file_name] then
             self._missing[file_name] = true
+            self._store:ClearCompletion(file_name)
             if self._on_missing then self._on_missing(file_name, message) end
         end
     else
@@ -273,7 +284,7 @@ function Watcher:update()
         elseif pending.first_content == nil then
             local content, err, code = self:ReadFile(file_name)
             if content ~= nil then
-                if self._store:IsDismissed(file_name, content) then
+                if completed(self,file_name,content) or self._store:IsDismissed(file_name, content) then
                     -- bytes the user already rejected: drop without surfacing a candidate
                     self._pending[file_name] = nil
                     self._store:CancelCandidate(file_name)
@@ -301,31 +312,36 @@ function Watcher:update()
                 else
                     pending.fail_count = 0
                     pending.missing_count = 0
-                    local verified, status = self._store:VerifyStable(
-                        file_name, pending.generation, content, self._update, self._read_gap)
-                    diag("VerifyStable " .. file_name .. " -> " .. tostring(status))
-                    if status == "stable" then
+                    if completed(self,file_name,content) then
                         self._pending[file_name] = nil
-                        if self._on_candidate then self._on_candidate(file_name) end
-                    elseif status == "unchanged" or status == "dismissed" then
-                        -- unchanged: identical to the accepted baseline
-                        -- dismissed: identical to bytes the user already rejected
-                        self._pending[file_name] = nil
-                    elseif status == "superseded" then
-                        self._pending[file_name] = nil
-                    elseif status == "changed" then
-                        -- mismatch: store restarted a new generation, go quiet again
-                        local candidate = self._store:GetCandidate(file_name)
-                        if candidate ~= nil then
-                            pending.generation = candidate.generation
+                        self._store:CancelCandidate(file_name)
+                    else
+                        local verified, status = self._store:VerifyStable(
+                            file_name, pending.generation, content, self._update, self._read_gap)
+                        diag("VerifyStable " .. file_name .. " -> " .. tostring(status))
+                        if status == "stable" then
+                            self._pending[file_name] = nil
+                            if self._on_candidate then self._on_candidate(file_name) end
+                        elseif status == "unchanged" or status == "dismissed" then
+                            -- unchanged: identical to the accepted baseline
+                            -- dismissed: identical to bytes the user already rejected
+                            self._pending[file_name] = nil
+                        elseif status == "superseded" then
+                            self._pending[file_name] = nil
+                        elseif status == "changed" then
+                            -- mismatch: store restarted a new generation, go quiet again
+                            local candidate = self._store:GetCandidate(file_name)
+                            if candidate ~= nil then
+                                pending.generation = candidate.generation
+                            end
+                            pending.first_content = nil
+                            pending.first_read_update = nil
+                            pending.quiet_left = self._quiet_frames
+                        elseif status == "too-soon" then
+                            -- wait longer
                         end
-                        pending.first_content = nil
-                        pending.first_read_update = nil
-                        pending.quiet_left = self._quiet_frames
-                    elseif status == "too-soon" then
-                        -- wait longer
+                        _ = verified
                     end
-                    _ = verified
                 end
             end
         end
@@ -364,8 +380,11 @@ function Watcher:_drift_scan()
                 -- immediate invalidation from a one-off failure or lost enum.
                 if not self._missing[name] then begin_pending(self, name, "drift-unreadable") end
             else
+                local is_complete = completed(self,name,content)
                 local cand = self._store:GetCandidate(name)
-                if cand ~= nil and cand.first_content ~= nil then
+                if is_complete then
+                    self._store:CancelCandidate(name)
+                elseif cand ~= nil and cand.first_content ~= nil then
                     -- already showing a candidate: only restart if bytes changed again
                     if content ~= cand.first_content then
                         begin_pending(self, name, "drift")
@@ -392,8 +411,10 @@ function Watcher:rescan()
     for _, name in ipairs(tracked_files(self)) do
         local accepted = self._store:GetAccepted(name)
         local content = self:ReadFile(name)
+        local is_complete = content ~= nil and completed(self,name,content)
         if content ~= nil and (self._store:HasPartialPublication(name)
             or accepted == nil or accepted.content ~= content)
+            and not is_complete
             and not self._store:IsDismissed(name, content) then
             begin_pending(self, name, "rescan")
         elseif content == nil and self._pending[name] == nil and not self._missing[name] then
