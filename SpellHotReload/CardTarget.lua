@@ -337,19 +337,24 @@ local function locate_file(snapshot,capture,live)
     if not classes then return nil,cerr end
     report.content=snapshot.common.content
     report.generation=snapshot.common.candidate_generation
-    -- Include placeholders and every combat owner; a malformed/incomplete
-    -- capture is a file-wide failure, not permission to ignore live consumers.
+    -- All slot identities (including placeholders) were checked above. Only
+    -- source-described cards with an explicit init are publication units, as
+    -- at first load; framework placeholders may still have is_combat=true.
+    -- A missing generated unit remains a file-wide capture failure.
     for _,owner in ipairs(capture.ownership) do
         local before=plain(base.layout) and rawget(base.layout,owner.class_key)
         if not layout_valid(before) or #before~=#owner.slots then
             return fail("ownership","captured source layout unavailable",file)
         end
         for slot,card in ipairs(owner.slots) do
-            if rawget(card,"is_combat")==true then
-                local key="card:"..#owner.class_key..":"..owner.class_key..":"..slot
-                if not base.units[key] or before[slot].kind~="card" then
+            local descriptor=before[slot]
+            local key="card:"..#owner.class_key..":"..owner.class_key..":"..slot
+            if descriptor.kind=="card" and descriptor.callbacks.init then
+                if not base.units[key] or rawget(card,"is_combat")~=true then
                     return fail("ownership","unindexed captured combat owner",file)
                 end
+            elseif base.units[key] then
+                return fail("ownership","published unit lacks captured source descriptor",file)
             end
         end
     end

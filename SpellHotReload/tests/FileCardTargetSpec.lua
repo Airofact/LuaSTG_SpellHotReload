@@ -25,10 +25,10 @@ function M.run(opts)
         defaults[n]=function() return "default" end
     end
     local saved={}
-    for _,n in ipairs({"boss","_editor_class","_tmp_sc","FILE_TARGET_EFFECT"}) do saved[n]=rawget(_G,n) end
+    for _,n in ipairs({"boss","_editor_class","_tmp_sc","_BOSS_ESCAPE","FILE_TARGET_EFFECT"}) do saved[n]=rawget(_G,n) end
     local real_join=debug.upvaluejoin
     if not real_join then debug.upvaluejoin=function() error("presence only") end end
-    local serial,effects,constructors=0,0,0
+    local serial,effects,constructors,escapes=0,0,0,0
     local function source(classes,opts)
         opts=opts or {}
         local lines={"local state=4","local function helper() return state end","FILE_TARGET_EFFECT()"}
@@ -43,10 +43,11 @@ function M.run(opts)
                 lines[#lines+1]="function _tmp_sc:init() return helper()+"..(opts.bump or 0).." end"
                 lines[#lines+1]="table.insert(_editor_class["..key.."].cards,_tmp_sc)"
             end
+            if class.escape then lines[#lines+1]="_BOSS_ESCAPE("..key..",0,0,1)" end
         end
         return (opts.bom and "\239\187\191" or "")..table.concat(lines,"\n")
     end
-    local function fixture(labels,move)
+    local function fixture(labels,move,escape)
         _editor_class={K={},L={},N={}}
         FILE_TARGET_EFFECT=function() effects=effects+1 end
         boss={card={New=function(label)
@@ -55,8 +56,18 @@ function M.run(opts)
             for n,fn in next,defaults do card[n]=fn end
             return card
         end},move={New=function() constructors=constructors+1;return {is_combat=false} end}}
+        _BOSS_ESCAPE=function(class_key)
+            escapes=escapes+1
+            local list=_editor_class[class_key].cards
+            constructors=constructors+1
+            list[#list+1]={name="",is_combat=false}
+            local deletion=boss.card.New("")
+            function deletion:init() return "escape deletion" end
+            list[#list+1]=deletion
+        end
         serial=serial+1
-        local bytes=source({{key="K",labels=labels or {"A","B"},move=move},{key="L",labels={"Side"}}})
+        local bytes=source({{key="K",labels=labels or {"A","B"},move=move,escape=escape},
+            {key="L",labels={"Side"}}})
         local entry=must(Load.Capture(bytes,{name="FileTarget_Boss.lua",
             capability={getupvalue=true,setupvalue=true,upvaluejoin=true}}))
         entry.file="FileTarget_Boss.lua"
@@ -104,6 +115,32 @@ function M.run(opts)
         eq(effects,before_effect,"candidate initializer not executed")
         eq(constructors,before_ctor,"no constructors replayed")
         eq(f.capture.snapshot.revision,0,"no publication")
+        -- DiMS escape deletion is a live combat card, but its source descriptor
+        -- is a framework placeholder, not a generated callback publication unit.
+        f=fixture({"A"},false,true)
+        local deletion=f.live.classes.K.cards[3]
+        local deletion_init=deletion.init
+        before_effect,before_ctor=effects,constructors
+        local before_escape=escapes
+        r,d=f.report()
+        eq(f.capture.snapshot.layout.K[3].kind,"other","escape source placeholder")
+        eq(deletion.is_combat,true,"escape deletion has runtime combat flag")
+        eq(f.capture.snapshot.units[key("K",3)],nil,"escape not a publication unit")
+        eq(#r.located,2,"generated cards still located with combat placeholder")
+        eq(#r.pending,0,"unchanged escape is not an unmapped generated card")
+        eq(#r.unowned,0,"escape does not become a new generated owner")
+        eq(Target.CheckFileDiscovery(r,f.capture,f.live),true,"escape file recheck")
+        eq(deletion.init,deletion_init,"escape callback never replaced")
+        eq(escapes,before_escape,"escape registration not replayed")
+        eq(constructors,before_ctor,"escape constructors not replayed")
+        eq(effects,before_effect,"escape proof does not run top level")
+        f.capture.snapshot.layout.K[1].kind="other"
+        refuse(function() return Target.LocateFileDiscovery(d,f.capture,f.live) end,
+            "ownership","published card descriptor changed to placeholder")
+        f=fixture({"A"},false,true);r,d=f.report()
+        f.live.classes.K.cards[3]={}
+        refuse(function() return Target.CheckFileDiscovery(r,f.capture,f.live) end,
+            "ownership","combat placeholder replacement")
         -- Source-absent first captured class must not hide another real entry.
         f=fixture();r=f.report(source({{key="L",labels={"Side"}}}))
         eq(f.capture.ownership[1].class_key,"K","absent class was first captured owner")
@@ -254,7 +291,7 @@ function M.run(opts)
     end)
     debug.upvaluejoin=real_join
     -- Restore nil saves as well as existing globals.
-    for _,n in ipairs({"boss","_editor_class","_tmp_sc","FILE_TARGET_EFFECT"}) do rawset(_G,n,saved[n]) end
+    for _,n in ipairs({"boss","_editor_class","_tmp_sc","_BOSS_ESCAPE","FILE_TARGET_EFFECT"}) do rawset(_G,n,saved[n]) end
     if not ok then error(problem) end
     for _,label in ipairs(failures) do print("FAIL FileCardTargetSpec: "..label) end
     print(string.format("FileCardTargetSpec: %d passed, %d failed",passed,failed))
