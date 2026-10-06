@@ -439,7 +439,7 @@ local function compare(state, content, snapshot, location)
 end
 
 ---Explicit current cards; no automatic selection of other edited wrappers.
-function M.Select(report, keys)
+function M.Select(report, keys, function_keys)
     if not plain(report) or report.kind ~= M.Kind .. ".Diff" or report.version ~= M.Version
         or not valid(report.base) or not plain(report.by_key) or dense(keys) == nil then
         return fail("unsupported", "card diff and dense card keys required")
@@ -460,6 +460,21 @@ function M.Select(report, keys)
             for _, dep in ipairs(effective.dependencies) do
                 if report.functions.by_name[dep] then root_set[dep] = true end
             end
+        end
+    end
+    -- File Apply may explicitly include every captured function, including
+    -- helpers not currently referenced by a card. Located/current-root callers
+    -- cannot use this to expand their proven publication scope.
+    if function_keys ~= nil then
+        if report.location or dense(function_keys) == nil then
+            return fail("unsupported", "fixed-layout function keys required", report.base)
+        end
+        local seen = {}
+        for _, name in ipairs(function_keys) do
+            if type(name)~="string" or not report.functions.by_name[name] or seen[name] then
+                return fail("unsupported", "unknown or duplicate file function", report.base)
+            end
+            seen[name], root_set[name] = true, true
         end
     end
     local roots = {}

@@ -147,6 +147,7 @@ function MonitorTab.layout(view)
         ImGui.TextDisabled("No candidate snapshots")
     else
         ImGui.Text("Candidates (" .. #files .. "):")
+        ImGui.TextDisabled("Apply: all captured definitions in that file; no restart. Dismiss: hide these bytes.")
         local has_stable = false
         for idx, file_name in ipairs(files) do
             local cand = store:GetCandidate(file_name)
@@ -180,6 +181,15 @@ function MonitorTab.layout(view)
                 end
             end
 
+            -- File publication never restarts the current practice. These are
+            -- cheap hints only; the scoped action independently checks all owners.
+            if stable and capture and plugin:IsSandboxOk() and not Binding.IsReplay()
+                and not plugin:HasRestartPending() then
+                if ImGui.Button("Apply##apply_file_" .. file_name) then
+                    view.last_result = plugin:ApplyFileFromUI(file_name)
+                end
+            else ImGui.TextDisabled("Apply unavailable (stable / first load / capability / replay / retry)") end
+            ImGui.SameLine()
             if ImGui.Button("Dismiss##dismiss_" .. idx) then
                 plugin:Dismiss(file_name)
             end

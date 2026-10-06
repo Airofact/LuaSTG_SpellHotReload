@@ -604,6 +604,17 @@ function Card.PrepareVersioned(capture, discovery, initial, proof, refresh)
         handle=handle, context=context, driver_prepared=prepared}
 end
 
+---One Card aggregate for the entire captured file, not one transaction per
+---class. Fixed-layout comparison proves all owners; no current binding/restart.
+function Card.PrepareFileVersioned(capture, discovery, proof, refresh)
+    local owner = type(capture)=="table" and type(capture.ownership)=="table"
+        and capture.ownership[1] or nil
+    if type(owner)~="table" or type(owner.class_key)~="string" then
+        return nil, "locate: captured card class required"
+    end
+    return Card.PrepareVersioned(capture,discovery,
+        {class_key=owner.class_key,scope="file"},proof,refresh)
+end
 
 ---Allocate the frozen handoff BEFORE commit. Candidate names/slots never
 ---replace the genuine live name/slot in the eventual EXT_POS handoff.
@@ -1012,7 +1023,7 @@ function Card.RuntimeContext(capture, discovery, initial, proof, refresh)
         return stage_error("locate", "locate", "owned Card discovery entry required", file)
     end
     local runtime = {kind=RUNTIME_KIND, capture=capture, discovery=discovery, initial=initial,
-        proof=proof, refresh=refresh, snapshot=capture.snapshot}
+        proof=proof, refresh=refresh, snapshot=capture.snapshot, file_scope=initial.scope=="file"}
     return entry.unit, {common=common, adapter={file=entry.context.adapter.file,
         unit=entry.context.adapter.unit, runtime=runtime}}
 end
@@ -1026,6 +1037,7 @@ local function runtime_context(unit, context, phase)
         or not plain(runtime.discovery.snapshot) or runtime.discovery.snapshot.common~=common
         or not plain(runtime.capture) or runtime.snapshot~=runtime.capture.snapshot
         or not plain(runtime.initial) or type(runtime.initial.class_key)~="string"
+        or runtime.file_scope~=(runtime.initial.scope=="file")
         or not plain(runtime.proof) or type(runtime.refresh)~="function"
         or not plain(runtime.snapshot)
         or not plain(unit) or not plain(unit.context) or unit.carrier~="card"
@@ -1049,6 +1061,23 @@ locate_versioned = function(unit, context)
     if not runtime then return nil, entry end
     local Target = require("SpellHotReload.CardTarget")
     local capture, file = runtime.capture, context.common.file
+    if runtime.file_scope then
+        local live, lerr = runtime.refresh()
+        if not live then return stage_error("locate", "file preflight", lerr, file, unit.key) end
+        local current, cerr = runtime_context(unit, context, "locate")
+        if not current then return nil, cerr end
+        if current~=runtime or not plain(live) or live.capture~=capture
+            or live.snapshot~=runtime.snapshot or live.entry~=runtime.proof.entry
+            or live.session_id~=context.common.session_id or live.content~=context.common.content
+            or live.released or live.poisoned then
+            return stage_error("locate", "file preflight", "file publication baseline changed", file, unit.key)
+        end
+        local owned, oerr = Card.CheckOwnership(capture,runtime.snapshot,live.classes)
+        if not owned then return stage_error("locate", "file preflight", oerr, file, unit.key) end
+        return {kind=HANDLE_KIND, unit=unit, context=context, runtime=runtime,
+            capture=capture, snapshot=runtime.snapshot, discovery=runtime.discovery.snapshot, entry=entry,
+            initial=runtime.initial, proof=runtime.proof, refresh=runtime.refresh, live=live}
+    end
     local target, terr = Target.Resolve(runtime.initial, capture, runtime.proof)
     if not target then return stage_error("locate", "locate", terr, file, unit.key) end
     local live, lerr = runtime.refresh()
@@ -1076,9 +1105,11 @@ local function matching_handle(handle, unit, context, phase)
         or handle.runtime~=runtime or handle.capture~=runtime.capture or handle.snapshot~=runtime.snapshot
         or handle.discovery~=runtime.discovery.snapshot or handle.entry~=entry
         or handle.initial~=runtime.initial or handle.proof~=runtime.proof or handle.refresh~=runtime.refresh
-        or not plain(handle.live) or not plain(handle.target) or not plain(handle.location)
-        or handle.location.target~=handle.target or handle.location.discovery~=handle.discovery
-        or handle.location.entry~=entry then
+        or not plain(handle.live)
+        or (runtime.file_scope and (handle.target~=nil or handle.location~=nil))
+        or (not runtime.file_scope and (not plain(handle.target) or not plain(handle.location)
+            or handle.location.target~=handle.target or handle.location.discovery~=handle.discovery
+            or handle.location.entry~=entry)) then
         return stage_error(phase, phase, "matching versioned Card handle required", file, unit.key)
     end
     return runtime, entry
@@ -1089,10 +1120,14 @@ inject_versioned = function(handle, unit, context)
     if not runtime then return nil, err end
     local file = context.common.file
     local Cards = require("SpellHotReload.CardVersions")
-    local report, rerr = Cards.CompareLocated(runtime.snapshot, handle.location,
-        handle.live.binding, runtime.capture, handle.live)
+    local report, rerr
+    if runtime.file_scope then report, rerr = Cards.CompareDiscovery(runtime.snapshot,handle.discovery)
+    else report, rerr = Cards.CompareLocated(runtime.snapshot, handle.location,
+        handle.live.binding, runtime.capture, handle.live) end
     if not report then return stage_error("inject", "compare", rerr, file, unit.key) end
-    local selection, serr = Cards.Select(report, {handle.target.key})
+    local keys = runtime.file_scope and runtime.snapshot.order or {handle.target.key}
+    local functions = runtime.file_scope and runtime.snapshot.functions.names or nil
+    local selection, serr = Cards.Select(report,keys,functions)
     if not selection then return stage_error("inject", "select", serr, file, unit.key) end
     handle.selection = selection -- per-call output identity; not a module cache
     return selection

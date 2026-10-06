@@ -42,8 +42,20 @@ v0.21.111 / LuaJIT 2.1.1744887079。Lua 5.1 可运行独立 spec，不能据此
 1. 将本目录放在 `game/plugin/` 下并启用插件，重新启动游戏。
 2. 进入符卡练习或 SC Debugger，打开 `Tool → Spell Hot Reload`。
 3. 在 Editor Sharp 修改符卡节点逻辑，使用 **只打包、不运行** 的入口：
-   GUI `ExportZip(run=false)` 或 `Cli2 pack`。
-4. 等待 Monitor 中候选显示 stable，点击 **Apply & Restart Current**。
+   使用当前编辑器版本对应的导出命令；本机 0.7.9.1 CLI 只生成 ZIP。
+4. 确保生成的物理 `game/mod/<mod>/*_Boss.lua` 已更新（仅生成 ZIP 不会更新此目录）。
+5. 等待 Monitor 中候选显示 stable：
+   - 候选行的 **Apply**：一次发布该文件所有已捕获卡的回调和局部函数，不重开练习。
+   - 窗口级 **Apply & Restart Current**：只发布当前卡及其依赖 helper，然后重开当前练习。
+   - **Dismiss**：隐藏这份候选字节，不撤销已经发布的定义，也不修改磁盘文件。
+
+文件级 Apply 不需要当前卡或先 Inspect/选择内部条目，但要求候选的完整卡表布局与
+首载一致；缺失、新增、重排、改名或构造参数变化会拒绝，不猜测其它卡的对应关系。
+它复用同一发布事务、局部状态单元和失败回滚，不重放初始化或注册。
+回调定义在下次调用时生效，已经运行中的 task/coroutine 不迁移；若需立即看当前卡，
+使用窗口级 Apply & Restart Current。Replay 和待 Retry Restart 时不能文件级 Apply。
+资源、外部模块、普通状态初始化及名称/构造元数据不热更；不会因文件级 Apply
+而整份接受/消除候选，未支持的改动仍保留。暂不提供自动 Apply。
 
 SC Debug / Test 产物（包含 `scdebugger`）可以直接使用。插件不加载候选文件，
 只重编译当前卡的回调，所以文件末尾 `Include 'THlib\UI\scdebugger.lua'` 之类的

@@ -428,12 +428,13 @@ end
 ---Trusted post-logic Monitor layout entry only; not proof of engine phase.
 ---Whitelist actions, never accept arbitrary callbacks. Tick must not open scopes.
 ---The same scoped token protects production Apply and restart-only retry.
-function Plugin:_RunUIAction(action)
+function Plugin:_RunUIAction(action, file)
 	if self._released then return "session ended" end
-	if action ~= "apply" and action ~= "retry" then return "unknown UI action" end
+	if action ~= "apply" and action ~= "apply-file" and action ~= "retry" then return "unknown UI action" end
 	if not self._commit then return "UI commit scope unavailable" end
 	local ran, result = self._commit:Run(function(token)
 		if action == "apply" then return self:Apply(token) end
+		if action == "apply-file" then return self:ApplyFile(file,token) end
 		return self:RetryRestart(token)
 	end)
 	if not ran then
@@ -446,6 +447,7 @@ function Plugin:_RunUIAction(action)
 end
 
 function Plugin:ApplyFromUI() return self:_RunUIAction("apply") end
+function Plugin:ApplyFileFromUI(file) return self:_RunUIAction("apply-file",file) end
 function Plugin:RetryRestartFromUI() return self:_RunUIAction("retry") end
 
 ---Apply the current candidate to the current card and restart the practice.
@@ -475,7 +477,7 @@ end
 
 -- Actual physical read + fresh binding, not a cached table passed as "live".
 -- Called before planning and AGAIN inside CardCommit after any cache callback.
-function Plugin:_FreshVersioned(file, candidate, capture)
+function Plugin:_FreshVersioned(file, candidate, capture, file_scope)
     if self._released then return nil, {code="stale", message="session ended"} end
     if self._publication_error then return nil, {code="stale", message=self._publication_error} end
     local ok, err = self:_CheckLoad(file)
@@ -489,8 +491,11 @@ function Plugin:_FreshVersioned(file, candidate, capture)
         or current.first_content ~= candidate.first_content or content ~= candidate.first_content then
         return nil, {code="stale", message="candidate generation or bytes changed since snapshot"}
     end
-    local binding, berr = Card.CaptureCurrent()
-    if not binding then return nil, {code="stale", message="re-capture: " .. message(berr)} end
+    local binding, berr
+    if not file_scope then
+        binding, berr = Card.CaptureCurrent()
+        if not binding then return nil, {code="stale", message="re-capture: " .. message(berr)} end
+    end
     return {capture=capture, snapshot=capture.snapshot, entry=self._loads[file],
         session_id=self._session_id, classes=rawget(_G,"_editor_class"), content=content,
         binding=binding, released=self._released, poisoned=self._commit:Poisoned()}
@@ -565,6 +570,63 @@ function Plugin:_ApplyVersioned(token, file, candidate, capture, discovery, init
     self._pending_restart_run = nil
     return string.format("applied %s slot %d (%s): %s; candidate retained (partial file)",
         target.class_key,target.slot,location.match,receipt.changed and "definitions committed" or "no definition changes")
+end
+
+---Publish one explicitly named file's captured Card/function definitions.
+---No practice selection, frozen restart, whole-file ACK or legacy fallback.
+function Plugin:ApplyFile(file, token)
+    self._candidate_inspections = {}
+    if self._released then return "session ended" end
+    local called, result = pcall(self._applyFile,self,file,token)
+    if not called then result = "file apply failed: " .. message(result) end
+    self._last_result = result
+    log(self,result:sub(1,7)=="applied" and "ok" or "warn",result)
+    return result
+end
+
+function Plugin:_applyFile(file, token)
+    if type(file)~="string" or file=="" then return "candidate file required" end
+    if not self._activated or not self._supported then return "plugin not active/supported" end
+    if not self._sandbox_ok then return "patch capability unavailable" end
+    if self._driver_error then return "driver: " .. message(self._driver_error) end
+    if self._publication_error then return self._publication_error end
+    if self._restart_active or self._pending_restart_run then return "retry restart first" end
+    if Card.IsReplay() then return "replay mode not supported" end
+    if not self._commit then return "versioned UI scope unavailable" end
+    local scoped, scope_error = self._commit:Check(token)
+    if not scoped then return "versioned UI scope: " .. message(scope_error) end
+    local candidate = self._store:GetCandidate(file)
+    if not candidate or not candidate.stable then return "stable candidate required" end
+    local capture, why = self:GetVersions(file)
+    if not capture then return "first-load versions unavailable: " .. message(why) .. "; restart game" end
+    local gate = Card.CheckCandidateSource(candidate.first_content,file)
+    if not gate.ok then return "source: " .. message(gate.error) end
+    local live, lerr = self:_FreshVersioned(file,candidate,capture,true)
+    if not live then return "file preflight: " .. message(lerr) end
+    local discovery, derr = self._driver:Discover(file,candidate.first_content,{
+        session_id=self._session_id,candidate_generation=candidate.generation,
+        loaded_source=live.entry.loaded_source,registry_entry=live.entry,
+        base_revision=capture.snapshot.revision,published_units=capture.snapshot})
+    if not discovery then return "discover: " .. message(derr) end
+    local refresh = function() return self:_FreshVersioned(file,candidate,capture,true) end
+    local prepared, perr = Card.PrepareFileVersioned(capture,discovery,live,refresh)
+    if not prepared then return perr end
+    local selection, controller = prepared.selection, self._commit
+    local committed, cerr, receipt = self._driver:CommitDiscovery(prepared.driver_prepared,
+        function()
+            return controller:Commit(token,selection,capture,prepared.live,refresh)
+        end)
+    if not committed then return "commit: " .. message(cerr) end
+    if receipt.changed then
+        local recorded, record, record_error = pcall(self._store.RecordPartialPublication,
+            self._store,file,candidate.generation,candidate.first_content,receipt.snapshot.revision)
+        if not recorded or not record then
+            self._publication_error = "partial publication bookkeeping failed; restart game"
+            return "definitions committed; " .. self._publication_error .. ": " .. message(recorded and record_error or record)
+        end
+    end
+    return string.format("applied file %s: %s; no restart; candidate retained (not whole-file acceptance)",
+        file,receipt.changed and "definitions committed" or "no definition changes")
 end
 
 ---Explicit, potentially expensive ANALYSIS. Never opens/consumes a commit token.
