@@ -17,7 +17,8 @@ function M.run()
     local function pack(...) return {n=select("#",...),...} end
     local seed,inspect,fseed,match,owners,cseed =
         Card.SeedVersions,Source.Inspect,Functions.Seed,Card.Match,Card.CaptureOwnership,Cards.Seed
-    local keys={"boss","_editor_class","_tmp_sc","_seed_versions_runs","_seed_versions_api","jit"}
+    local keys={"boss","_editor_class","_tmp_sc","_seed_versions_runs","_seed_versions_api","jit",
+        "_BOSS_ESCAPE","_escape_x"}
     local globals={};for _,key in ipairs(keys) do globals[key]=rawget(_G,key) end
     local get,set,join,id=debug.getupvalue,debug.setupvalue,debug.upvaluejoin,debug.upvalueid
     local traps,mutations=0,0
@@ -48,7 +49,7 @@ function M.run()
         debug.getupvalue,debug.setupvalue,debug.upvaluejoin,debug.upvalueid=get,set,join,id
         rawset(_G,"jit",globals.jit)
     end
-    local function fixture()
+    local function fixture(content)
         restore()
         if not join then debug.upvaluejoin=function() error("presence-only, never join") end end
         _seed_versions_runs=0;_editor_class={K={}}
@@ -59,7 +60,7 @@ function M.run()
             for name,fn in next,defaults do card[name]=fn end
             return card
         end},move={New=function() return {is_combat=false} end}}
-        local entry=must(Load.Capture(source,{name="SeedAdapter_Boss.lua",
+        local entry=must(Load.Capture(content or source,{name="SeedAdapter_Boss.lua",
             capability={getupvalue=true,setupvalue=true,upvaluejoin=true}}))
         entry.file="SeedAdapter_Boss.lua"
         return entry,_editor_class,defaults
@@ -143,6 +144,63 @@ function M.run()
         if captured then equivalent(captured,direct,entry,classes,"production seed") end
         package.loaded[version_key],package.preload[version_key]=held_module,held_preload
         held_module,held_preload=nil,nil
+        -- A DiMS escape tail contributes two opaque, non-selectable slots.
+        -- It must not disable reload for combat cards elsewhere in the file.
+        restore()
+        local escape_calls,argument_calls=0,0
+        _escape_x=function() argument_calls=argument_calls+1;return -180 end
+        _BOSS_ESCAPE=function(key)
+            escape_calls=escape_calls+1
+            table.insert(_editor_class[key].cards,{is_combat=false})
+            local deletion=boss.card.New("")
+            deletion.init=function() end
+            table.insert(_editor_class[key].cards,deletion)
+        end
+        local escaped=source.."\n_BOSS_ESCAPE('K',_escape_x(),300,60)"
+            .."\n_editor_class['L']={}"
+            .."\n_editor_class['L'].cards={}"
+            .."\n_tmp_sc=boss.card.New('Elsewhere',1,2,3,100)"
+            .."\nfunction _tmp_sc:init(n) return helper(n) end"
+            .."\ntable.insert(_editor_class['L'].cards,_tmp_sc)"
+        local callbacks=require("SpellHotReload.CardCallbacks")
+        local layout=must(callbacks.Read(escaped,"K"))
+        eq(#layout,5,"escape tail preserves both live positions")
+        eq(layout[4].kind,"other","escape dialog is opaque")
+        eq(layout[5].kind,"other","escape deletion is opaque")
+        eq(next(layout[4].callbacks),nil,"escape dialog has no reloadable callbacks")
+        eq(next(layout[5].callbacks),nil,"escape deletion has no reloadable callbacks")
+        test(layout[4].constructor~=layout[5].constructor,"escape positions have distinct signatures")
+        eq(escape_calls,0,"parsing does not execute escape")
+        eq(argument_calls,0,"parsing does not execute escape arguments")
+        entry,classes,defaults=fixture(escaped)
+        local escape_capture=must(Card.SeedVersions(entry,"escape:session",classes,defaults))
+        eq(#escape_capture.ownership,2,"all classes remain owned")
+        eq(#escape_capture.ownership[1].slots,5,"full live escape list captured")
+        eq(escape_capture.ownership[1].slots[4],classes.K.cards[4],"escape dialog identity retained")
+        eq(escape_capture.ownership[1].slots[5],classes.K.cards[5],"escape deletion identity retained")
+        eq(#escape_capture.snapshot.order,3,"only explicit combat callbacks become roots")
+        eq(escape_calls,1,"normal load executes escape exactly once")
+        eq(argument_calls,1,"normal load evaluates escape arguments exactly once")
+        local report=must(Cards.Compare(escape_capture.snapshot,escaped))
+        test(report~=nil,"unchanged full file remains comparable")
+        eq(escape_calls,1,"version comparison does not replay escape")
+        eq(argument_calls,1,"version comparison does not replay escape arguments")
+        local rebuilt=escaped.."\n_editor_class['K'].cards={_tmp_sc}"
+        eq(#must(callbacks.Read(rebuilt,"K")),1,"later list rebuild drops escape placeholders")
+        local changed=must(callbacks.Read(escaped:gsub(",300,60",",301,60"),"K"))
+        test(changed[4].constructor~=layout[4].constructor,"escape argument changes retain structural drift")
+        local nested=source.."\nfunction ignored() _BOSS_ESCAPE('K',1,2,3) end"
+        eq(#must(callbacks.Read(nested,"K")),3,"nested escape is not a top-level registration")
+        local value,reason=callbacks.Read(source.."\n_BOSS_ESCAPE(target,1,2,3)","K")
+        eq(value,nil,"dynamic escape target rejected")
+        test(type(reason)=="string","dynamic target gives a diagnostic")
+        value=callbacks.Read(source.."\n_BOSS_ESCAPE('K',1,2)","K")
+        eq(value,nil,"incomplete escape arguments rejected")
+        value=callbacks.Read("local _BOSS_ESCAPE=function() end\n"..source
+            .."\n_BOSS_ESCAPE('K',1,2,3)","K")
+        eq(value,nil,"local escape shadowing rejected")
+        eq(escape_calls,1,"all inspection remains non-executing")
+        eq(argument_calls,1,"all argument inspection remains non-executing")
         entry,classes,defaults=fixture()
         set(entry.anchor,entry.slots.helper,function() return 99 end)
         local v,e=Card.SeedVersions(entry,"seed:session",classes,defaults)

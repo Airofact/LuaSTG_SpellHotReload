@@ -166,6 +166,30 @@ function M.Read(content, class_key, analysis)
                 end
                 layout = rebuilt
                 i = close
+            elseif matches(tokens, i, "_BOSS_ESCAPE", "(")
+                and not matches(tokens, i - 1, ".")
+                and not matches(tokens, i - 1, ":") then
+                -- DiMS's escape node appends a dialog and a deletion card.
+                -- Preserve both positions/identities, never execute the call
+                -- (its arguments can consume RNG) or publish their callbacks.
+                local args, last = table_elements(tokens, i + 1)
+                local target = args and args[1] and args[1].first == args[1].last
+                    and string_value(tokens[args[1].first]) or nil
+                if not args or #args ~= 4 or target == nil or locals._BOSS_ESCAPE then
+                    return nil, "unsupported _BOSS_ESCAPE call; literal class and four arguments required"
+                end
+                if target == class_key then
+                    if not found then return nil, "escape registration before class card list" end
+                    local call = signature(tokens, i, last)
+                    for slot = 1, 2 do
+                        layout[#layout + 1] = {
+                            kind = "other", name = "",
+                            constructor = call .. " :escape-slot:" .. slot,
+                            callbacks = {}, locals = {}, perform = "",
+                        }
+                    end
+                end
+                i = last
             elseif matches(tokens, i, "_tmp_sc", "=") then
                 pending, held = nil, nil
                 if matches(tokens, i + 2, "boss", ".")
