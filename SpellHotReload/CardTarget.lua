@@ -9,7 +9,9 @@
 -- No parsing, compiling, debug API, game calls, joins, writes, cache or restart.
 -- LocateDiscovery / CheckDiscovery prove a CURRENT root source correspondence.
 -- CardVersions.Compare still refuses non-fixed layouts; production is unchanged.
--- The complete discovery stays attached; this gate is NOT all-unit remapping.
+-- LocateFileDiscovery / CheckFileDiscovery enumerate genuine captured owners
+-- without practice bindings. They prove correspondence, NOT binding safety,
+-- publication permission or complete file coverage. Production is unchanged.
 -- Pure tables are read-only by contract; release targets with their session.
 local Card = require("SpellHotReload.Card")
 local M = { Kind="SpellHotReload.CardTarget", Version=1 }
@@ -35,12 +37,12 @@ local function file_of(live)
     local file=plain(entry) and rawget(entry,"file")
     return type(file)=="string" and file or nil
 end
-local function resolve(binding,capture,live)
+local function session(capture,live)
     local file=file_of(live)
-    if not plain(binding) or not plain(capture)
+    if not plain(capture)
         or capture.kind~="SpellHotReload.LoadVersions" or capture.version~=1
         or not plain(capture.snapshot) or not plain(live) then
-        return fail("unsupported","current binding, first-load capture and fresh live required",file)
+        return fail("unsupported","first-load capture and fresh live required",file)
     end
     local base,entry=capture.snapshot,live.entry
     if base.kind~="SpellHotReload.CardVersions" or base.version~=1
@@ -55,15 +57,9 @@ local function resolve(binding,capture,live)
         or entry.loaded_source~=base.loaded_source or entry.reloadable~=true or entry.missing then
         return fail("stale","session, capture, anchor or publication snapshot changed",file)
     end
-    if type(binding.class_key)~="string" or binding.class_key==""
-        or not integer(binding.slot,1) or not plain(binding.card)
-        or (binding.mode~="practice" and binding.mode~="debug")
-        or (binding.name~=nil and type(binding.name)~="string")
-        or (binding.include_previous~=nil and type(binding.include_previous)~="boolean")
-        or (binding.mode=="debug" and binding.include_previous==true)
-        or dense(binding.names)==nil then
-        return fail("unsupported","valid live slot, mode, names and restart flags required",file)
-    end
+    return {base=base,entry=entry,file=base.file}
+end
+local function ownership(base,capture,live,file)
     if not plain(live.classes) or live.classes~=capture.classes
         or dense(capture.ownership)==nil or dense(base.order)==nil or not plain(base.units) then
         return fail("ownership","first-load class ownership required",file)
@@ -84,7 +80,7 @@ local function resolve(binding,capture,live)
             seen[card]=true
         end
     end
-    local units,selected={},nil
+    local units={}
     for _,key in ipairs(base.order) do
         local unit=rawget(base.units,key)
         local owner=plain(unit) and owners[unit.class_key]
@@ -95,12 +91,36 @@ local function resolve(binding,capture,live)
             return fail("ownership","published unit no longer owns its first-load combat slot",file)
         end
         units[key]=true
-        if unit.class_key==binding.class_key and unit.slot==binding.slot and unit.card==binding.card then
-            selected=unit
-        end
     end
     for key in next,base.units do
         if not units[key] then return fail("ownership","unindexed published unit",file) end
+    end
+    return owners
+end
+local function resolve(binding,capture,live)
+    if not plain(binding) then
+        return fail("unsupported","current binding, first-load capture and fresh live required",file_of(live))
+    end
+    local context,err=session(capture,live)
+    if not context then return nil,err end
+    local base,entry,file=context.base,context.entry,context.file
+    if type(binding.class_key)~="string" or binding.class_key==""
+        or not integer(binding.slot,1) or not plain(binding.card)
+        or (binding.mode~="practice" and binding.mode~="debug")
+        or (binding.name~=nil and type(binding.name)~="string")
+        or (binding.include_previous~=nil and type(binding.include_previous)~="boolean")
+        or (binding.mode=="debug" and binding.include_previous==true)
+        or dense(binding.names)==nil then
+        return fail("unsupported","valid live slot, mode, names and restart flags required",file)
+    end
+    local owners,oerr=ownership(base,capture,live,file)
+    if not owners then return nil,oerr end
+    local selected
+    for _,key in ipairs(base.order) do
+        local unit=base.units[key]
+        if unit.class_key==binding.class_key and unit.slot==binding.slot and unit.card==binding.card then
+            selected=unit
+        end
     end
     if not selected then return fail("ownership","current card has no captured combat owner",file) end
     local owner=owners[binding.class_key]
@@ -210,9 +230,7 @@ local function source_slot(before,after,target)
     if found then return found,reason end
     return nil,"unnamed root has no unique head/tail alignment"
 end
-local function locate_discovery(target,snapshot,binding,capture,live)
-    local ok,err=check(target,binding,capture,live)
-    if not ok then return nil,err end
+local function discovery_classes(target,snapshot,live)
     local base,file=target.snapshot,target.file
     local common=plain(snapshot) and snapshot.common
     if not plain(common) or common.file~=file or common.session_id~=target.session_id
@@ -235,7 +253,7 @@ local function locate_discovery(target,snapshot,binding,capture,live)
         or not integer(file_context.classes,0) then
         return fail("unsupported","registered Card discovery required",file)
     end
-    local indexed,classes,chosen={},0,nil
+    local indexed,classes,entries={},{},{}
     for _,entry in ipairs(snapshot.entries) do
         local unit=plain(entry) and entry.unit
         if not plain(unit) or type(unit.key)~="string" or indexed[unit.key]
@@ -252,8 +270,8 @@ local function locate_discovery(target,snapshot,binding,capture,live)
                 or context.adapter.file~=file_context or context.adapter.unit~=ctx then
                 return fail("ownership","Card discovery context disagrees",file)
             end
-            classes=classes+1
-            if ctx.class_key==target.class_key then chosen=entry end
+            classes[#classes+1]=entry
+            entries[ctx.class_key]=entry
         elseif unit.carrier=="card" then
             return fail("ownership","card discovery has another owner",file)
         end
@@ -261,9 +279,19 @@ local function locate_discovery(target,snapshot,binding,capture,live)
     for key in next,snapshot.by_key do
         if not indexed[key] then return fail("ownership","unindexed discovery entry",file) end
     end
-    if classes~=file_context.classes then
+    if #classes~=file_context.classes then
         return fail("unsupported","filtered Card discovery",file)
     end
+    return {order=classes,by_class=entries}
+end
+local function locate_discovery(target,snapshot,binding,capture,live)
+    local ok,err=check(target,binding,capture,live)
+    if not ok then return nil,err end
+    local classes,cerr=discovery_classes(target,snapshot,live)
+    if not classes then return nil,cerr end
+    local base,file=target.snapshot,target.file
+    local common=snapshot.common
+    local chosen=classes.by_class[target.class_key]
     if not chosen then return fail("ambiguous","current class is absent from candidate",file) end
     local before=plain(base.layout) and base.layout[target.class_key]
     if not layout_valid(before) or #before~=#target.names
@@ -293,6 +321,157 @@ local function check_discovery(location,binding,capture,live)
     end
     return true
 end
+-- No current binding, CaptureCurrent or restart context is synthesized here.
+-- Every row retains its stable publication key even when its source is absent.
+local function locate_file(snapshot,capture,live)
+    local context,err=session(capture,live)
+    if not context then return nil,err end
+    local base,file=context.base,context.file
+    local owners,oerr=ownership(base,capture,live,file)
+    if not owners then return nil,oerr end
+    local report={kind=M.Kind..".FileDiscovery",version=M.Version,
+        file=file,session_id=base.session_id,capture=capture,snapshot=base,
+        base_revision=base.revision,entry=context.entry,classes=live.classes,
+        discovery=snapshot,order={},by_key={},located={},pending={},unowned={}}
+    local classes,cerr=discovery_classes(report,snapshot,live)
+    if not classes then return nil,cerr end
+    report.content=snapshot.common.content
+    report.generation=snapshot.common.candidate_generation
+    -- Include placeholders and every combat owner; a malformed/incomplete
+    -- capture is a file-wide failure, not permission to ignore live consumers.
+    for _,owner in ipairs(capture.ownership) do
+        local before=plain(base.layout) and rawget(base.layout,owner.class_key)
+        if not layout_valid(before) or #before~=#owner.slots then
+            return fail("ownership","captured source layout unavailable",file)
+        end
+        for slot,card in ipairs(owner.slots) do
+            if rawget(card,"is_combat")==true then
+                local key="card:"..#owner.class_key..":"..owner.class_key..":"..slot
+                if not base.units[key] or before[slot].kind~="card" then
+                    return fail("ownership","unindexed captured combat owner",file)
+                end
+            end
+        end
+    end
+    -- An init declaration's exact byte position identifies a source occurrence
+    -- for CONFLICT detection only, never for guessing a live card identity.
+    -- Reused _tmp_sc descriptors may occupy several slots or classes.
+    local claims,occurrences={},{}
+    for _,entry in ipairs(classes.order) do
+        for _,desc in ipairs(entry.unit.context.layout) do
+            if desc.kind=="card" and type(desc.callbacks.init)=="string" then
+                local point=plain(desc.callback_points) and desc.callback_points.init
+                if not plain(point) or not integer(point.first,1)
+                    or not integer(point.last,point.first) or point.last>#report.content then
+                    return fail("ownership","candidate combat source position unavailable",file)
+                end
+                occurrences[point.first]=(occurrences[point.first] or 0)+1
+            end
+        end
+    end
+    for _,key in ipairs(base.order) do
+        local unit=base.units[key]
+        local owner=owners[unit.class_key]
+        local names={}
+        for slot,card in ipairs(owner.slots) do names[slot]=name(rawget(card,"name")) end
+        local target={kind=M.Kind..".FileTarget",version=M.Version,key=key,unit=unit,
+            class_key=unit.class_key,class=owner.class,list=owner.list,card=unit.card,
+            slot=unit.slot,name=names[unit.slot],names=names}
+        local row={key=key,target=target,status="source-absent",
+            reason="captured class is absent from candidate; live owner retained"}
+        report.order[#report.order+1]=key
+        report.by_key[key]=row
+        local entry=classes.by_class[unit.class_key]
+        if entry then
+            local after=entry.unit.context.layout
+            local slot,reason=source_slot(base.layout[unit.class_key],after,target)
+            row.source_key,row.entry=entry.unit.key,entry
+            row.status,row.reason="unmapped",reason
+            if slot then
+                row.status,row.reason,row.match="located",nil,reason
+                row.candidate_slot,row.candidate_name=slot,name(after[slot].name)
+                row.descriptor=after[slot]
+                local source_id=row.descriptor.callback_points.init.first
+                local claim=claims[source_id] or {};claims[source_id]=claim
+                claim[#claim+1]=row
+            end
+        end
+    end
+    -- Reject ALL claimants on conflict; traversal order never wins identity.
+    for source_id,rows in next,claims do
+        if #rows>1 or occurrences[source_id]>1 then
+            for _,row in ipairs(rows) do
+                row.status="ambiguous"
+                row.reason=#rows>1 and "candidate source has multiple captured owners"
+                    or "candidate source is reused by multiple slots"
+            end
+        end
+    end
+    for _,key in ipairs(report.order) do
+        local into=report.by_key[key].status=="located" and report.located or report.pending
+        into[#into+1]=key
+    end
+    for _,entry in ipairs(classes.order) do
+        for slot,desc in ipairs(entry.unit.context.layout) do
+            if desc.kind=="card" and type(desc.callbacks.init)=="string" then
+                local claim=claims[desc.callback_points.init.first]
+                if not claim or #claim~=1 or claim[1].status~="located" then
+                    report.unowned[#report.unowned+1]={status="unowned",source_key=entry.unit.key,
+                        class_key=entry.unit.context.class_key,candidate_slot=slot,
+                        candidate_name=name(desc.name),descriptor=desc,
+                        reason=claim and "candidate source has ambiguous captured ownership"
+                            or "candidate combat slot has no proven captured owner"}
+                end
+            end
+        end
+    end
+    return report
+end
+local function equal_fields(a,b,fields)
+    if not plain(a) then return false end
+    for _,field in ipairs(fields) do
+        if not rawequal(rawget(a,field),rawget(b,field)) then return false end
+    end
+    return true
+end
+local function equal_list(a,b)
+    if dense(a)~=#b then return false end
+    for i,value in ipairs(b) do if not rawequal(a[i],value) then return false end end
+    return true
+end
+local function check_file(report,capture,live)
+    if not plain(report) or report.kind~=M.Kind..".FileDiscovery" or report.version~=M.Version then
+        return fail("unsupported","resolved file correspondence required",file_of(live))
+    end
+    local fresh,err=locate_file(report.discovery,capture,live)
+    if not fresh then return nil,err end
+    local changed=not equal_fields(report,fresh,{"file","session_id","capture","snapshot",
+        "base_revision","entry","classes","discovery","content","generation"})
+        or not equal_list(report.order,fresh.order) or not equal_list(report.located,fresh.located)
+        or not equal_list(report.pending,fresh.pending) or not plain(report.by_key)
+        or dense(report.unowned)~=#fresh.unowned
+    if changed then return fail("stale","file correspondence changed",fresh.file) end
+    for key in next,report.by_key do
+        if not fresh.by_key[key] then return fail("stale","file correspondence index changed",fresh.file) end
+    end
+    for _,key in ipairs(fresh.order) do
+        local row,other=report.by_key[key],fresh.by_key[key]
+        if not equal_fields(row,other,{"key","status","reason","source_key","entry",
+            "descriptor","candidate_slot","candidate_name","match"})
+            or not equal_fields(row.target,other.target,{"kind","version","key","unit",
+                "class_key","class","list","card","slot","name"})
+            or not equal_list(row.target.names,other.target.names) then
+            return fail("stale","file target or source correspondence changed",fresh.file)
+        end
+    end
+    for i,other in ipairs(fresh.unowned) do
+        if not equal_fields(report.unowned[i],other,{"status","source_key","class_key",
+            "candidate_slot","candidate_name","descriptor","reason"}) then
+            return fail("stale","unowned candidate correspondence changed",fresh.file)
+        end
+    end
+    return true
+end
 local function protected(fn,live,...)
     local ok,value,err=pcall(fn,...)
     if ok then return value,err end
@@ -311,5 +490,14 @@ function M.LocateDiscovery(target,snapshot,binding,capture,live)
 end
 function M.CheckDiscovery(location,binding,capture,live)
     return protected(check_discovery,live,location,binding,capture,live)
+end
+-- Requires FULL discovery and freshly read live.content. Arrays describe only
+-- combat correspondence, not metadata/initializer/unknown-change completion.
+-- Consumers must validate bindings, dependencies and final commit guards.
+function M.LocateFileDiscovery(snapshot,capture,live)
+    return protected(locate_file,live,snapshot,capture,live)
+end
+function M.CheckFileDiscovery(report,capture,live)
+    return protected(check_file,live,report,capture,live)
 end
 return M
