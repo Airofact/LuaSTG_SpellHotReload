@@ -539,17 +539,13 @@ function Plugin:_ApplyVersioned(token, file, candidate, capture, discovery, init
     -- Scalars/references allocated BEFORE commit. Constructor/name metadata is
     -- NOT published: EXT_POS uses the genuine live name/slot, not candidate ones.
     local run = Card.FreezeRestart(target,capture)
-    local handle, context, controller = prepared.handle, prepared.context, self._commit
-    -- One-call writer, not an exposed controller/token or a general action API.
-    -- Bind all arguments before entering the adapter; the kernel owns every
-    -- recoverable operation and calls refresh only before final Guard/Consume.
-    context.adapter.transaction = function(h, plan, ctx)
-        if h~=handle or plan~=selection or ctx~=context then
-            return nil, {phase="commit",code="ownership",message="foreign Card transaction input",file=file}
-        end
-        return controller:Commit(token,selection,capture,live,handle.refresh)
-    end
-    local committed, cerr, receipt = Card.Commit(handle,selection,context)
+    local handle, controller = prepared.handle, self._commit
+    -- Driver binds/revokes the exact-input one-call writer. The unchanged
+    -- Card kernel still owns every recoverable operation and final Guard/Consume.
+    local committed, cerr, receipt = self._driver:CommitDiscovery(prepared.driver_prepared,
+        function()
+            return controller:Commit(token,selection,capture,live,handle.refresh)
+        end)
     if not committed then return "commit: " .. message(cerr) end
     run.snapshot = receipt.snapshot
     self._pending_restart_run = run

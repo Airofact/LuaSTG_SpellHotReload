@@ -228,6 +228,75 @@ function Driver:PrepareDiscovery(discovery, keys, contexts)
         discovery=discovery, file=discovery.file, content=discovery.content, entries=prepared}
 end
 
+
+---Dispatch ONE prepared aggregate through an explicit atomic writer. This is
+---not a multi-unit transaction: empty/multiple aggregates fail before any hook.
+---The trusted writer owns phase/Guard/Consume/journal/rollback/version install.
+---No Match/Locate/Inject replay, legacy Commit, automatic Restart or cache.
+---Artifacts are caller-owned/read-only by contract, not unforgeable permissions.
+---The temporary exact-input writer expires on return/throw and can be used once.
+function Driver:CommitDiscovery(prepared, transaction)
+    local function refuse(code, detail, key)
+        return false, {phase="commit", code=code, message=detail,
+            file=plain(prepared) and rawget(prepared,"file") or nil, unit_key=key}
+    end
+    if getmetatable(self)~=Driver or not plain(prepared)
+        or prepared.kind~="SpellHotReload.Driver.PreparedDiscovery"
+        or prepared.version~=1 or prepared.owner~=self or not plain(prepared.entries)
+        or type(transaction)~="function" then
+        return refuse("ownership", "owned prepared discovery and atomic writer required")
+    end
+    -- Do not accidentally publish one root at a time and claim group atomicity.
+    local count=0
+    for key in next,prepared.entries do
+        if key~=1 then return refuse("unsupported", "single prepared aggregate required") end
+        count=count+1
+    end
+    if count~=1 then return refuse("unsupported", "single prepared aggregate required") end
+    local record=prepared.entries[1]
+    if not plain(record) or not plain(record.unit) or type(record.unit.key)~="string" then
+        return refuse("ownership", "prepared entry/unit required")
+    end
+    local unit, context, entry=record.unit,record.context,record.entry
+    local selected=self:SelectDiscovery(prepared.discovery,{unit.key})
+    if not selected or prepared.file~=selected.file or prepared.content~=selected.content
+        or selected.entries[1]~=entry or not plain(entry) or entry.unit~=unit
+        or entry.adapter~=record.adapter
+        or not require("SpellHotReload.Adapter").ValidateDiscovery(record.adapter)
+        or not plain(entry.context)
+        or not plain(entry.context.adapter) or not plain(context) or not plain(context.adapter)
+        or context.common~=entry.context.common or context.common~=prepared.discovery.snapshot.common
+        or context.adapter.file~=entry.context.adapter.file
+        or context.adapter.unit~=unit.context
+        or entry.context.adapter.unit~=unit.context
+        or entry.context.adapter.file~=prepared.discovery.snapshot.adapter_contexts[rawget(record.adapter,"Id")]
+        or not record.handle or not record.plan or rawget(context.adapter,"transaction")~=nil then
+        return refuse("ownership", "prepared adapter/unit/context ownership changed",unit.key)
+    end
+    local handle,plan,scope=record.handle,record.plan,context.adapter
+    local hook=rawget(record.adapter,"Commit")
+    local active,attempted=true,false
+    local writer=function(h,p,c)
+        if h~=handle or p~=plan or c~=context then
+            local _,err=refuse("ownership", "foreign prepared transaction input",unit.key)
+            return nil,err
+        end
+        if not active or attempted then
+            local _,err=refuse("stale", "prepared transaction writer expired or already used",unit.key)
+            return nil,err
+        end
+        attempted=true
+        return transaction(h,p,c)
+    end
+    rawset(scope,"transaction",writer)
+    local called,ok,err,receipt=pcall(hook,handle,plan,context)
+    active=false
+    transaction=nil -- retained expired writers cannot retain the caller capability
+    rawset(scope,"transaction",nil)
+    if not called then error(ok,0) end
+    return ok,err,receipt
+end
+
 ---Analyze, locate and inject one file. No live object is touched.
 ---@param file string
 ---@param content string

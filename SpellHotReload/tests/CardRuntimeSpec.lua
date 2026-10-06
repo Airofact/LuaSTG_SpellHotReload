@@ -233,14 +233,20 @@ function M.run()
     local wired,werr=pcall(function()
         local Plugin=require("SpellHotReload.Plugin")
         local candidate={stable=true,generation=7,first_content="synthetic candidate"}
-        local context={adapter={}}
+        local context={common=common,adapter={file=discovered.context.adapter.file,
+            unit=unit.context}}
         local handle={refresh=function() return live end}
         local prepared={target=target,live=live,location=location,selection=selection,
-            handle=handle,context=context}
+            handle=handle,context=context,
+            driver_prepared={kind="SpellHotReload.Driver.PreparedDiscovery",version=1,
+                owner=driver,discovery=discovery,file=discovery.file,content=discovery.content,
+                entries={{entry=discovered,adapter=Card,unit=unit,context=context,
+                    handle=handle,plan=selection}}}}
+        driver.Discover=function() return discovery end
         local p=setmetatable({_loads={[target.file]=entry},_session_id=target.session_id,
             _candidate_inspections={},_activated=true,_supported=true,_sandbox_ok=true,
             _store={GetCandidate=function() return candidate end},
-            _driver={Discover=function() return discovery end}},Plugin)
+            _driver=driver},Plugin)
         p._commit={Check=function() return true end,Poisoned=function() return false end,
             Commit=function() return {snapshot=snapshot,changed=false} end}
         p.GetVersions=function() return capture end

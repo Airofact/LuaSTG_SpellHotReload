@@ -601,7 +601,7 @@ function Card.PrepareVersioned(capture, discovery, initial, proof, refresh)
     local record = prepared.entries[1]
     local handle, selection = record.handle, record.plan
     return {target=handle.target, live=handle.live, location=handle.location, selection=selection,
-        handle=handle, context=context}
+        handle=handle, context=context, driver_prepared=prepared}
 end
 
 
