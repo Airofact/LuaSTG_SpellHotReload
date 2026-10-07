@@ -5,6 +5,7 @@
 local M = {}
 function M.run()
     local Cards = require("SpellHotReload.CardVersions")
+    local FileApply = require("SpellHotReload.FileApply")
     local Target = require("SpellHotReload.CardTarget")
     local Card = require("SpellHotReload.Card")
     local Driver = require("SpellHotReload.Driver")
@@ -85,9 +86,10 @@ function M.run()
                 return must(Cards.CompareLocated(base,location,binding,f.capture,f.live))
             end
             local location=must(Target.LocateFileDiscovery(discovery,f.capture,f.live))
-            return must(Cards.CompareFileLocated(base,location,f.capture,f.live))
+            if scope=="card-only" then return must(Cards.CompareFileLocated(base,location,f.capture,f.live)) end
+            return must(FileApply.CompareCards(base,location,f.capture,f.live))
         end
-        function f.remaining(bytes,scope) return must(Cards.Remaining(f.report(bytes,scope))) end
+        function f.remaining(bytes,scope) return must(FileApply.Remaining(f.report(bytes,scope))) end
         function f.commit(bytes,scope)
             local report=f.report(bytes,scope)
             local selection=must(scope=="current" and Cards.Select(report,{KA}) or Cards.SelectFile(report))
@@ -102,6 +104,20 @@ function M.run()
     local ok,problem=pcall(function()
         local f=fixture()
         local base=f.capture.snapshot
+        eq(Cards.Remaining,nil,"Card versions no longer own full-file accounting")
+        eq(Card.InspectFileRemainder,nil,"Card adapter no longer owns completion workflow")
+        local unknown=SOURCE.."\nGLOBAL_REMAINDER=1"
+        local own_report=f.report(unknown,"card-only")
+        check(own_report.by_key[KA]~=nil,"Card analysis supplies own evidence despite unrelated edit")
+        local accepted,reason=FileApply.CheckTopLevel(own_report)
+        eq(accepted,nil,"file layer independently rejects unbounded edit")
+        check(reason and reason.message:find("unbounded top-level change",1,true),"file layer owns refusal")
+        local own_model=must(FileApply.Remaining(own_report))
+        check(has(own_model,"unknown"),"file layer owns unknown remainder")
+        eq(own_model.complete,false,"unknown edit never counts as complete")
+        local evidence=must(Cards.Coverage(own_report))
+        eq(evidence.complete,nil,"adapter evidence never declares file complete")
+        check(evidence.before and evidence.after,"adapter exports proven statement coverage")
         local model=f.remaining(SOURCE)
         eq(model.complete,true,"unchanged complete source")
         eq(#model.pending,0,"all tokens covered")
@@ -189,13 +205,13 @@ function M.run()
         local value,err=Cards.Compare(base,(SOURCE:gsub("local empty","local empty=0")))
         eq(value,nil,"declaration-kind change refused before coverage")
         eq(err.code,"unsupported","fixed declaration-kind refusal")
-        value,err=Cards.Remaining({})
+        value,err=FileApply.Remaining({})
         eq(value,nil,"non-report refused");eq(err.code,"unsupported","invalid input code")
-        value,err=Cards.Remaining(must(Cards.SelectFile(f.report(SOURCE))))
+        value,err=FileApply.Remaining(must(Cards.SelectFile(f.report(SOURCE))))
         eq(value,nil,"selection never a receipt or remainder baseline")
         local partition=f.report(SOURCE)
         partition.discovery.analysis.statements[1].tok.first=2
-        value,err=Cards.Remaining(partition)
+        value,err=FileApply.Remaining(partition)
         eq(value,nil,"token partition gap never counts as complete")
         if real_join then
             f=fixture();base=f.capture.snapshot

@@ -2,13 +2,13 @@
 
 LuaSTG Editor Sharp 的 **Spell Practice（符卡练习）热重载** 调试插件。
 支持直接在符卡节点下编写逻辑，也支持回调调用同文件的具名局部函数；
-普通符卡练习和 **SC Debugger** 进入的游戏都可以热重载。
+当前真实验收通过的范围是普通符卡练习；SC Debugger 有定位支持，完整切关路径仍待验收。
 
 编辑器重新生成 `*_Boss.lua` 后，插件等待两次读取字节一致，再显示候选。
 点击 **Apply & Restart Current**，插件按 Boss 类名、加载时的实时槽位和捕获到的
 符卡名定位当前卡，编译它的回调，保留运行时已捕获的局部变量，发布后重开符卡练习。
 新练习创建新的 Boss 和任务；旧 Boss、旧 coroutine 不做原位迁移。
-从 SC Debugger 进入时 Apply 会离开 `SC Debugger`，以普通符卡练习重启当前卡。
+从 SC Debugger 进入时 Apply 会请求普通符卡练习重启；请求返回不等于异步切关已完成。
 
 实现位于 `game/plugin/SpellHotReload/`。无需改动编辑器、项目源文件或生成文件。
 
@@ -67,8 +67,15 @@ v0.21.111 / LuaJIT 2.1.1744887079。Lua 5.1 可运行独立 spec，不能据此
 或依赖已改但未重放的 `_tmp_sc` / `_sc_table` 接线，则阻断该根及依赖它的根。
 未重执行的顶层别名/调用若读取这些待应用绑定而无法缩窄影响，也整文件拒绝。
 这不是通用 Host/Value 热更；任意中间插入/重排、新类创建或非字面量构造仍不保证可隔离。
-两种 Apply 成功提交后都按实际发布版本核对整份候选：全部改动已经发布或仅有
-注释/空白等无语义变化时，移除该份候选；仍有未发布或无法确认的内容则保留，
+文件级门禁与完整剩余核对由 `SpellHotReload/FileApply.lua` 负责；Card 仅提供
+卡接线/绑定影响的证据和已证明的定义语句覆盖，不比较无关语句、不决定整文件完成。
+这是一项具体职责拆分，不新增 Host/Value 适配器或跨载体事务；提交、版本与 Retry 不变。
+独立的全局 `Include 'path'` / `Include('path')`（含长字符串、尾随分号）不参与
+符卡热重载：增删或改路径不阻断 Apply，也不单独保留候选；不会执行 Include，
+不会加载所指文件，也不记为已发布。动态参数、别名、同名 local 遮蔽或控制块内调用
+不在此排除范围；原有身份、词法绑定、依赖及活体目标校验不变。
+两种 Apply 成功后都按实际发布版本核对整份候选：参与热重载的改动全部已经发布，
+或仅有注释/空白等无语义变化时，移除该份候选；仍有未发布或无法确认的内容则保留，
 Result 和候选行显示上次核对的剩余种类、字节位置与原因，不需要先 Inspect。
 名字、构造、列表、注册和状态初始化不会因定义发布而被一并接受。
 完成记忆与首载字节、部分发布、Dismiss 分开；有效的完成字节不会被 Rescan、
@@ -78,10 +85,10 @@ Result 和候选行显示上次核对的剩余种类、字节位置与原因，�
 定义完成与重启结果独立：候选已经移除但重启失败时，仍使用 Retry Restart，
 它只重试冻结的重启目标，不重新读取、编译或提交。
 
-SC Debug / Test 产物（包含 `scdebugger`）可以直接使用。插件不加载候选文件，
-只重编译当前卡的回调，所以文件末尾 `Include 'THlib\UI\scdebugger.lua'` 之类的
-调试启动和场景注册代码不会再次执行；Apply 通过 `_sc_table["EXT_POS"]` 交接到
-普通符卡练习，不会重新进入 SC Debugger。
+SC Debug / Test 产物可参与卡定位，候选末尾的字面量 Include 按上述规则排除，
+调试启动与注册不会再次执行。Current 通过 `_sc_table["EXT_POS"]` 请求普通练习。
+SC Debug 切回全量导出的真实现场已有黑屏报告，具体切关原因尚未证实；
+本规则不代表该路径已修复或通过真实游戏验收。
 
 插件需在 mod 加载之前安装捕获 hook。watcher 在 `afterTHlib` 建立：此时
 `setting.mod` 和 `mod/<mod>/` 搜索路径已经确定，baseline 记录的就是 mod
@@ -95,7 +102,8 @@ SC Debug / Test 产物（包含 `scdebugger`）可以直接使用。插件不加
 
 ## 支持范围
 
-- 目录模式 `game/mod/<setting.mod>/`，普通符卡练习与 SC Debugger 均可，拒绝 replay。
+- 目录模式 `game/mod/<setting.mod>/`，普通符卡练习已有限定真实验收；
+  SC Debugger 定位支持不等于完整切关已验收，拒绝 replay。
 - Editor Sharp 生成的 `_tmp_sc = boss.card.New(...)` 和
   `table.insert(_editor_class[...].cards, _tmp_sc)` 结构。
 - 生成源码重建整张表时按引擎实际建出的列表定位：

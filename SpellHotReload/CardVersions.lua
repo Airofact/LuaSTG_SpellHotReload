@@ -411,96 +411,63 @@ local function safe_wiring(tokens,first,last)
     end
     return false
 end
-local function file_effects(state,scan,pending_classes)
-    local Source=require("SpellHotReload.FunctionPlan")
-    local loaded,err=Source.Inspect(state.loaded_source)
-    if not loaded then return nil,err end
-    local function residual(source)
-        local ignored,result,wiring={},{},{}
-        for _,definitions in next,source.definitions do
-            for _,definition in ipairs(definitions) do ignored[definition.statement]=true end
+-- Adapter-owned evidence only: recognized Card wiring/callback statements and
+-- reads of generated Card bindings. Other statements are NOT compared here.
+local function card_file_facts(state,source,pending_classes)
+    local excluded,wiring,binding_reads,structures={},{},{},{}
+    for _,definitions in next,source.definitions do
+        for _,definition in ipairs(definitions) do excluded[definition.statement]=true end
+    end
+    for _,declaration in ipairs(source.bindings.declarations) do
+        if not state.functions.units[declaration.name] then excluded[declaration.statement]=true end
+    end
+    for index,statement in ipairs(source.analysis.statements) do
+        local tokens=source.analysis.tokens
+        local first,last=statement.tok.first,statement.tok.last
+        while tokens[last] and tokens[last].value==";" do last=last-1 end
+        local function val(i) return tokens[i] and tokens[i].value end
+        local callback
+        if val(first)=="function" and val(first+1)=="_tmp_sc" and val(first+2)==":" then
+            callback=allowed[val(first+3)] and val(first+4)=="("
+        elseif val(first)=="_tmp_sc" and val(first+1)=="." then
+            callback=allowed[val(first+2)] and val(first+3)=="="
+                and val(first+4)=="function" and val(first+5)=="("
         end
-        for _,declaration in ipairs(source.bindings.declarations) do
-            if not state.functions.units[declaration.name] then ignored[declaration.statement]=true end
+        if callback then
+            local stop
+            for i=first,last do
+                if val(i)=="end" and tokens[i].depth==1 then stop=i;break end
+            end
+            callback=stop==last
         end
-        for index,statement in ipairs(source.analysis.statements) do
-            local tokens=source.analysis.tokens
-            local first,last=statement.tok.first,statement.tok.last
-            while tokens[last] and tokens[last].value==";" do last=last-1 end
-            local function val(i) return tokens[i] and tokens[i].value end
-            local callback
-            if val(first)=="function" and val(first+1)=="_tmp_sc" and val(first+2)==":" then
-                callback=allowed[val(first+3)] and val(first+4)=="("
-            elseif val(first)=="_tmp_sc" and val(first+1)=="." then
-                callback=allowed[val(first+2)] and val(first+3)=="="
-                    and val(first+4)=="function" and val(first+5)=="("
-            end
-            if callback then
-                local stop
-                for i=first,last do
-                    if val(i)=="end" and tokens[i].depth==1 then stop=i;break end
-                end
-                callback=stop==last
-            end
-            local wire=safe_wiring(tokens,first,last)
-            if wire then
-                local values={}
-                for i=first,last do values[#values+1]=tokens[i].kind..":"..tokens[i].value end
-                wiring[#wiring+1]=table.concat(values,"|")
-            end
-            if not ignored[index] and not callback and not wire then
-                local assign
-                for i=first,last do if val(i)=="=" then assign=i;break end end
-                -- An unchanged executable alias/call can still couple new
-                -- definitions to pending wiring. Do not infer that its globals
-                -- were refreshed. Function bodies (depth>0) are not executed.
-                local binding_read=false
-                for i=(assign and assign+1 or first),last do
-                    local token=tokens[i]
-                    if token.depth==0 and token.kind=="word" then
-                        if token.value=="_tmp_sc" or token.value=="_sc_table" then binding_read=true end
-                        if token.value=="_editor_class" then
-                            local label=tokens[i+2]
-                            local decode=val(i+1)=="[" and label and label.kind=="string"
-                                and val(i+3)=="]" and (loadstring or load)("return "..label.value)
-                            local name=decode and decode()
-                            if not name or pending_classes[name] then binding_read=true end
-                        end
+        local wire=safe_wiring(tokens,first,last)
+        if wire then
+            local values={}
+            for i=first,last do values[#values+1]=tokens[i].kind..":"..tokens[i].value end
+            wiring[#wiring+1]=table.concat(values,"|")
+        end
+        structures[index]=wire or val(first)=="_BOSS_ESCAPE" or nil
+        if callback or wire then excluded[index]=true end
+        if not excluded[index] then
+            local assign
+            for i=first,last do if val(i)=="=" then assign=i;break end end
+            for i=(assign and assign+1 or first),last do
+                local token=tokens[i]
+                if token.depth==0 and token.kind=="word" then
+                    if token.value=="_tmp_sc" or token.value=="_sc_table" then binding_reads[index]=true end
+                    if token.value=="_editor_class" then
+                        local label=tokens[i+2]
+                        local decode=val(i+1)=="[" and label and label.kind=="string"
+                            and val(i+3)=="]" and (loadstring or load)("return "..label.value)
+                        local name=decode and decode()
+                        if not name or pending_classes[name] then binding_reads[index]=true end
                     end
                 end
-                -- Ranges refer to complete bytes; BOM is accounted for here.
-                local body=source.analysis.source:sub(statement.source_range.first-source.analysis.source_offset,
-                    statement.source_range.last-source.analysis.source_offset)
-                local visible={}
-                for name in next,source.bindings.statements[index].visible do visible[#visible+1]=name end
-                table.sort(visible)
-                result[#result+1]={signature=signature(body).."@"..table.concat(visible,","),
-                    first=statement.source_range.first,last=statement.source_range.last,binding_read=binding_read}
             end
         end
-        return result,table.concat(wiring,"\n")
     end
-    -- Generated identities must not accidentally be lexical state cells.
-    for _,name in ipairs({"_tmp_sc","_sc_table","_editor_class","boss","table"}) do
-        if scan.bindings.by_name[name] or loaded.bindings.by_name[name] then
-            return fail("unsupported","generated wiring name is shadowed: "..name,state)
-        end
-    end
-    local before,old_wiring=residual(loaded)
-    local after,new_wiring=residual(scan)
-    local count=math.max(#before,#after)
-    for i=1,count do
-        if not before[i] or not after[i] or before[i].signature~=after[i].signature then
-            local point=after[i] or before[i]
-            return fail("unsupported",string.format("unbounded top-level change at bytes %d-%d; restart required",
-                point.first,point.last),state)
-        end
-        if old_wiring~=new_wiring and (before[i].binding_read or after[i].binding_read) then
-            return fail("unsupported",string.format("unbounded pending wiring binding at bytes %d-%d; restart required",
-                after[i].first,after[i].last),state)
-        end
-    end
-    return true,old_wiring~=new_wiring
+    return {scan=source,excluded=excluded,wiring=table.concat(wiring,"\n"),
+        binding_reads=binding_reads,structures=structures}
 end
 -- Newly compiled code may not assume pending class creation/registration ran.
 -- Literal class lookups require the actual live registry target; dynamic class
@@ -553,7 +520,7 @@ local function compare(state, content, snapshot, location, file_location)
     if not function_diff then return nil, ferr end
     local discovery, derr = discover(content, state, snapshot)
     if not discovery then return nil, derr end
-    local pending_classes,wiring_changed={}
+    local pending_classes,wiring_changed,file_facts={}
     if file_location then
         for class,layout in next,state.layout do
             if not discovery.layout[class] or not fixed_layout({[class]=layout},
@@ -562,9 +529,16 @@ local function compare(state, content, snapshot, location, file_location)
         for class in next,discovery.layout do
             if not state.layout[class] then pending_classes[class]=true end
         end
-        local safe,why=file_effects(state,function_diff.scan,pending_classes)
-        if not safe then return nil,why end
-        wiring_changed=why
+        local loaded,lerr=Source.Inspect(state.loaded_source)
+        if not loaded then return nil,lerr end
+        for _,name in ipairs({"_tmp_sc","_sc_table","_editor_class","boss","table"}) do
+            if function_diff.scan.bindings.by_name[name] or loaded.bindings.by_name[name] then
+                return fail("unsupported","generated wiring name is shadowed: "..name,state)
+            end
+        end
+        file_facts={before=card_file_facts(state,loaded,pending_classes),
+            after=card_file_facts(state,function_diff.scan,pending_classes)}
+        wiring_changed=file_facts.before.wiring~=file_facts.after.wiring
         for _,name in ipairs(state.functions.names) do
             local item=function_diff.by_name[name]
             if item.changed and not item.blocked then
@@ -586,7 +560,7 @@ local function compare(state, content, snapshot, location, file_location)
     if location or file_location then
         report.location, report.unmapped, report.unowned, report.tombstones = location, {}, {}, {}
     end
-    report.file_location=file_location
+    report.file_location,report.file_facts=file_location,file_facts
     local changed_functions = {}
     for _, name in ipairs(function_diff.affected) do changed_functions[name] = true end
     for _, key in ipairs(state.order) do
@@ -952,16 +926,10 @@ function M.Describe(selection)
     return result
 end
 
----Read-only COMPLETE remainder against report.base's actual published ledger.
----This is NOT a commit receipt, freshness check, ACK or removal authority.
----Callers must obtain a fresh checked report against the committed snapshot,
----then separately check receipt/session/capture/revision/generation/exact bytes.
----Never pass a selection or treat Next's proposed state as publication history.
----Only individually owned whole literal statements are removed from the token
----remainder. Constructors, names, lists, registrations, state declarations and
----unknown statements stay visible; no class-range or blanket callback mask.
----Comments/whitespace/trailing statement semicolons are nonsemantic here.
-function M.Remaining(report)
+---Adapter-owned statement coverage and pending definitions against actual
+---publications. No unknown-statement comparison, Include policy, complete flag
+---or candidate removal authority. FileApply owns full-file remainder accounting.
+function M.Coverage(report)
     if not plain(report) or report.kind ~= M.Kind .. ".Diff"
         or report.version ~= M.Version or not valid(report.base)
         or not plain(report.functions) or report.functions.base ~= report.base.functions
@@ -973,10 +941,10 @@ function M.Remaining(report)
     if not loaded then return nil, lerr end
     local candidate, cerr = discover(report.content, state, report.discovery)
     if not candidate then return nil, cerr end
-    local result = {kind=M.Kind .. ".Remaining", version=M.Version, file=state.file,
+    local result = {kind=M.Kind .. ".Coverage", version=M.Version, file=state.file,
         session_id=state.session_id, revision=state.revision, content=report.content,
         generation=report.discovery and report.discovery.common.candidate_generation,
-        pending={}}
+        pending={},function_names={}}
     local function pending(kind, key, reason, point, previous)
         result.pending[#result.pending + 1] = {kind=kind, key=key, reason=reason,
             first=point and point.first, last=point and point.last,
@@ -1009,6 +977,7 @@ function M.Remaining(report)
     end
     for _, name in ipairs(state.functions.names) do
         local key, item = "local:" .. name, report.functions.by_name[name]
+        result.function_names[name]=true
         local old = loaded.scan.definitions[name]
         if not old or #old ~= 1 then return fail("ownership", "loaded function definition unavailable", state, key) end
         local ok, err = function_claim(loaded.scan, old_claims, old[1], key)
@@ -1063,64 +1032,10 @@ function M.Remaining(report)
         pending("identity", row.source_key .. ":" .. row.candidate_slot, row.reason,
             row.descriptor.callback_points and row.descriptor.callback_points.init)
     end
-    local function residual(scan, claims)
-        local rows, declarations, next_token = {}, {}, 1
-        for _, declaration in ipairs(scan.bindings.declarations) do
-            if not state.functions.units[declaration.name] then
-                declarations[declaration.statement] = declaration.name
-            end
-        end
-        for index, statement in ipairs(scan.analysis.statements) do
-            local tokens, first, last = scan.analysis.tokens, statement.tok.first, statement.tok.last
-            -- Every lexer token must belong to one whole statement, claimed or
-            -- retained. An analysis gap/overlap cannot silently count as coverage.
-            if first ~= next_token or last < first or last > #tokens then
-                return fail("unsupported", "source token partition is incomplete", state)
-            end
-            next_token = last + 1
-            if not claims[index] then
-                while tokens[last] and tokens[last].value == ";" do last=last-1 end
-                local pieces = {}
-                for i=first,last do
-                    local token=tokens[i]
-                    pieces[#pieces+1]=token.kind .. ":" .. #token.value .. ":" .. token.value
-                end
-                if #pieces > 0 then
-                    local visible = {}
-                    for name in next, scan.bindings.statements[index].visible do visible[#visible+1]=name end
-                    table.sort(visible)
-                    local kind = declarations[index] and "initializer" or "unknown"
-                    -- Classification is diagnostic only: these tokens are NEVER
-                    -- discarded even if they match the safe-wiring grammar.
-                    if safe_wiring(tokens, first, last) or tokens[first].value == "_BOSS_ESCAPE" then
-                        kind = "structure"
-                    end
-                    rows[#rows+1]={signature=table.concat(pieces,"|") .. "@" .. table.concat(visible,","),
-                        kind=kind, key=declarations[index] and ("local:" .. declarations[index]) or ("file:" .. state.file),
-                        first=statement.source_range.first,last=statement.source_range.last}
-                end
-            end
-        end
-        if next_token ~= #scan.analysis.tokens + 1 then
-            return fail("unsupported", "source has unaccounted tokens", state)
-        end
-        return rows
-    end
-    local before, berr = residual(loaded.scan, old_claims)
-    if not before then return nil, berr end
-    local after, aerr = residual(candidate.scan, new_claims)
-    if not after then return nil, aerr end
-    for i=1,math.max(#before,#after) do
-        local a, b = before[i], after[i]
-        if not a or not b or a.signature ~= b.signature then
-            local row = b or a
-            local reason = row.kind == "initializer" and "state initializer retained; restart game to adopt"
-                or (row.kind == "structure" and "constructor/name/list/registration retained; restart game to adopt"
-                    or "top-level change not published or not confirmed; restart game to adopt")
-            pending(row.kind, row.key, reason, b, a)
-        end
-    end
-    result.complete = #result.pending == 0
+    result.before={scan=loaded.scan,claims=old_claims,
+        structures=card_file_facts(state,loaded.scan,{}).structures}
+    result.after={scan=candidate.scan,claims=new_claims,
+        structures=card_file_facts(state,candidate.scan,{}).structures}
     return result
 end
 
@@ -1146,6 +1061,8 @@ function M.CompareLocated(state, location, binding, capture, live)
     end
     return compare(state, location.content, location.discovery, location)
 end
+---Card-only file comparison. Does NOT gate other top-level effects.
+---Production file callers must use FileApply.CompareCards before selecting.
 ---File correspondence remains a distinct permission scope from current-root.
 function M.CompareFileLocated(state,location,capture,live)
     if not valid(state) then return fail("unsupported","a valid card snapshot is required",state) end

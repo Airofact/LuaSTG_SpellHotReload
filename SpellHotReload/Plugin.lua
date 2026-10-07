@@ -576,7 +576,7 @@ function Plugin:_AccountVersioned(file, candidate, capture, base, receipt)
         loaded_source=live.entry.loaded_source, registry_entry=live.entry,
         base_revision=snapshot.revision, published_units=snapshot})
     if not discovery then return nil, "discover: " .. message(derr) end
-    local model, witness, fresh = Card.InspectFileRemainder(capture,discovery,live,refresh)
+    local model, witness, fresh = require("SpellHotReload.FileApply").InspectFileRemainder(capture,discovery,live,refresh)
     if not model then return nil, message(witness) end
     if capture.snapshot~=snapshot or model.file~=file or model.session_id~=self._session_id
         or model.revision~=snapshot.revision or model.generation~=candidate.generation

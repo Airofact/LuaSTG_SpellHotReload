@@ -686,33 +686,6 @@ function Card.InspectPrepared(prepared, capture, refresh)
     return model, live
 end
 
----Post-receipt file accounting, shared by Current and file Apply. Analyze the
----actual installed snapshot, not Next or the old prepared selection. A complete
----result also carries a checked no-op read witness for cheap watcher validation.
----No commit, join, write, cache flush, registration or restart occurs here.
-function Card.InspectFileRemainder(capture, discovery, live, refresh)
-    local Cards = require("SpellHotReload.CardVersions")
-    local Target = require("SpellHotReload.CardTarget")
-    local Guard = require("SpellHotReload.CommitCheck")
-    local base = capture.snapshot
-    local location, lerr = Target.LocateFileDiscovery(discovery.snapshot,capture,live)
-    if not location then return nil, "correspondence: " .. message(lerr) end
-    local report, rerr = Cards.CompareFileLocated(base,location,capture,live)
-    if not report then return nil, "compare: " .. message(rerr) end
-    local model, merr = Cards.Remaining(report)
-    if not model then return nil, "remainder: " .. message(merr) end
-    local selection, serr = Cards.SelectFile(report)
-    if not selection then return nil, "read witness: " .. message(serr) end
-    if model.complete and (#selection.joins>0 or #selection.writes>0 or #selection.publications>0) then
-        return nil, "complete remainder disagrees with publication actions"
-    end
-    local fresh, ferr = refresh()
-    if not fresh then return nil, "freshness: " .. message(ferr) end
-    local checked, cerr = Guard.Check(selection,capture,fresh)
-    if not checked then return nil, "live reads: " .. message(cerr) end
-    return model, selection, fresh
-end
-
 ---Cheap card-binding part of a PAST inspection's validity. Caller separately
 ---checks bytes/generation/session/capture/revision and invalidates its cache.
 function Card.InspectionBindingMatches(record, current, classes)
@@ -1172,7 +1145,7 @@ inject_versioned = function(handle, unit, context)
     local file = context.common.file
     local Cards = require("SpellHotReload.CardVersions")
     local report, rerr
-    if runtime.file_scope then report,rerr=Cards.CompareFileLocated(runtime.snapshot,handle.file_location,
+    if runtime.file_scope then report,rerr=require("SpellHotReload.FileApply").CompareCards(runtime.snapshot,handle.file_location,
         runtime.capture,handle.live)
     else report, rerr = Cards.CompareLocated(runtime.snapshot, handle.location,
         handle.live.binding, runtime.capture, handle.live) end

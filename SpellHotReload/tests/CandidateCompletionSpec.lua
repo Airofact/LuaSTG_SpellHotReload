@@ -53,7 +53,7 @@ function M.run()
         eq(store:IsCompleted(FILE,"edit",scope),false,"session Clear releases completion")
         eq(store:HasPartialPublication(FILE),false,"Clear releases sticky partial separately")
     end
-    local globals={"lstg","boss","_editor_class","_tmp_sc","_sc_table","ext","IsValid","jit"}
+    local globals={"lstg","boss","_editor_class","_tmp_sc","_sc_table","ext","IsValid","jit","Include"}
     local saved={};for _,name in ipairs(globals) do saved[name]=rawget(_G,name) end
     local modules={"lstg.FileSystemWatcher","lstg.FileSystemWatcher.FileAction","SpellHotReload.Watcher","SpellHotReload.Plugin"}
     local loaded={};for _,name in ipairs(modules) do loaded[name]=package.loaded[name] end
@@ -63,14 +63,13 @@ function M.run()
     package.loaded[modules[3]],package.loaded[modules[4]]=nil,nil
     local Plugin=require("SpellHotReload.Plugin")
     local Watcher=require("SpellHotReload.Watcher")
-    local Card=require("SpellHotReload.Card")
     local Load=require("SpellHotReload.AnchorLoad")
     local Anchor=require("SpellHotReload.Anchor")
     local Binding=require("SpellHotReload.PracticeBinding")
     local Compose=require("SpellHotReload.Compose")
-    local Cards=require("SpellHotReload.CardVersions")
+    local FileApply=require("SpellHotReload.FileApply")
     local real_join,real_set=debug.upvaluejoin,debug.setupvalue
-    local old_restart,old_create,old_account,old_remaining=Binding.Restart,Compose.Create,Card.InspectFileRemainder,Cards.Remaining
+    local old_restart,old_create,old_account,old_remaining=Binding.Restart,Compose.Create,FileApply.InspectFileRemainder,FileApply.Remaining
     local plugins={}
     local callbacks={"before","init","frame","render","beforedel","del","after"}
     local defaults={};for _,name in ipairs(callbacks) do defaults[name]=function() end end
@@ -82,11 +81,13 @@ function M.run()
         "table.insert(_editor_class['K'].cards,_tmp_sc)"},"\n")
     local EDIT=SOURCE:gsub("state%+n end","state+n+10 end"):gsub("helper%(n%)%+100","helper(n)+200")
     local function candidate(f,bytes) f.disk=bytes;return stable(f.p:GetStore(),bytes) end
-    local function fixture()
+    local function fixture(first_source)
+        first_source=first_source or SOURCE
         debug.upvaluejoin,debug.setupvalue=real_join,real_set
-        _G.jit=saved.jit;Cards.Remaining=old_remaining;Card.InspectFileRemainder=old_account
+        _G.jit=saved.jit;FileApply.Remaining=old_remaining;FileApply.InspectFileRemainder=old_account
         _editor_class={K={}};_sc_table={}
-        local f={disk=SOURCE,reads=0,creates=0,discoveries=0,restarts=0,constructs=0,events={}}
+        local f={disk=first_source,reads=0,creates=0,discoveries=0,restarts=0,constructs=0,includes=0,events={}}
+        _G.Include=function() f.includes=f.includes+1 end
         _G.IsValid=function() return true end
         lstg={var={},Log=function() end,FileManager={EnumFiles=function() return {{FILE,false}} end}}
         ext={replay={IsReplay=function() return false end}}
@@ -96,11 +97,11 @@ function M.run()
             return c
         end}}
         f.p=Plugin.New();plugins[#plugins+1]=f.p
-        f.entry=must(Load.Capture(SOURCE,{name=FILE}));must(f.p:AdoptLoad(FILE,f.entry))
+        f.entry=must(Load.Capture(first_source,{name=FILE}));must(f.p:AdoptLoad(FILE,f.entry))
         f.capture=f.p:GetVersions(FILE);f.classes=_editor_class
         f.p._activated,f.p._supported,f.p._sandbox_ok=true,true,real_join~=nil
         f.p._activation_attempted=true
-        f.p:GetStore():SetAccepted(FILE,SOURCE,"baseline")
+        f.p:GetStore():SetAccepted(FILE,first_source,"baseline")
         f.p._watcher=Watcher.New({root="mod/Test",store=f.p:GetStore(),known_files={FILE},
             quiet_frames=1,read_gap=1,drift_interval=100000,max_read_failures=1,
             is_completed=function(file,bytes) return f.p:_IsCompleted(file,bytes) end,
@@ -177,6 +178,77 @@ function M.run()
         eq(f.p:GetStore():HasPartialPublication(FILE),false,"no-op has no partial publication")
         eq(f.p:GetStore():GetCandidate(FILE),nil,"checked semantic no-op complete")
         quiet(f,"no-op")
+        -- Include edits are outside Card reload, not executed publications.
+        -- Addition/removal/path changes, both call forms, long strings and
+        -- middle-of-file calls share the same safety/completion rule.
+        local include_edits={
+            {before="",after="\nInclude 'new.lua'"},
+            {before="\nInclude 'old.lua'",after=""},
+            {before="\nInclude 'old.lua'",after="\nInclude('new.lua');"},
+            {before="\nInclude [[old.lua]]",after="\nInclude [=[new.lua]=]"},
+            {before="Include 'old.lua'\n",after="Include('new.lua')\n",middle=true},
+        }
+        local function with_include(bytes,change,side)
+            if change.middle then
+                return (bytes:gsub("local function helper",change[side].."local function helper",1))
+            end
+            return bytes..change[side]
+        end
+        for i,change in ipairs(include_edits) do
+            local first=with_include(SOURCE,change,"before")
+            local expected=change.before=="" and 0 or 1
+            f=fixture(first);candidate(f,with_include(SOURCE,change,"after"))
+            has(f.p:ApplyFileFromUI(FILE),"candidate complete; removed","Include-only "..i)
+            eq(f.capture.snapshot.revision,0,"Include-only no publication version "..i)
+            eq(f.p:GetStore():HasPartialPublication(FILE),false,"Include-only no receipt of publication "..i)
+            eq(f.includes,expected,"Include-only never replayed "..i)
+            eq(f.constructs,2,"Include-only no card registration "..i)
+            eq(f.p:GetStore():GetAccepted(FILE).content,first,"Include-only no whole-file ACK "..i)
+            quiet(f,"Include-only "..i)
+            f=fixture(first);candidate(f,with_include(EDIT,change,"after"))
+            has(f.p:ApplyFromUI(),"candidate retained","Include does not swallow sibling "..i)
+            eq(f.classes.K.cards[2]:init(1),115,"sibling wrapper still old "..i)
+            eq(f.includes,expected,"Current does not execute Include "..i)
+            has(f.p:ApplyFileFromUI(FILE),"candidate complete; removed","file finishes alongside Include "..i)
+            eq(f.classes.K.cards[2]:init(1),215,"file callback and helper effective "..i)
+            eq(f.includes,expected,"file does not execute Include "..i)
+            eq(f.constructs,2,"neither action replays registration "..i)
+            quiet(f,"Include partial then complete "..i)
+        end
+        -- Similar spelling is not permission to discard arbitrary effects.
+        for _,suffix in ipairs({"\nInclude(helper(1))","\nInclude('x.lua',helper(1))",
+            "\nInclude('x.lua')()","\nif true then Include 'x.lua' end",
+            "\nInclude 'x.lua'; UNREPLAYED_UNKNOWN()","\nloader.Include('x.lua')"}) do
+            f=fixture();local base=f.capture.snapshot;candidate(f,EDIT..suffix)
+            has(f.p:ApplyFileFromUI(FILE),"unbounded top-level change","nonliteral/nonstandalone Include refused")
+            eq(f.capture.snapshot,base,"refused effect no publication")
+            eq(f.classes.K.cards[1]:init(1),5,"refused effect helper unchanged")
+            eq(f.includes,0,"refused effect not executed")
+        end
+        local shadow="local function Include(path) return path end\n"
+        local function with_shadow(bytes)
+            return (bytes:gsub("local state=4",shadow.."local state=4",1))
+        end
+        f=fixture(with_shadow(SOURCE).."\nInclude 'old.lua'")
+        local base=f.capture.snapshot;candidate(f,with_shadow(EDIT).."\nInclude 'new.lua'")
+        has(f.p:ApplyFileFromUI(FILE),"unbounded top-level change","local Include is not global loader")
+        eq(f.capture.snapshot,base,"shadowed call no publication")
+        -- Ignoring a new Include does not manufacture a class binding.
+        f=fixture();candidate(f,(EDIT:gsub("return helper%(n%) end",
+            "return _editor_class['N'] end",1)).."\nInclude 'new_classes.lua'")
+        has(f.p:ApplyFileFromUI(FILE),"candidate retained","unavailable binding still pending")
+        eq(f.classes.K.cards[1]:init(1),15,"unsafe callback kept with shared helper update")
+        eq(f.capture.snapshot.units["card:1:K:1"].definition_version,1,"unsafe callback version retained")
+        eq(f.classes.K.cards[2]:init(1),215,"independent callback remains publishable")
+        eq(f.includes,0,"new Include not executed to obtain missing binding")
+        check(f.classes.N==nil,"no class registration inferred")
+        -- Current must not turn unsupported Include syntax into completion.
+        f=fixture();candidate(f,SOURCE.."\nInclude(helper(1))")
+        local result=f.p:ApplyFromUI()
+        has(result,"candidate retained","Current dynamic Include remains pending")
+        has(result,"unbounded top-level change","dynamic call cannot confirm completion")
+        check(f.p:GetStore():GetCandidate(FILE)~=nil,"dynamic call candidate not swallowed")
+        eq(f.includes,0,"Current dynamic Include not executed")
         -- Current consumes the SAME full remainder: sibling edits are not ACKed.
         f=fixture();candidate(f,EDIT)
         has(f.p:ApplyFromUI(),"candidate retained","current leaves sibling definition")
@@ -294,10 +366,10 @@ function M.run()
                 if fault=="bookkeeping" then
                     f.p:GetStore().RecordCompletion=function() return nil,"completion fault" end
                 else
-                    Card.InspectFileRemainder=function(...)
+                    FileApply.InspectFileRemainder=function(...)
                         if fault=="throw" then error("diagnostic fault") end
                         if fault=="report" then return nil,"diagnostic refusal" end
-                        Cards.Remaining=function(...)
+                        FileApply.Remaining=function(...)
                             local m,e=old_remaining(...)
                             if fault=="disk" then f.disk=bytes.."\n-- during remainder"
                             elseif fault=="generation" then candidate(f,bytes)
@@ -319,7 +391,7 @@ function M.run()
                 eq(f.p._completion_checks[FILE],nil,path.." "..fault.." no witness")
                 eq(next(f.p:GetStore()._completed),nil,path.." "..fault.." no completion record")
                 eq(f.p:GetStore():GetPartialPublication(FILE).revision,1,path.." "..fault.." sticky publication intact")
-                Card.InspectFileRemainder=old_account;Cards.Remaining=old_remaining
+                FileApply.InspectFileRemainder=old_account;FileApply.Remaining=old_remaining
                 if fault=="throw" or fault=="report" or fault=="bookkeeping" then
                     f.p:GetStore().RecordCompletion=nil
                     has(f.p:ApplyFileFromUI(FILE),"candidate complete; removed",path.." "..fault.." no-op recovery")
@@ -339,7 +411,7 @@ function M.run()
         eq(f.p._completion_checks[FILE],nil,"receipt fault no completion")
     end)
     debug.upvaluejoin,debug.setupvalue=real_join,real_set
-    Binding.Restart,Compose.Create,Card.InspectFileRemainder,Cards.Remaining=old_restart,old_create,old_account,old_remaining
+    Binding.Restart,Compose.Create,FileApply.InspectFileRemainder,FileApply.Remaining=old_restart,old_create,old_account,old_remaining
     for _,p in ipairs(plugins) do p:Release() end
     for _,name in ipairs(modules) do package.loaded[name]=loaded[name] end
     for _,name in ipairs(globals) do rawset(_G,name,saved[name]) end
