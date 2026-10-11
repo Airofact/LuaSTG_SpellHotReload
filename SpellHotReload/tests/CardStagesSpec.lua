@@ -4,14 +4,14 @@
 local M = {}
 local serial = 0
 function M.run()
-    local Card = require("SpellHotReload.Card")
+    local Card = require("SpellHotReload.Adapters.Card.Card")
     local Driver = require("SpellHotReload.Driver")
     local Load = require("SpellHotReload.Load.AnchorLoad")
     local Versions = require("SpellHotReload.Load.LoadVersions")
-    local Cards = require("SpellHotReload.CardVersions")
-    local Target = require("SpellHotReload.CardTarget")
-    local Callbacks = require("SpellHotReload.CardCallbacks")
-    local Binding = require("SpellHotReload.PracticeBinding")
+    local Cards = require("SpellHotReload.Adapters.Card.CardVersions")
+    local Target = require("SpellHotReload.Adapters.Card.CardTarget")
+    local Callbacks = require("SpellHotReload.Adapters.Card.CardCallbacks")
+    local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
     local Anchor = require("SpellHotReload.Load.Anchor")
     local passed, failed, failures = 0, 0, {}
     local function check(v,label)

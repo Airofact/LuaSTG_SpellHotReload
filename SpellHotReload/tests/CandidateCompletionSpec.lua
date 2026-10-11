@@ -65,9 +65,9 @@ function M.run()
     local Watcher=require("SpellHotReload.Watcher")
     local Load=require("SpellHotReload.Load.AnchorLoad")
     local Anchor=require("SpellHotReload.Load.Anchor")
-    local Binding=require("SpellHotReload.PracticeBinding")
+    local Binding=require("SpellHotReload.Adapters.Card.PracticeBinding")
     local Compose=require("SpellHotReload.Source.Compose")
-    local FileApply=require("SpellHotReload.FileApply")
+    local FileApply=require("SpellHotReload.Apply.FileApply")
     local real_join,real_set=debug.upvaluejoin,debug.setupvalue
     local old_restart,old_create,old_account,old_remaining=Binding.Restart,Compose.Create,FileApply.InspectFileRemainder,FileApply.Remaining
     local plugins={}

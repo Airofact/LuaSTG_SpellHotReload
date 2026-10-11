@@ -13,7 +13,7 @@
 -- without practice bindings. They prove correspondence, NOT binding safety,
 -- publication permission or complete file coverage. Production is unchanged.
 -- Pure tables are read-only by contract; release targets with their session.
-local Card = require("SpellHotReload.Card")
+local Card = require("SpellHotReload.Adapters.Card.Card")
 local M = { Kind="SpellHotReload.CardTarget", Version=1 }
 local function plain(v) return type(v)=="table" and getmetatable(v)==nil end
 local function integer(v, minimum)

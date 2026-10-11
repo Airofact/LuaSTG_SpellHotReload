@@ -3,8 +3,8 @@
 local M = {}
 function M.run()
     local Driver = require("SpellHotReload.Driver")
-    local Card = require("SpellHotReload.Card")
-    local Cards = require("SpellHotReload.CardVersions")
+    local Card = require("SpellHotReload.Adapters.Card.Card")
+    local Cards = require("SpellHotReload.Adapters.Card.CardVersions")
     local Source = require("SpellHotReload.Source.FunctionPlan")
     local Load = require("SpellHotReload.Load.AnchorLoad")
     local Capture = require("SpellHotReload.Load.LoadVersions")

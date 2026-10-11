@@ -3,10 +3,10 @@
 -- No Plugin receiver/cache, candidate execution, join, cell write or publication.
 local M={}
 function M.run()
-    local Card=require("SpellHotReload.Card")
-    local Target=require("SpellHotReload.CardTarget")
-    local Cards=require("SpellHotReload.CardVersions")
-    local Binding=require("SpellHotReload.PracticeBinding")
+    local Card=require("SpellHotReload.Adapters.Card.Card")
+    local Target=require("SpellHotReload.Adapters.Card.CardTarget")
+    local Cards=require("SpellHotReload.Adapters.Card.CardVersions")
+    local Binding=require("SpellHotReload.Adapters.Card.PracticeBinding")
     local passed,failed,failures=0,0,{}
     local function check(v,label)
         if v then passed=passed+1 else failed=failed+1;failures[#failures+1]=label end

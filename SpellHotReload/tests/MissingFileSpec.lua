@@ -327,9 +327,9 @@ _missing_runs = _missing_runs + 1]]
 
         -- Exercise the real Apply route with poison read/plan sentinels: the
         -- Missing gate must precede stale-byte reads, planning and publication.
-        local Binding = require("SpellHotReload.PracticeBinding")
-        local Scanner = require("SpellHotReload.GeneratedBossScanner")
-        local Card = require("SpellHotReload.Card")
+        local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
+        local Scanner = require("SpellHotReload.Adapters.Card.GeneratedBossScanner")
+        local Card = require("SpellHotReload.Adapters.Card.Card")
         local old_current, old_replay = Binding.CaptureCurrent, Binding.IsReplay
         local old_scan, old_keys, old_plan = Scanner.Scan, Scanner.ClassKeys, Card.Plan
         restore[#restore + 1] = function()

@@ -15,9 +15,9 @@ function M.run()
     local Plugin=require("SpellHotReload.Plugin")
     local Load=require("SpellHotReload.Load.AnchorLoad")
     local Anchor=require("SpellHotReload.Load.Anchor")
-    local Binding=require("SpellHotReload.PracticeBinding")
+    local Binding=require("SpellHotReload.Adapters.Card.PracticeBinding")
     local Compose=require("SpellHotReload.Source.Compose")
-    local Card=require("SpellHotReload.Card")
+    local Card=require("SpellHotReload.Adapters.Card.Card")
     local passed,failed,failures=0,0,{}
     local function check(v,label)
         if v then passed=passed+1 else failed=failed+1;failures[#failures+1]=label end
@@ -154,11 +154,11 @@ function M.run()
         eq(f.constructions,3,label.." no constructors")
         eq(f.legacy,0,label.." no legacy fallback")
     end
-    local old_describe=require("SpellHotReload.CardVersions").Describe
+    local old_describe=require("SpellHotReload.Adapters.Card.CardVersions").Describe
     local ok,problem=pcall(function()
         local f=fixture()
         eq(f.p:InspectCandidate(nil),nil,"invalid file refused")
-        local Cards=require("SpellHotReload.CardVersions")
+        local Cards=require("SpellHotReload.Adapters.Card.CardVersions")
         local v,e=Cards.Describe(nil)
         eq(v,nil,"invalid description refused");eq(e.code,"unsupported","invalid description reason")
         if not join then
@@ -346,7 +346,7 @@ function M.run()
     debug.getupvalue,debug.setupvalue,debug.upvaluejoin=get,set,join
     if saved.jit then _G.jit=saved.jit end
     Binding.Restart,Card.Plan,Compose.Create=old_restart,old_plan,old_create
-    require("SpellHotReload.CardVersions").Describe=old_describe
+    require("SpellHotReload.Adapters.Card.CardVersions").Describe=old_describe
     for _,p in ipairs(plugins) do if not p:IsReleased() then p:Release() end end
     for _,name in ipairs(globals) do rawset(_G,name,saved[name]) end
     for _,name in ipairs(modules) do package.loaded[name]=loaded[name] end

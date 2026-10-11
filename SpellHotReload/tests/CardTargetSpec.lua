@@ -4,11 +4,11 @@ local M={}
 local serial=0
 function M.run(opts)
     opts=opts or {}
-    local Target=opts.target or require("SpellHotReload.CardTarget")
+    local Target=opts.target or require("SpellHotReload.Adapters.Card.CardTarget")
     local Load=require("SpellHotReload.Load.AnchorLoad")
     local Versions=require("SpellHotReload.Load.LoadVersions")
-    local Cards=require("SpellHotReload.CardVersions")
-    local Tx=require("SpellHotReload.CardCommit")
+    local Cards=require("SpellHotReload.Adapters.Card.CardVersions")
+    local Tx=require("SpellHotReload.Apply.CardCommit")
     local passed,failed,failures=0,0,{}
     local function test(value,label)
         if value then passed=passed+1 else failed=failed+1;failures[#failures+1]=label end
@@ -113,7 +113,7 @@ function M.run(opts)
         eq(Target.Check(target,b,c,l),true,"debug recheck")
         -- Actual existing binding producer shapes, not a second engine reader.
         b,c,l=fixture()
-        local Binding=require("SpellHotReload.PracticeBinding")
+        local Binding=require("SpellHotReload.Adapters.Card.PracticeBinding")
         lstg={var={sc_index=1}}
         _sc_table={{"K","Same",b.card,3,true}}
         local practice=must(Binding.CaptureCurrent())

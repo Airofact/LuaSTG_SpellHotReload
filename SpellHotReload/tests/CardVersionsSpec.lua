@@ -1,11 +1,11 @@
 local M = {}
 function M.run()
-    local Versions = require("SpellHotReload.CardVersions")
-    local Functions = require("SpellHotReload.FunctionVersions")
+    local Versions = require("SpellHotReload.Adapters.Card.CardVersions")
+    local Functions = require("SpellHotReload.Source.FunctionVersions")
     local Source = require("SpellHotReload.Source.FunctionPlan")
     local Anchor = require("SpellHotReload.Load.Anchor")
     local Compose = require("SpellHotReload.Source.Compose")
-    local Callbacks = require("SpellHotReload.CardCallbacks")
+    local Callbacks = require("SpellHotReload.Adapters.Card.CardCallbacks")
     local names = { "before", "init", "frame", "render", "beforedel", "del", "after" }
     local passed, failed, failures = 0, 0, {}
     local function check(value, label)

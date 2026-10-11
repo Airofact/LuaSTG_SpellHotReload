@@ -4,11 +4,11 @@ local M = {}
 local serial = 0
 function M.run(opts)
     opts = opts or {}
-    local Card = require("SpellHotReload.Card")
+    local Card = require("SpellHotReload.Adapters.Card.Card")
     local Load = require("SpellHotReload.Load.AnchorLoad")
     local Versions = require("SpellHotReload.Load.LoadVersions")
-    local Cards = require("SpellHotReload.CardVersions")
-    local Guard = require("SpellHotReload.CommitCheck")
+    local Cards = require("SpellHotReload.Adapters.Card.CardVersions")
+    local Guard = require("SpellHotReload.Apply.CommitCheck")
     local passed, failed, failures = 0, 0, {}
     local function check(v, label)
         if v then passed=passed+1 else failed=failed+1;failures[#failures+1]=label end
@@ -94,7 +94,7 @@ function M.run(opts)
         return selection,capture,live
     end
     local function isolated_commit()
-        local path="SpellHotReload/CardCommit.lua"
+        local path="SpellHotReload/Apply/CardCommit.lua"
         local text=opts.sources and opts.sources[path]
         local chunk=text and assert(loadstring(text,"@candidate/"..path))
             or assert(loadfile("THDiMS/game/plugin/SpellHotReload/"..path))

@@ -3,14 +3,14 @@
 local M = {}
 local serial = 0
 function M.run()
-    local Card=require("SpellHotReload.Card")
+    local Card=require("SpellHotReload.Adapters.Card.Card")
     local Driver=require("SpellHotReload.Driver")
     local Load=require("SpellHotReload.Load.AnchorLoad")
     local Versions=require("SpellHotReload.Load.LoadVersions")
-    local Commit=require("SpellHotReload.CardCommit")
+    local Commit=require("SpellHotReload.Apply.CardCommit")
     local Anchor=require("SpellHotReload.Load.Anchor")
-    local Binding=require("SpellHotReload.PracticeBinding")
-    local Callbacks=require("SpellHotReload.CardCallbacks")
+    local Binding=require("SpellHotReload.Adapters.Card.PracticeBinding")
+    local Callbacks=require("SpellHotReload.Adapters.Card.CardCallbacks")
     local passed,failed,failures=0,0,{}
     local function check(v,label)
         if v then passed=passed+1 else failed=failed+1;failures[#failures+1]=label end

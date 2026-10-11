@@ -8,9 +8,9 @@
 -- New same-id controllers cannot bypass poison; new game session needs a new id.
 -- Fresh candidate closures may be discarded after failed joins; NEVER reuse a
 -- failed selection. OOM/hostile debug hooks/native side effects are not atomic.
-local Phase = require("SpellHotReload.CommitPhase")
-local Guard = require("SpellHotReload.CommitCheck")
-local Card = require("SpellHotReload.Card")
+local Phase = require("SpellHotReload.Apply.CommitPhase")
+local Guard = require("SpellHotReload.Apply.CommitCheck")
+local Card = require("SpellHotReload.Adapters.Card.Card")
 local Cache = require("SpellHotReload.Source.CodeCache")
 local M = { Kind = "SpellHotReload.CardCommit", Version = 1 }
 local phase_new, guard_check, next_version, invalidate =

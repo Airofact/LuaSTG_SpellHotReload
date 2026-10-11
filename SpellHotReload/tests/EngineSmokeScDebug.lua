@@ -51,7 +51,7 @@ end
 ---production DoFile hook captured. Returns the base name the registry is keyed
 ---by plus the exact bytes the engine loaded.
 local function find_generated_file(class_key)
-    local Scanner = require("SpellHotReload.GeneratedBossScanner")
+    local Scanner = require("SpellHotReload.Adapters.Card.GeneratedBossScanner")
     local ok, entries = pcall(lstg.FileManager.EnumFiles, "mod/" .. tostring(setting.mod) .. "/")
     if not ok or type(entries) ~= "table" then
         return nil, "cannot list the mod directory"
@@ -175,8 +175,8 @@ local function install()
     installed = true
     lstg.FileManager.CreateDirectory(output_root)
     local View = require("SpellHotReload.UI.View")
-    local Binding = require("SpellHotReload.PracticeBinding")
-    local Card = require("SpellHotReload.CardCallbacks")
+    local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
+    local Card = require("SpellHotReload.Adapters.Card.CardCallbacks")
     local Plugin = require("SpellHotReload.Plugin")
     local live = assert(View.plugin, "plugin view not initialized")
     live_registry_source = function(file_name) return live:GetRegistry():GetSource(file_name) end

@@ -3,13 +3,13 @@
 local M={}
 function M.run(opts)
     opts=opts or {}
-    local Target=opts.target or require("SpellHotReload.CardTarget")
+    local Target=opts.target or require("SpellHotReload.Adapters.Card.CardTarget")
     local Driver=require("SpellHotReload.Driver")
-    local Card=require("SpellHotReload.Card")
-    local Callbacks=require("SpellHotReload.CardCallbacks")
+    local Card=require("SpellHotReload.Adapters.Card.Card")
+    local Callbacks=require("SpellHotReload.Adapters.Card.CardCallbacks")
     local Load=require("SpellHotReload.Load.AnchorLoad")
     local Capture=require("SpellHotReload.Load.LoadVersions")
-    local Cards=require("SpellHotReload.CardVersions")
+    local Cards=require("SpellHotReload.Adapters.Card.CardVersions")
     local passed,failed,failures=0,0,{}
     local function eq(a,b,label)
         if rawequal(a,b) then passed=passed+1 else failed=failed+1;failures[#failures+1]=label end

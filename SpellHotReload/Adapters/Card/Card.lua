@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------------
---- SpellHotReload.Card
+--- SpellHotReload.Adapters.Card.Card
 ---
 --- Versioned runtime helpers below own current-root planning, frozen restart
 --- and card-binding inspection rules. Versioned Locate/Inject/Commit consume
@@ -48,8 +48,8 @@
 --- false })), matching every other restartable adapter.
 --------------------------------------------------------------------------------
 
-local CardCallbacks = require("SpellHotReload.CardCallbacks")
-local Binding = require("SpellHotReload.PracticeBinding")
+local CardCallbacks = require("SpellHotReload.Adapters.Card.CardCallbacks")
+local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
 
 local compile = loadstring or load
 
@@ -675,8 +675,8 @@ end
 ---Build scalar presentation, then revalidate after possible compiler/allocation
 ---callbacks. No commit authority is returned; callers own/cache the record.
 function Card.InspectPrepared(prepared, capture, refresh)
-    local Cards = require("SpellHotReload.CardVersions")
-    local Target = require("SpellHotReload.CardTarget")
+    local Cards = require("SpellHotReload.Adapters.Card.CardVersions")
+    local Target = require("SpellHotReload.Adapters.Card.CardTarget")
     local model, merr = Cards.Describe(prepared.selection)
     if not model then return nil, "describe: " .. message(merr) end
     local live, lerr = refresh()
@@ -743,7 +743,7 @@ end
 ---Generated-source support is Card's rule, not a generic file-store verdict.
 ---This format gate grants no runtime identity or publication authority.
 function Card.CheckCandidateSource(content, file)
-    return require("SpellHotReload.GeneratedBossScanner").Scan(content, file)
+    return require("SpellHotReload.Adapters.Card.GeneratedBossScanner").Scan(content, file)
 end
 
 ---Only consumes an already-complete discovery. The snapshot-local class key
@@ -780,8 +780,8 @@ end
 ---Dependencies are lazy to avoid the CardVersions -> Card cycle.
 function Card.SeedVersions(entry, session_id, classes, defaults)
     local Source = require("SpellHotReload.Source.FunctionPlan")
-    local Functions = require("SpellHotReload.FunctionVersions")
-    local Cards = require("SpellHotReload.CardVersions")
+    local Functions = require("SpellHotReload.Source.FunctionVersions")
+    local Cards = require("SpellHotReload.Adapters.Card.CardVersions")
     local function fail(code, detail, e, key)
         return nil, {phase="capture", code=code, message=detail,
             file=plain(e) and rawget(e,"file") or nil, unit_key=key}
@@ -844,12 +844,12 @@ function Card.CheckCommitInput(selection, capture, live)
         return fail("stale", "candidate bytes changed", file)
     end
     if selection.location ~= nil then
-        local Target = require("SpellHotReload.CardTarget")
+        local Target = require("SpellHotReload.Adapters.Card.CardTarget")
         local checked, err = Target.CheckDiscovery(selection.location, live.binding, capture, live)
         if not checked then return fail(err.code, err.message, file, selection.location.key) end
     end
     if selection.file_location~=nil then
-        local checked,err=require("SpellHotReload.CardTarget").CheckFileDiscovery(selection.file_location,capture,live)
+        local checked,err=require("SpellHotReload.Adapters.Card.CardTarget").CheckFileDiscovery(selection.file_location,capture,live)
         if not checked then return fail(err.code,err.message,file) end
         if not plain(selection.report) or selection.report.file_location~=selection.file_location
             or selection.file_location.discovery~=selection.discovery or selection.file_location.snapshot~=base then
@@ -870,7 +870,7 @@ end
 ---CardCommit still seals actions, journals and atomically installs it last.
 ---Lazy import avoids CardVersions -> Card initialization cycles.
 function Card.ProposeVersion(selection)
-    return require("SpellHotReload.CardVersions").Next(selection)
+    return require("SpellHotReload.Adapters.Card.CardVersions").Next(selection)
 end
 
 local callbacks = { before=true, init=true, frame=true, render=true,
@@ -1079,7 +1079,7 @@ end
 locate_versioned = function(unit, context)
     local runtime, entry = runtime_context(unit, context, "locate")
     if not runtime then return nil, entry end
-    local Target = require("SpellHotReload.CardTarget")
+    local Target = require("SpellHotReload.Adapters.Card.CardTarget")
     local capture, file = runtime.capture, context.common.file
     if runtime.file_scope then
         local live, lerr = runtime.refresh()
@@ -1143,9 +1143,9 @@ inject_versioned = function(handle, unit, context)
     local runtime, err = matching_handle(handle, unit, context, "inject")
     if not runtime then return nil, err end
     local file = context.common.file
-    local Cards = require("SpellHotReload.CardVersions")
+    local Cards = require("SpellHotReload.Adapters.Card.CardVersions")
     local report, rerr
-    if runtime.file_scope then report,rerr=require("SpellHotReload.FileApply").CompareCards(runtime.snapshot,handle.file_location,
+    if runtime.file_scope then report,rerr=require("SpellHotReload.Apply.FileApply").CompareCards(runtime.snapshot,handle.file_location,
         runtime.capture,handle.live)
     else report, rerr = Cards.CompareLocated(runtime.snapshot, handle.location,
         handle.live.binding, runtime.capture, handle.live) end

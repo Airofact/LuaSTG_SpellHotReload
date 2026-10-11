@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------------
---- SpellHotReload.PracticeBinding
+--- SpellHotReload.Adapters.Card.PracticeBinding
 ---
 --- Resolve the currently selected card (Spell Practice or SC Debugger) and start
 --- a fresh practice. Inspect/Patch remain available for named-function upvalue

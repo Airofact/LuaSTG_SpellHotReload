@@ -1,6 +1,6 @@
 local M = {}
 function M.run()
-    local Versions = require("SpellHotReload.FunctionVersions")
+    local Versions = require("SpellHotReload.Source.FunctionVersions")
     local Plan = require("SpellHotReload.Source.FunctionPlan")
     local Anchor = require("SpellHotReload.Load.Anchor")
     local Compose = require("SpellHotReload.Source.Compose")

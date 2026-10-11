@@ -16,7 +16,7 @@
 --- cache invalidation. Legacy fixed-layout selections need no binding.
 --- Inputs are read-only by contract, not a hostile-plan sandbox. upvalueid is
 --- optional: absent it, physical external rejoin cannot be proved, not probed.
-local Card = require("SpellHotReload.Card")
+local Card = require("SpellHotReload.Adapters.Card.Card")
 local M = { Kind = "SpellHotReload.CommitCheck", Version = 1 }
 local function plain(v) return type(v) == "table" and getmetatable(v) == nil end
 local function integer(v)

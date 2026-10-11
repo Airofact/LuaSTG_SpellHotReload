@@ -15,9 +15,9 @@ function M.run()
     local Plugin=require("SpellHotReload.Plugin")
     local Load=require("SpellHotReload.Load.AnchorLoad")
     local Anchor=require("SpellHotReload.Load.Anchor")
-    local Binding=require("SpellHotReload.PracticeBinding")
+    local Binding=require("SpellHotReload.Adapters.Card.PracticeBinding")
     local Compose=require("SpellHotReload.Source.Compose")
-    local Card=require("SpellHotReload.Card")
+    local Card=require("SpellHotReload.Adapters.Card.Card")
     local passed,failed,failures=0,0,{}
     local function check(v,label)
         if v then passed=passed+1 else failed=failed+1;failures[#failures+1]=label end

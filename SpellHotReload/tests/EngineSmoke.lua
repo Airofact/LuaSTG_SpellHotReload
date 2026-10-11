@@ -64,7 +64,7 @@ table.insert(_sc_table, {"__SpellHotReloadSmoke:Normal", "Inline Reload Smoke", 
     assert(live and live:GetRegistry():GetSource(file_name), "production load hook did not capture source")
     local Plugin = require("SpellHotReload.Plugin")
     local Watcher = require("SpellHotReload.Watcher")
-    local Binding = require("SpellHotReload.PracticeBinding")
+    local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
     local p = Plugin.New()
     p._registry = live:GetRegistry()
     p._activated, p._supported, p._sandbox_ok = true, true, true

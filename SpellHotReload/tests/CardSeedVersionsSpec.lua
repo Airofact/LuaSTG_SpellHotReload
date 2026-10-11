@@ -2,12 +2,12 @@
 -- Lua5.1 uses presence-only capability for read-only metadata, never sharing proof.
 local M = {}
 function M.run()
-    local Card = require("SpellHotReload.Card")
+    local Card = require("SpellHotReload.Adapters.Card.Card")
     local Compat = require("SpellHotReload.Load.LoadVersions")
     local Load = require("SpellHotReload.Load.AnchorLoad")
     local Source = require("SpellHotReload.Source.FunctionPlan")
-    local Functions = require("SpellHotReload.FunctionVersions")
-    local Cards = require("SpellHotReload.CardVersions")
+    local Functions = require("SpellHotReload.Source.FunctionVersions")
+    local Cards = require("SpellHotReload.Adapters.Card.CardVersions")
     local passed,failed,failures=0,0,{}
     local function test(v,label)
         if v then passed=passed+1 else failed=failed+1;failures[#failures+1]=label end
@@ -162,7 +162,7 @@ function M.run()
             .."\n_tmp_sc=boss.card.New('Elsewhere',1,2,3,100)"
             .."\nfunction _tmp_sc:init(n) return helper(n) end"
             .."\ntable.insert(_editor_class['L'].cards,_tmp_sc)"
-        local callbacks=require("SpellHotReload.CardCallbacks")
+        local callbacks=require("SpellHotReload.Adapters.Card.CardCallbacks")
         local layout=must(callbacks.Read(escaped,"K"))
         eq(#layout,5,"escape tail preserves both live positions")
         eq(layout[4].kind,"other","escape dialog is opaque")

@@ -2,14 +2,14 @@
 -- Candidate initializers/bodies never run during discovery/compare/select/Next.
 local M={}
 function M.run()
-    local Cards=require("SpellHotReload.CardVersions")
-    local Target=require("SpellHotReload.CardTarget")
+    local Cards=require("SpellHotReload.Adapters.Card.CardVersions")
+    local Target=require("SpellHotReload.Adapters.Card.CardTarget")
     local Driver=require("SpellHotReload.Driver")
-    local Card=require("SpellHotReload.Card")
+    local Card=require("SpellHotReload.Adapters.Card.Card")
     local Load=require("SpellHotReload.Load.AnchorLoad")
     local Capture=require("SpellHotReload.Load.LoadVersions")
-    local Guard=require("SpellHotReload.CommitCheck")
-    local Commit=require("SpellHotReload.CardCommit")
+    local Guard=require("SpellHotReload.Apply.CommitCheck")
+    local Commit=require("SpellHotReload.Apply.CardCommit")
     local Anchor=require("SpellHotReload.Load.Anchor")
     local passed,failed,failures=0,0,{}
     local function eq(a,b,label)

@@ -1,10 +1,10 @@
 -- R4 preflight only. Tiny synthetic first loads; never runs the game.
 local M = {}
 function M.run()
-    local Check = require("SpellHotReload.CommitCheck")
+    local Check = require("SpellHotReload.Apply.CommitCheck")
     local Load = require("SpellHotReload.Load.AnchorLoad")
     local Capture = require("SpellHotReload.Load.LoadVersions")
-    local Cards = require("SpellHotReload.CardVersions")
+    local Cards = require("SpellHotReload.Adapters.Card.CardVersions")
     local Anchor = require("SpellHotReload.Load.Anchor")
     local passed, failed, failures = 0, 0, {}
     local function test(v, label)

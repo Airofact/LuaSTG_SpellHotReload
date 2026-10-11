@@ -3,10 +3,10 @@
 local M = {}
 
 function M.run()
-    local Card = require("SpellHotReload.CardCallbacks")
+    local Card = require("SpellHotReload.Adapters.Card.CardCallbacks")
     local Loader = require("SpellHotReload.GeneratedBossLoader")
     local Registry = require("SpellHotReload.Load.UpvalueRegistry")
-    local Binding = require("SpellHotReload.PracticeBinding")
+    local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
     local saved, keys = {}, { "boss", "task", "_editor_class", "_sc_table", "_tmp_sc", "_other_init", "_boss", "IsValid", "lstg", "stage", "ext", "jit", "MOVE_NORMAL" }
     for _, key in ipairs(keys) do saved[key] = rawget(_G, key) end
     local passed = 0

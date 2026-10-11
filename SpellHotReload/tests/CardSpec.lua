@@ -15,9 +15,9 @@
 local Adapter = require("SpellHotReload.Adapter")
 local NodeRegistry = require("SpellHotReload.NodeRegistry")
 local Driver = require("SpellHotReload.Driver")
-local CardCallbacks = require("SpellHotReload.CardCallbacks")
-local Card = require("SpellHotReload.Card")
-local Binding = require("SpellHotReload.PracticeBinding")
+local CardCallbacks = require("SpellHotReload.Adapters.Card.CardCallbacks")
+local Card = require("SpellHotReload.Adapters.Card.Card")
+local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
 local Loader = require("SpellHotReload.GeneratedBossLoader")
 
 local M = {}

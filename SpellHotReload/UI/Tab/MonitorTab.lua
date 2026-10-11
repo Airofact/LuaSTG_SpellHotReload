@@ -7,7 +7,7 @@
 --------------------------------------------------------------------------------
 
 local imgui_exist, imgui = pcall(require, "imgui")
-local Binding = require("SpellHotReload.PracticeBinding")
+local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
 
 local function color(r, g, b, a)
     if imgui_exist then

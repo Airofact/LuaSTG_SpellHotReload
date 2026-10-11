@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------------
---- SpellHotReload.Host
+--- SpellHotReload.Adapters.Host
 ---
 --- The host-call adapter: rebuilds a registered stage-host registration through
 --- the generic four-hook contract.

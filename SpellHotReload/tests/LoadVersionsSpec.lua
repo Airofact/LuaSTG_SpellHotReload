@@ -2,11 +2,11 @@
 local M = {}
 function M.run()
     local Capture = require("SpellHotReload.Load.LoadVersions")
-    local Card = require("SpellHotReload.Card")
+    local Card = require("SpellHotReload.Adapters.Card.Card")
     local Hook = require("SpellHotReload.Load.LoadHook")
     local Load = require("SpellHotReload.Load.AnchorLoad")
     local Anchor = require("SpellHotReload.Load.Anchor")
-    local Cards = require("SpellHotReload.CardVersions")
+    local Cards = require("SpellHotReload.Adapters.Card.CardVersions")
     local Source = require("SpellHotReload.Source.FunctionPlan")
     local watcher_key = "SpellHotReload.Watcher"
     local old_watcher = package.loaded[watcher_key]
@@ -309,9 +309,9 @@ function M.run()
 
         -- A genuine first-load entry must NOT enter legacy Card.Plan/Commit or
         -- retire its captured history, even when production preflight refuses.
-        local Scanner = require("SpellHotReload.GeneratedBossScanner")
-        local Binding = require("SpellHotReload.PracticeBinding")
-        local Card = require("SpellHotReload.Card")
+        local Scanner = require("SpellHotReload.Adapters.Card.GeneratedBossScanner")
+        local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
+        local Card = require("SpellHotReload.Adapters.Card.Card")
         local old_scan, old_keys, old_current, old_replay, old_plan =
             Scanner.Scan, Scanner.ClassKeys, Binding.CaptureCurrent, Binding.IsReplay, Card.Plan
         local apply_ok, apply_error = pcall(function()

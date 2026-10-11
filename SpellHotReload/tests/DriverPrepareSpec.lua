@@ -2,7 +2,7 @@
 local M={}
 function M.run()
     local Driver=require("SpellHotReload.Driver")
-    local Card=require("SpellHotReload.Card")
+    local Card=require("SpellHotReload.Adapters.Card.Card")
     local passed,failed,failures=0,0,{}
     local function test(v,label)
         if v then passed=passed+1 else failed=failed+1;failures[#failures+1]=label end

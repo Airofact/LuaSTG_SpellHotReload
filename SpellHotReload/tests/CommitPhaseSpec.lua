@@ -2,7 +2,7 @@ local M = {}
 
 function M.run(options)
     options = options or {}
-    local Phase = options.phase or require("SpellHotReload.CommitPhase")
+    local Phase = options.phase or require("SpellHotReload.Apply.CommitPhase")
     local passed, failed = 0, 0
     local function check(value, label)
         if value then passed = passed + 1

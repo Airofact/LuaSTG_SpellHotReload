@@ -8,9 +8,9 @@ if not old_watcher then package.loaded[watcher_name] = {} end
 local Plugin = require("SpellHotReload.Plugin")
 local Watcher = package.loaded[watcher_name]
 package.loaded[watcher_name] = old_watcher
-local Binding = require("SpellHotReload.PracticeBinding")
-local Scanner = require("SpellHotReload.GeneratedBossScanner")
-local Card = require("SpellHotReload.Card")
+local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
+local Scanner = require("SpellHotReload.Adapters.Card.GeneratedBossScanner")
+local Card = require("SpellHotReload.Adapters.Card.Card")
 local M = {}
 
 local SOURCE = [[

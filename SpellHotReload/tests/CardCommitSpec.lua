@@ -5,10 +5,10 @@ local M = {}
 local serial=0
 function M.run(opts)
     opts = opts or {}
-    local Tx = opts.transaction or require("SpellHotReload.CardCommit")
+    local Tx = opts.transaction or require("SpellHotReload.Apply.CardCommit")
     local Load = require("SpellHotReload.Load.AnchorLoad")
     local Capture = require("SpellHotReload.Load.LoadVersions")
-    local Cards = require("SpellHotReload.CardVersions")
+    local Cards = require("SpellHotReload.Adapters.Card.CardVersions")
     local Anchor = require("SpellHotReload.Load.Anchor")
     local passed, failed, failures = 0, 0, {}
     local function test(v, label)
@@ -314,7 +314,7 @@ function M.run(opts)
         eq(cell_attempts,2,"failed cell restore attempted")
         -- Preparation errors do not consume or mutate; unsafe objects stay opaque.
         local failing_next=isolated({require=function(name)
-            if name=="SpellHotReload.Card" then
+            if name=="SpellHotReload.Adapters.Card.Card" then
                 return setmetatable({ProposeVersion=function() error(hostile) end},
                     {__index=require(name)})
             end

@@ -22,10 +22,10 @@
 local Adapter = require("SpellHotReload.Adapter")
 local NodeRegistry = require("SpellHotReload.NodeRegistry")
 local FileMatch = require("SpellHotReload.FileMatch")
-local Card = require("SpellHotReload.Card")
-local CardCallbacks = require("SpellHotReload.CardCallbacks")
+local Card = require("SpellHotReload.Adapters.Card.Card")
+local CardCallbacks = require("SpellHotReload.Adapters.Card.CardCallbacks")
 local Driver = require("SpellHotReload.Driver")
-local Binding = require("SpellHotReload.PracticeBinding")
+local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
 local Loader = require("SpellHotReload.GeneratedBossLoader")
 local IR = require("SpellHotReload.Source.TopLevelIR")
 

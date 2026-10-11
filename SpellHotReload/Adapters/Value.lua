@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------------
---- SpellHotReload.Value
+--- SpellHotReload.Adapters.Value
 ---
 --- The value adapter: the generic adapter for late-bound value slots.
 ---

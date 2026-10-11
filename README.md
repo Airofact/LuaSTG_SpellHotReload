@@ -67,7 +67,7 @@ v0.21.111 / LuaJIT 2.1.1744887079。Lua 5.1 可运行独立 spec，不能据此
 或依赖已改但未重放的 `_tmp_sc` / `_sc_table` 接线，则阻断该根及依赖它的根。
 未重执行的顶层别名/调用若读取这些待应用绑定而无法缩窄影响，也整文件拒绝。
 这不是通用 Host/Value 热更；任意中间插入/重排、新类创建或非字面量构造仍不保证可隔离。
-文件级门禁与完整剩余核对由 `SpellHotReload/FileApply.lua` 负责；Card 仅提供
+文件级门禁与完整剩余核对由 `SpellHotReload/Apply/FileApply.lua` 负责；Card 仅提供
 卡接线/绑定影响的证据和已证明的定义语句覆盖，不比较无关语句、不决定整文件完成。
 这是一项具体职责拆分，不新增 Host/Value 适配器或跨载体事务；提交、版本与 Retry 不变。
 独立的全局 `Include 'path'` / `Include('path')`（含长字符串、尾随分号）不参与
@@ -210,7 +210,7 @@ Restart(handle, plan, env) -> ok, reason           可选、可失败、可单�
 - **重启重试状态**：已提交的 run 由 Plugin 持有，失败的重启交给 `Driver:Restart`。
 
 提交只允许从帧边界的 UI 阶段进入，由 `View:update` → `Plugin:Tick` 天然满足。
-同一个驱动已经为 `stage.group.DefStageFunc` 准备了宿主适配器（`Host.lua`），
+同一个驱动已经为 `stage.group.DefStageFunc` 准备了宿主适配器（`Adapters/Host.lua`），
 但它尚未接入 Apply 事务。
 
 ## 窗口
@@ -228,12 +228,12 @@ Restart(handle, plan, env) -> ok, reason           可选、可失败、可单�
 | `Watcher.lua` / `SnapshotStore.lua` | 去抖、双读验证、显式 stable 状态、字节快照 |
 | `Load/UpvalueRegistry.lua` | 加载时捕获的顶层函数和真实加载源码 |
 | `GeneratedBossLoader.lua` | 加载捕获、词法器、具名函数片段编译 |
-| `GeneratedBossScanner.lua` | 产物格式检查、UI 类名提示 |
-| `PracticeBinding.lua` | 当前卡解析、练习重启及旧函数补丁工具 |
+| `Adapters/Card/GeneratedBossScanner.lua` | 产物格式检查、UI 类名提示 |
+| `Adapters/Card/PracticeBinding.lua` | 当前卡解析、练习重启及旧函数补丁工具 |
 | `Adapter.lua` / `NodeRegistry.lua` / `Driver.lua` | 四钩子契约、载体路由、规划与提交/重启驱动 |
-| `Card.lua` | 符卡适配器：把 `Select` / `Build` / `Publish` / `Restart` 映射到四钩子 |
-| `CardCallbacks.lua` | 卡片定位、结构核对、回调编译、局部变量绑定与发布 |
-| `Host.lua` / `Source/TopLevelIR.lua` / `Load/LoadCapture.lua` / `Value.lua` | 宿主适配器与通用解析/捕获/值层（`Host` 尚未接入运行时）|
+| `Adapters/Card/Card.lua` | 符卡适配器：把 `Select` / `Build` / `Publish` / `Restart` 映射到四钩子 |
+| `Adapters/Card/CardCallbacks.lua` | 卡片定位、结构核对、回调编译、局部变量绑定与发布 |
+| `Adapters/Host.lua` / `Source/TopLevelIR.lua` / `Load/LoadCapture.lua` / `Adapters/Value.lua` | 宿主适配器与通用解析/捕获/值层（`Host` 尚未接入运行时）|
 | `UI/View.lua` / `UI/Tab/` / `ChangeLog.lua` | 调试窗口和日志 |
 | `tests/` | Lua 5.1 / LuaJIT 的 spec 与真实引擎 smoke |
 
@@ -250,6 +250,14 @@ Restart(handle, plan, env) -> ok, reason           可选、可失败、可单�
 - `SpellHotReload/Load/` 放首载与会话模块：`Anchor`、`AnchorSession`、
   `AnchorRegistry`、`AnchorLoad`、`LoadCapture`、`LoadHook`、`LoadVersions`、
   `UpvalueRegistry`。
+- `SpellHotReload/Adapters/` 独立放具体适配器：`Host.lua`、`Value.lua`，以及
+  `Card/` 下的 `Card`、`CardCallbacks`、`CardTarget`、`CardVersions`、
+  `PracticeBinding`、`GeneratedBossScanner`。公共契约 `Adapter.lua`、调度器
+  `Driver.lua` 和注册表 `NodeRegistry.lua` 仍在平铺位置。Host/Value 的接线状态保持。
+- `SpellHotReload/Apply/` 放 `FileApply`、`CardCommit`、`CommitCheck`、`CommitPhase`，
+  分别负责文件门禁与剩余核对、原子提交、最终只读校验和提交作用域。
+- `SpellHotReload/Source/FunctionVersions.lua` 负责局部函数的版本比较和依赖选择，
+  与同目录的源码分析、函数准备配合；它不直接提交或重启。
 - `SpellHotReload/tests/` 包含离线 spec 与引擎 smoke。
 
 UI 的 require 路径为 `SpellHotReload.UI.View` 与
@@ -260,6 +268,13 @@ Source 和 Load 模块使用 `SpellHotReload.Source.<模块名>` 与
 `SpellHotReload.Load.<模块名>` 加载；原来的平铺 require 路径不再提供入口。
 目录按职责分组，既有跨目录依赖保留；例如 `Source.Compose` 使用 `Load.Anchor`。
 数据中的 `Kind` / `kind` 标识、版本号及调用接口保持原值，不随模块路径改名。
+
+具体适配器以 `SpellHotReload.Adapters.Host`、`SpellHotReload.Adapters.Value` 和
+`SpellHotReload.Adapters.Card.<模块名>` 加载；发布流程以
+`SpellHotReload.Apply.<模块名>` 加载，函数版本服务以
+`SpellHotReload.Source.FunctionVersions` 加载。对应旧平铺路径不再提供入口。
+本次只调整模块路径；数据中的 Kind/kind、适配器 Id、版本及接口保持原值。
+更新后需要重启游戏。现有跨目录引用保留，目录不代表严格的依赖分层。
 
 ## 验证
 

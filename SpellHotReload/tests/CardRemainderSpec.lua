@@ -4,13 +4,13 @@
 -- Lua5.1 uses a throwing presence stub for pure analysis, never fake commits.
 local M = {}
 function M.run()
-    local Cards = require("SpellHotReload.CardVersions")
-    local FileApply = require("SpellHotReload.FileApply")
-    local Target = require("SpellHotReload.CardTarget")
-    local Card = require("SpellHotReload.Card")
+    local Cards = require("SpellHotReload.Adapters.Card.CardVersions")
+    local FileApply = require("SpellHotReload.Apply.FileApply")
+    local Target = require("SpellHotReload.Adapters.Card.CardTarget")
+    local Card = require("SpellHotReload.Adapters.Card.Card")
     local Driver = require("SpellHotReload.Driver")
     local Load = require("SpellHotReload.Load.AnchorLoad")
-    local Commit = require("SpellHotReload.CardCommit")
+    local Commit = require("SpellHotReload.Apply.CardCommit")
     local Anchor = require("SpellHotReload.Load.Anchor")
     local passed, failed, failures = 0, 0, {}
     local function check(v, label)

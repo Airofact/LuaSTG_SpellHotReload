@@ -45,12 +45,12 @@
 --- target table references alone do not prove live class slot identity.
 --- Tables are read-only by contract, not a sandbox. upvalueid is optional, never
 --- replaced with a Probe. Without it physical rejoin by outside code is unproved.
-local Functions = require("SpellHotReload.FunctionVersions")
+local Functions = require("SpellHotReload.Source.FunctionVersions")
 local Source = require("SpellHotReload.Source.FunctionPlan")
-local Card = require("SpellHotReload.Card")
+local Card = require("SpellHotReload.Adapters.Card.Card")
 local Compose = require("SpellHotReload.Source.Compose")
 local Lexer = require("SpellHotReload.Source.Lexer")
-local Target = require("SpellHotReload.CardTarget")
+local Target = require("SpellHotReload.Adapters.Card.CardTarget")
 local M = { Kind = "SpellHotReload.CardVersions", Version = 1 }
 local CALLBACKS = { "before", "init", "frame", "render", "beforedel", "del", "after" }
 local allowed = {}

@@ -16,16 +16,16 @@
 
 local Watcher = require("SpellHotReload.Watcher")
 local SnapshotStore = require("SpellHotReload.SnapshotStore")
-local Scanner = require("SpellHotReload.GeneratedBossScanner")
+local Scanner = require("SpellHotReload.Adapters.Card.GeneratedBossScanner")
 local Compose = require("SpellHotReload.Source.Compose")
-local Binding = require("SpellHotReload.PracticeBinding")
+local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
 local ChangeLog = require("SpellHotReload.ChangeLog")
 local UpvalueRegistry = require("SpellHotReload.Load.UpvalueRegistry")
 local Anchor = require("SpellHotReload.Load.Anchor")
 local AnchorRegistry = require("SpellHotReload.Load.AnchorRegistry")
 local Driver = require("SpellHotReload.Driver")
-local Card = require("SpellHotReload.Card")
-local CardCommit = require("SpellHotReload.CardCommit")
+local Card = require("SpellHotReload.Adapters.Card.Card")
+local CardCommit = require("SpellHotReload.Apply.CardCommit")
 local session_serial = 0
 
 local Plugin = {}
@@ -507,7 +507,7 @@ function Plugin:_IsCompleted(file, content)
     if not record then return false end
     local scope = self:_CompletionScope(file)
     if not self._store:IsCompleted(file,content,scope) then self:_ClearCompletion(file);return false end
-    local checked = require("SpellHotReload.CommitCheck").Check(record.selection,scope.capture,
+    local checked = require("SpellHotReload.Apply.CommitCheck").Check(record.selection,scope.capture,
         {capture=scope.capture, snapshot=scope.snapshot, entry=scope.entry, session_id=scope.session_id,
             classes=rawget(_G,"_editor_class"), content=content, released=false, poisoned=false})
     if not checked then self:_ClearCompletion(file);return false end
@@ -576,7 +576,7 @@ function Plugin:_AccountVersioned(file, candidate, capture, base, receipt)
         loaded_source=live.entry.loaded_source, registry_entry=live.entry,
         base_revision=snapshot.revision, published_units=snapshot})
     if not discovery then return nil, "discover: " .. message(derr) end
-    local model, witness, fresh = require("SpellHotReload.FileApply").InspectFileRemainder(capture,discovery,live,refresh)
+    local model, witness, fresh = require("SpellHotReload.Apply.FileApply").InspectFileRemainder(capture,discovery,live,refresh)
     if not model then return nil, message(witness) end
     if capture.snapshot~=snapshot or model.file~=file or model.session_id~=self._session_id
         or model.revision~=snapshot.revision or model.generation~=candidate.generation

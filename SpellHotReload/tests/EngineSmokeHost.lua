@@ -64,7 +64,7 @@ end)
     local PluginMod = require("SpellHotReload.Plugin")
     local Driver = require("SpellHotReload.Driver")
     local NodeRegistry = require("SpellHotReload.NodeRegistry")
-    local Host = require("SpellHotReload.Host")
+    local Host = require("SpellHotReload.Adapters.Host")
 
     local p = PluginMod.New()
     p._registry = registry

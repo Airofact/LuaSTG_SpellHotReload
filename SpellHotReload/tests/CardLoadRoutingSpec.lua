@@ -2,9 +2,9 @@
 -- Existing LoadVersions/VersionedApply suites retain real capture/commit coverage.
 local M = {}
 function M.run()
-    local Card = require("SpellHotReload.Card")
-    local Binding = require("SpellHotReload.PracticeBinding")
-    local Scanner = require("SpellHotReload.GeneratedBossScanner")
+    local Card = require("SpellHotReload.Adapters.Card.Card")
+    local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
+    local Scanner = require("SpellHotReload.Adapters.Card.GeneratedBossScanner")
     local Driver = require("SpellHotReload.Driver")
     local Load = require("SpellHotReload.Load.AnchorLoad")
     local passed, failed, failures = 0, 0, {}
@@ -82,7 +82,7 @@ function M.run()
             has(reason, expected, fault .. " safe reason")
         end
         Card.SeedVersions = original_capture
-        local version_key = "SpellHotReload.FunctionVersions"
+        local version_key = "SpellHotReload.Source.FunctionVersions"
         local held_module, held_preload = package.loaded[version_key], package.preload[version_key]
         package.loaded[version_key] = nil
         package.preload[version_key] = function() error("lazy metadata import fixture") end

@@ -5,10 +5,10 @@ local M = {}
 local serial = 0
 function M.run(opts)
     opts = opts or {}
-    local Card = require("SpellHotReload.Card")
-    local Cards = require("SpellHotReload.CardVersions")
-    local Target = require("SpellHotReload.CardTarget")
-    local Guard = require("SpellHotReload.CommitCheck")
+    local Card = require("SpellHotReload.Adapters.Card.Card")
+    local Cards = require("SpellHotReload.Adapters.Card.CardVersions")
+    local Target = require("SpellHotReload.Adapters.Card.CardTarget")
+    local Guard = require("SpellHotReload.Apply.CommitCheck")
     local Load = require("SpellHotReload.Load.AnchorLoad")
     local Capture = require("SpellHotReload.Load.LoadVersions")
     local passed, failed, failures = 0, 0, {}
@@ -74,7 +74,7 @@ function M.run(opts)
         end
     end
     local function isolated()
-        local path="SpellHotReload/CardCommit.lua"
+        local path="SpellHotReload/Apply/CardCommit.lua"
         local text=opts.sources and opts.sources[path]
         return (text and assert(loadstring(text,"@candidate/"..path))
             or assert(loadfile("THDiMS/game/plugin/SpellHotReload/"..path)))()

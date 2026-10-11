@@ -80,7 +80,7 @@ end
 ---Production file planning entry: Card proves its targets/bindings, then the
 ---file policy gates all unclaimed effects BEFORE selection or commit.
 function M.CompareCards(state,location,capture,live)
-    local report,err=require("SpellHotReload.CardVersions").CompareFileLocated(state,location,capture,live)
+    local report,err=require("SpellHotReload.Adapters.Card.CardVersions").CompareFileLocated(state,location,capture,live)
     if not report then return nil,err end
     local safe,why=M.CheckTopLevel(report)
     if not safe then return nil,why end
@@ -91,7 +91,7 @@ end
 ---freshness proof or removal authority. Includes are outside reload scope,
 ---never executed and never represented as published definitions.
 function M.Remaining(report)
-    local evidence,err=require("SpellHotReload.CardVersions").Coverage(report)
+    local evidence,err=require("SpellHotReload.Adapters.Card.CardVersions").Coverage(report)
     if not evidence then return nil,err end
     local state=report.base
     local result={kind="SpellHotReload.FileApply.Remaining",version=1,
@@ -168,9 +168,9 @@ end
 ---result also carries a checked no-op read witness for cheap watcher validation.
 ---No commit, join, write, cache flush, registration or restart occurs here.
 function M.InspectFileRemainder(capture, discovery, live, refresh)
-    local Cards = require("SpellHotReload.CardVersions")
-    local Target = require("SpellHotReload.CardTarget")
-    local Guard = require("SpellHotReload.CommitCheck")
+    local Cards = require("SpellHotReload.Adapters.Card.CardVersions")
+    local Target = require("SpellHotReload.Adapters.Card.CardTarget")
+    local Guard = require("SpellHotReload.Apply.CommitCheck")
     local base = capture.snapshot
     local location, lerr = Target.LocateFileDiscovery(discovery.snapshot,capture,live)
     if not location then return nil, "correspondence: " .. message(lerr) end

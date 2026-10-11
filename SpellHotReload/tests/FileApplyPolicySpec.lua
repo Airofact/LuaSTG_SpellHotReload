@@ -2,7 +2,7 @@
 -- Card target/cell/transaction integration remains in the existing real suites.
 local M={}
 function M.run()
-    local FileApply=require("SpellHotReload.FileApply")
+    local FileApply=require("SpellHotReload.Apply.FileApply")
     local IR=require("SpellHotReload.Source.TopLevelIR")
     local Binding=require("SpellHotReload.Source.Binding")
     local passed,failed,failures=0,0,{}
@@ -42,7 +42,7 @@ function M.run()
     local saved_include=rawget(_G,"Include")
     local calls=0
     _G.Include=function() calls=calls+1;error("policy executed a candidate Include") end
-    local card_name="SpellHotReload.CardVersions"
+    local card_name="SpellHotReload.Adapters.Card.CardVersions"
     local saved_card,saved_factory=package.loaded[card_name],package.preload[card_name]
     local card_requires=0
     package.loaded[card_name]=nil

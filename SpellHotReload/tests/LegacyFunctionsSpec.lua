@@ -49,9 +49,9 @@ function M.run()
         eq(instance:IsReleased(),false,"plugin cold lifecycle")
         eq(package.loaded[loader_name],nil,"Plugin already independent of legacy loader")
         eq(package.loaded[functions_name],nil,"Plugin does not load legacy constructors")
-        Value=require(prefix.."Value")
-        Host=require(prefix.."Host")
-        Callbacks=require(prefix.."CardCallbacks")
+        Value=require(prefix.."Adapters.Value")
+        Host=require(prefix.."Adapters.Host")
+        Callbacks=require(prefix.."Adapters.Card.CardCallbacks")
         eq(package.loaded[loader_name],nil,"all adapters independent of hook facade")
         eq(package.loaded[functions_name],nil,"Value/Host/read-only Card do not construct functions")
         eq(type(Value.Parse({text="local x = false",carrier="local",slot=1,name="x"})),"table","Value direct lexer")
@@ -123,7 +123,7 @@ function M.run()
         eq(fn,nil,"non-function return rejected");has(err,"fragment did not produce a function","type diagnostic")
     end)
     case("Value legacy local-function path delegates without old loader",function()
-        Value=Value or require(prefix.."Value")
+        Value=Value or require(prefix.."Adapters.Value")
         local calls={extract=0,build=0}
         F.ExtractFunction=function(...) calls.extract=calls.extract+1;return original_extract(...) end
         F.BuildFunction=function(...) calls.build=calls.build+1;return original_build(...) end
@@ -140,7 +140,7 @@ function M.run()
         F.BuildFunction,F.ExtractFunction=original_build,original_extract
     end)
     case("Card historical Build delegates without old loader",function()
-        Callbacks=Callbacks or require(prefix.."CardCallbacks")
+        Callbacks=Callbacks or require(prefix.."Adapters.Card.CardCallbacks")
         local calls={extract=0,build=0}
         F.ExtractFunction=function(...) calls.extract=calls.extract+1;return original_extract(...) end
         F.BuildFunction=function(...) calls.build=calls.build+1;return original_build(...) end
@@ -165,7 +165,7 @@ function M.run()
         F.BuildFunction,F.ExtractFunction=original_build,original_extract
     end)
     case("Host parse/Inject directly uses shared lexer",function()
-        Host=Host or require(prefix.."Host")
+        Host=Host or require(prefix.."Adapters.Host")
         local node={text="stage.group.DefStageFunc('S', 'frame', function(self) self.value=7 end)",carrier="host"}
         local handle=assert(Host.Locate(node,{}))
         local plan=assert(Host.Inject(handle,node,{map={}}))
@@ -191,8 +191,8 @@ function M.run()
         eq(build_args[3],registry,"map reference forwarded")
         F.BuildFunction,F.ExtractFunction=original_build,original_extract
         eq(Loader.ListFunctionNames("local function f() end")[1],"f","facade names delegated")
-        local Lexer=require(prefix.."Lexer")
-        local Capture=require(prefix.."LoadCapture")
+        local Lexer=require(prefix.."Source.Lexer")
+        local Capture=require(prefix.."Load.LoadCapture")
         eq(#Loader.Tokenize("local x=1"),#Lexer.Tokenize("local x=1"),"facade lexer delegates")
         eq(Loader.BuildTrailer({"a","b"}),Capture.Trailer({"a","b"}),"facade trailer delegates")
     end)
