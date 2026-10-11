@@ -6,7 +6,7 @@ function M.run()
     local globals={"lstg","boss","_editor_class","_tmp_sc","_sc_table","ext","_va_runs","_va_api","_va_alias","jit","IsValid"}
     local saved={}
     for _,name in ipairs(globals) do saved[name]=rawget(_G,name) end
-    local modules={"lstg.FileSystemWatcher","lstg.FileSystemWatcher.FileAction","SpellHotReload.Watcher","SpellHotReload.Plugin","imgui","SpellHotReload.Tab.MonitorTab"}
+    local modules={"lstg.FileSystemWatcher","lstg.FileSystemWatcher.FileAction","SpellHotReload.Watcher","SpellHotReload.Plugin","imgui","SpellHotReload.UI.Tab.MonitorTab"}
     local loaded={}
     for _,name in ipairs(modules) do loaded[name]=package.loaded[name] end
     package.loaded[modules[1]]={}
@@ -417,7 +417,7 @@ function M.run()
                 SameLine=function() labels[#labels+1]="<same-line>" end,
                 CollapsingHeader=function() return false end,
                 Button=function(label) labels[#labels+1]=label;return clicks[label] or false end}}
-            local ui_name="SpellHotReload.Tab.MonitorTab"
+            local ui_name="SpellHotReload.UI.Tab.MonitorTab"
             local old_imgui,old_ui=loaded.imgui,package.loaded[ui_name]
             package.loaded[ui_name]=nil
             local Monitor=require(ui_name)

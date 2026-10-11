@@ -23,7 +23,7 @@ function M.run()
     local saved_globals, saved_modules = {}, {}
     local globals = {"lstg", "setting", "GameExit", "_release_during_load"}
     local modules = {"lstg.FileSystemWatcher", "lstg.FileSystemWatcher.FileAction",
-        "SpellHotReload.Watcher", "SpellHotReload.Plugin", "lib.Ldebug", "SpellHotReload.View"}
+        "SpellHotReload.Watcher", "SpellHotReload.Plugin", "lib.Ldebug", "SpellHotReload.UI.View"}
     for _, key in ipairs(globals) do saved_globals[key] = rawget(_G, key) end
     for _, key in ipairs(modules) do saved_modules[key] = package.loaded[key] end
     local ok, failure = pcall(function()
@@ -136,7 +136,7 @@ function M.run()
 local function consumer() return state end]]))
         check(p:AdoptLoad("A_Boss.lua", entry), "adopt complete load")
         local anchors, legacy, snapshots = p:GetAnchors(), p:GetRegistry(), p:GetStore()
-        local tool = require("SpellHotReload.View")
+        local tool = require("SpellHotReload.UI.View")
         tool:initialize(p)
         p:SetView(tool)
         tool:setEnable(true)
@@ -306,7 +306,7 @@ local function consumer() return state end]]))
         boot.Log = function() end
         lstg = boot
         package.loaded["lib.Ldebug"] = {addView=function() view_adds = view_adds + 1 end}
-        package.loaded["SpellHotReload.View"] = {initialize=function(_, value) instance = value end}
+        package.loaded["SpellHotReload.UI.View"] = {initialize=function(_, value) instance = value end}
         Plugin.ResolveRoot = function() return "virtual/mod" end
         local exit_calls, exit_args, fail_exit = 0, nil, false
         GameExit = function(...)

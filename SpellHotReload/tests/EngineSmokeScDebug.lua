@@ -174,7 +174,7 @@ local function install()
     if installed then return end
     installed = true
     lstg.FileManager.CreateDirectory(output_root)
-    local View = require("SpellHotReload.View")
+    local View = require("SpellHotReload.UI.View")
     local Binding = require("SpellHotReload.PracticeBinding")
     local Card = require("SpellHotReload.CardCallbacks")
     local Plugin = require("SpellHotReload.Plugin")

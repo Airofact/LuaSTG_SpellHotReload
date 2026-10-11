@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------------
---- SpellHotReload.View
+--- SpellHotReload.UI.View
 ---
 --- Independent `lstg.debug` Tool window. Drives the Plugin's Tick each frame and
 --- hosts two tabs (following the Inspector tab pattern):
@@ -9,11 +9,11 @@
 
 local imgui_exist, imgui = pcall(require, "imgui")
 
-local TAB = require("SpellHotReload.Tab.TabEnum")
-local MonitorTab = require("SpellHotReload.Tab.MonitorTab")
-local ChangeLogTab = require("SpellHotReload.Tab.ChangeLogTab")
+local TAB = require("SpellHotReload.UI.Tab.TabEnum")
+local MonitorTab = require("SpellHotReload.UI.Tab.MonitorTab")
+local ChangeLogTab = require("SpellHotReload.UI.Tab.ChangeLogTab")
 
----@class SpellHotReload.View
+---@class SpellHotReload.UI.View
 local View = {}
 
 function View:getWindowName() return "Spell Hot Reload" end

@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------------
---- SpellHotReload.Tab.ChangeLogTab
+--- SpellHotReload.UI.Tab.ChangeLogTab
 ---
 --- Secondary tab: renders the plugin's bounded change log (watcher candidates,
 --- apply / restart results, dismiss / rescan / start-stop events) newest first.
@@ -23,7 +23,7 @@ end
 
 local ChangeLogTab = {}
 
----@param view SpellHotReload.View
+---@param view SpellHotReload.UI.View
 function ChangeLogTab.layout(view)
     if not imgui_exist then return end
     local ImGui = imgui.ImGui

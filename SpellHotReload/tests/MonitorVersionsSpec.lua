@@ -6,7 +6,7 @@ function M.run()
     local globals={"lstg","boss","_editor_class","_tmp_sc","_sc_table","ext","_va_runs","_va_api","jit","IsValid"}
     local saved={}
     for _,name in ipairs(globals) do saved[name]=rawget(_G,name) end
-    local modules={"lstg.FileSystemWatcher","lstg.FileSystemWatcher.FileAction","SpellHotReload.Watcher","SpellHotReload.Plugin","imgui","SpellHotReload.Tab.MonitorTab"}
+    local modules={"lstg.FileSystemWatcher","lstg.FileSystemWatcher.FileAction","SpellHotReload.Watcher","SpellHotReload.Plugin","imgui","SpellHotReload.UI.Tab.MonitorTab"}
     local loaded={}
     for _,name in ipairs(modules) do loaded[name]=package.loaded[name] end
     package.loaded[modules[1]]={}
@@ -313,8 +313,8 @@ function M.run()
                 Text=emit,TextDisabled=emit,TextWrapped=emit,TextColored=function(_,t) emit(t) end,
                 Separator=function() end,SameLine=function() end,CollapsingHeader=function() return true end,
                 Button=function(label) buttons[#buttons+1]=label;return label==clicked end}}
-            package.loaded["SpellHotReload.Tab.MonitorTab"]=nil
-            local Monitor=require("SpellHotReload.Tab.MonitorTab")
+            package.loaded["SpellHotReload.UI.Tab.MonitorTab"]=nil
+            local Monitor=require("SpellHotReload.UI.Tab.MonitorTab")
             f=fixture();local view={plugin=f.p}
             clicked="Inspect Current##inspect_"..FILE
             Monitor.layout(view);has(view.last_result,"not committed","explicit inspection button")

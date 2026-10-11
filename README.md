@@ -234,10 +234,21 @@ Restart(handle, plan, env) -> ok, reason           可选、可失败、可单�
 | `Card.lua` | 符卡适配器：把 `Select` / `Build` / `Publish` / `Restart` 映射到四钩子 |
 | `CardCallbacks.lua` | 卡片定位、结构核对、回调编译、局部变量绑定与发布 |
 | `Host.lua` / `TopLevelIR.lua` / `LoadCapture.lua` / `Value.lua` | 宿主适配器与通用解析/捕获/值层（`Host` 尚未接入运行时）|
-| `View.lua` / `Tab/` / `ChangeLog.lua` | 调试窗口和日志 |
+| `UI/View.lua` / `UI/Tab/` / `ChangeLog.lua` | 调试窗口和日志 |
 | `tests/` | Lua 5.1 / LuaJIT 的 spec 与真实引擎 smoke |
 
 表中模块路径均相对于本目录的 `SpellHotReload/`（引导文件除外）。
+
+### 目录布局
+
+- 仓库根 `__init__.lua` 是 LuaSTG 插件入口。
+- `SpellHotReload/UI/View.lua` 管理 Tool 窗口与每帧 Tick；
+  `SpellHotReload/UI/Tab/` 放 Monitor、Change Log 和页签枚举。
+- `SpellHotReload/tests/` 包含离线 spec 与引擎 smoke。
+
+UI 的 require 路径为 `SpellHotReload.UI.View` 与
+`SpellHotReload.UI.Tab.<模块名>`；旧 `SpellHotReload.View` /
+`SpellHotReload.Tab.*` 不再提供入口。更新后需要重启游戏，让新路径重新加载。
 
 ## 验证
 

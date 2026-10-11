@@ -45,7 +45,7 @@ end)
     -- The production DoFile hook must run the file and capture its source.
     lstg.DoFile(output_root .. "/" .. file_name)
 
-    local live = require("SpellHotReload.View").plugin
+    local live = require("SpellHotReload.UI.View").plugin
     assert(live, "the plugin singleton is not initialized")
     local registry = live:GetRegistry()
     local original = assert(registry:GetSource(file_name), "the load hook did not capture the source")

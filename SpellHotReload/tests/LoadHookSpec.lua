@@ -45,7 +45,7 @@ function M.run()
     local old_new, old_root = Watcher.New, Plugin.ResolveRoot
     local old_binding, old_replay = Binding.CaptureCurrent, Binding.IsReplay
     local old_scan, old_classes, old_plan = Scanner.Scan, Scanner.ClassKeys, Card.Plan
-    local old_debug, old_view = package.loaded["lib.Ldebug"], package.loaded["SpellHotReload.View"]
+    local old_debug, old_view = package.loaded["lib.Ldebug"], package.loaded["SpellHotReload.UI.View"]
     local supported = type(debug.upvaluejoin) == "function"
 
     local ok, failure = pcall(function()
@@ -283,7 +283,7 @@ function M.run()
         boot.plugin = {RegisterEvent=function(group, _, _, fn) events[group]=fn end}
         lstg = boot
         package.loaded["lib.Ldebug"] = {addView=function() view_adds=view_adds+1 end}
-        package.loaded["SpellHotReload.View"] = {initialize=function(_, instance) boot_plugin=instance end}
+        package.loaded["SpellHotReload.UI.View"] = {initialize=function(_, instance) boot_plugin=instance end}
         Plugin.ResolveRoot = function() return "virtual/mod" end
         Watcher.New = function()
             watcher_creates=watcher_creates+1
@@ -319,7 +319,7 @@ function M.run()
     Watcher.New, Plugin.ResolveRoot = old_new, old_root
     Binding.CaptureCurrent, Binding.IsReplay = old_binding, old_replay
     Scanner.Scan, Scanner.ClassKeys, Card.Plan = old_scan, old_classes, old_plan
-    package.loaded["lib.Ldebug"], package.loaded["SpellHotReload.View"] = old_debug, old_view
+    package.loaded["lib.Ldebug"], package.loaded["SpellHotReload.UI.View"] = old_debug, old_view
     if not ok then check(false, "uncaught: " .. tostring(failure)) end
     for _, label in ipairs(failures) do print("[LoadHookSpec] FAIL " .. label) end
     return {passed=passed,failed=failed,failures=failures}

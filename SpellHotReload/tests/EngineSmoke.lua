@@ -60,7 +60,7 @@ table.insert(_sc_table, {"__SpellHotReloadSmoke:Normal", "Inline Reload Smoke", 
     write_version(1)
     -- The production DoFile hook must capture both functions and the loaded source.
     lstg.DoFile(output_root .. "/" .. file_name)
-    local live = require("SpellHotReload.View").plugin
+    local live = require("SpellHotReload.UI.View").plugin
     assert(live and live:GetRegistry():GetSource(file_name), "production load hook did not capture source")
     local Plugin = require("SpellHotReload.Plugin")
     local Watcher = require("SpellHotReload.Watcher")

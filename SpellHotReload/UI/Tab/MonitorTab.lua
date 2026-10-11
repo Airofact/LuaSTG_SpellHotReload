@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------------
---- SpellHotReload.Tab.MonitorTab
+--- SpellHotReload.UI.Tab.MonitorTab
 ---
 --- Primary tab: watcher/root/sandbox status, the current card context (normal
 --- Spell Practice or SC Debug), candidate snapshots, and the Apply / Retry /
@@ -87,7 +87,7 @@ local function describe_inspection(ImGui, model, id)
     end
 end
 
----@param view SpellHotReload.View
+---@param view SpellHotReload.UI.View
 function MonitorTab.layout(view)
     if not imgui_exist then return end
     local ImGui = imgui.ImGui
