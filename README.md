@@ -6,7 +6,8 @@ LuaSTG Editor Sharp 的 **Spell Practice（符卡练习）热重载** 调试插�
 
 编辑器重新生成 `*_Boss.lua` 后，插件等待两次读取字节一致，再显示候选。
 点击 **Apply & Restart Current**，插件按 Boss 类名、加载时的实时槽位和捕获到的
-符卡名定位当前卡，编译它的回调，保留运行时已捕获的局部变量，发布后重开符卡练习。
+符卡名定位当前卡，按实际已发布版本选择回调与依赖函数的变化，保留原共享局部状态，
+发布后重开符卡练习。
 新练习创建新的 Boss 和任务；旧 Boss、旧 coroutine 不做原位迁移。
 从 SC Debugger 进入时 Apply 会请求普通符卡练习重启；请求返回不等于异步切关已完成。
 
@@ -59,7 +60,7 @@ v0.21.111 / LuaJIT 2.1.1744887079。Lua 5.1 可运行独立 spec，不能据此
 资源、外部模块、普通状态初始化及名称/构造元数据不热更；不会因文件级 Apply
 而整份接受未支持的改动；这些改动仍保留候选。暂不提供自动 Apply。
 
-本批只放宽可隔离的卡表布局：顶层 local 声明集合、顺序和种类仍固定；
+文件级 Apply 只放宽可隔离的卡表布局：顶层 local 声明集合、顺序和种类仍固定；
 未知顶层调用、全局/字段写入或类实现的变更无法界定影响时整文件拒绝，显示字节位置。
 仅字面量标量（含第六参数 `{n,n,n}` 掉落元组）的生成卡构造、精确列表接线及
 字面量 `_sc_table` 插入可以保留为结构 pending，不执行参数或注册。
@@ -69,7 +70,7 @@ v0.21.111 / LuaJIT 2.1.1744887079。Lua 5.1 可运行独立 spec，不能据此
 这不是通用 Host/Value 热更；任意中间插入/重排、新类创建或非字面量构造仍不保证可隔离。
 文件级门禁与完整剩余核对由 `SpellHotReload/Apply/FileApply.lua` 负责；Card 仅提供
 卡接线/绑定影响的证据和已证明的定义语句覆盖，不比较无关语句、不决定整文件完成。
-这是一项具体职责拆分，不新增 Host/Value 适配器或跨载体事务；提交、版本与 Retry 不变。
+Host/Value 尚未接入生产 Apply，文件级发布仍限定在 Card 事务内。
 独立的全局 `Include 'path'` / `Include('path')`（含长字符串、尾随分号）不参与
 符卡热重载：增删或改路径不阻断 Apply，也不单独保留候选；不会执行 Include，
 不会加载所指文件，也不记为已发布。动态参数、别名、同名 local 遮蔽或控制块内调用
@@ -87,8 +88,8 @@ Result 和候选行显示上次核对的剩余种类、字节位置与原因，�
 
 SC Debug / Test 产物可参与卡定位，候选末尾的字面量 Include 按上述规则排除，
 调试启动与注册不会再次执行。Current 通过 `_sc_table["EXT_POS"]` 请求普通练习。
-SC Debug 切回全量导出的真实现场已有黑屏报告，具体切关原因尚未证实；
-本规则不代表该路径已修复或通过真实游戏验收。
+该切关路径曾有黑屏报告；后续用户实测多轮切关正常，文件 Apply 成功但有卡顿。
+这些反馈不代替当前版本的完整首载、状态保持、故障与 Retry 集成验收。
 
 插件需在 mod 加载之前安装捕获 hook。watcher 在 `afterTHlib` 建立：此时
 `setting.mod` 和 `mod/<mod>/` 搜索路径已经确定，baseline 记录的就是 mod
@@ -123,11 +124,13 @@ SC Debug 切回全量导出的真实现场已有黑屏报告，具体切关原�
   `_tmp_sc.frame = function(self) ... end` 两种声明。
 - 回调内的任务、循环、匿名函数和调用参数均随回调一起更新。
 - 删除一个可选回调时恢复 `boss.card._default_card` 中的默认实现。
-- 回调直接引用的、加载时已捕获的顶层 `local function` 也会重新编译。
-  原有共享函数引用继续生效：多个难度共用同一函数时，函数体更新仍可能同时
-  影响这些难度；回调本身的替换只作用于当前卡。
-- LuaJIT 下保留原有 upvalue 单元，包括回调之间共享的局部状态。
-  Lua 5.1 的独立测试使用值注入回退。
+- 按所选卡回调的真实捕获关系递归选择必要的顶层 `local function` 变化；
+  未变化定义沿用其已发布依赖，别名和普通状态单元终止依赖遍历。
+  多个难度共用 helper 时，共享单元更新可能影响其它消费者，但不算它们的
+  回调定义已经发布；未选择的定义变化仍保留 pending。
+- 生产发布要求 `debug.upvaluejoin`，保留原共享 upvalue 单元。
+  缺少该能力时可正常加载文件，但禁用新版热重载；Lua 5.1 离线测试中的
+  值注入兼容路径或能力替身不证明生产共享单元发布可用。
 
 例如以下两种 init 都支持：
 
@@ -150,11 +153,11 @@ end
 - 卡片定位以加载时的生成源码为基准，计数包含对话、移动和非符卡阶段，
   并以 live 索引（`_sc_table` 记录的那个序号）为准，不是文本里的注册次数。
 - 形状一致时严格要求列表长度、元素种类、构造参数和 perform 标记逐槽相同，
-  避免序号错位。形状变化时只重定位当前卡，且要求除当前槽外逐槽构造参数一致：
+  避免序号错位。Current 在形状变化时只重定位当前卡，并核对其它槽的对应证据：
   具名卡按唯一名字跟随，未命名的非符卡阶段按头部或尾部索引对齐。捕获名在候选
   中消失或出现多次、未命名槽位两侧都对齐或都不对齐、以及移动/对话槽位本身，
-  都拒绝应用并提示重启游戏。血量、时限、弹幕参数等改动随回调重编译生效，
-  但不要借此增删其它卡片或重排整张表。
+  都拒绝应用并提示重启游戏。回调体内的弹幕逻辑和调用参数可更新；
+  卡构造参数（包括血量、时限）及名称元数据不随回调发布。
 - Current 只定位当前卡；文件 Apply 对各已捕获卡分别证明对应，但不会修复
   其它槽位的新增、删除或改名。无法证明的部分保留，安全集合一次提交。
 - 生成源码中途重建列表时，重建之前登记进 `_sc_table`、重建后不再位于该序号上的
@@ -163,8 +166,8 @@ end
 - 文件顶层初始化代码不重新执行。已有局部变量使用运行时的值；
   新引用了未捕获的局部变量时拒绝应用，需重启游戏。修改局部变量的初始化
   表达式也需要重启。
-- 只重编译当前卡回调及其直接引用的具名函数；不会递归更新全部函数依赖，
-  也不会重载 `require` 模块或资源。
+- Current 只发布当前卡变化及其必要函数依赖；文件 Apply 合并安全根的变化。
+  规划可能编译更多定义用于分析，分析结果不等于发布；不重载 `require` 模块或资源。
 - 不执行整个候选文件，不重建 `_editor_class`、`_sc_table` 或 `all_class`。
   重启练习仍使用 `_sc_table["EXT_POS"]` 传递当前卡。
 - 编译、结构检查、局部变量解析失败时不发布改动。发布成功但练习重启失败时，
@@ -172,46 +175,44 @@ end
 
 ## 架构
 
-一次 Apply 分五段，前四段都不碰活体：
+生产入口和发布流程如下；首载发生在普通 mod 加载时，Apply 不重跑顶层：
 
-1. **加载捕获**（`__init__.lua` → `GeneratedBossLoader`）：`afterTHlib` 时拦截
-   `lstg.DoFile`，把 `*_Boss.lua` 的顶层具名函数与原始源码写进 `UpvalueRegistry`。
-   baseline 记录的就是 mod 即将执行的字节，热重载不重跑文件顶层。
-2. **候选**（`Watcher` / `SnapshotStore`）：两次读取字节一致才升级为 stable 候选；
-   Dismiss 记住被拒绝的那一份字节，drift 扫描与 Rescan 都不会复活它。
-3. **路由与复查**（`Plugin`）：挑出定义当前 class 的候选文件，重读磁盘字节与候选
-   快照比对，再重新捕获一次活体绑定，确认 class / card / slot 都没变。
-4. **规划**（`Card.Plan` → `Driver`）：`Card.Request` 把捕获到的绑定归一化成请求，
-   适配器按四钩子契约先做结构身份匹配（`Locate`，即 `CardCallbacks.Select`），
-   再在新闭包上重编译回调与具名局部函数（`Inject`，即 `CardCallbacks.Build`）。
-   生成接线从不执行，回调体也不运行。
-5. **提交与重启**（`Driver:Commit`）：唯一的活体变更点是 `CardCallbacks.Publish`；
-   提交成功后按 `Card.Restartable` 重启符卡练习（`PracticeBinding.Restart`）。
-   重启失败时定义已经就位，run 被保留，**Retry Restart** 走 `Driver:Restart(run)`
-   只重试切关，不重新编译。
+1. **首载捕获**：`__init__.lua` 在 `afterTHlib` 安装 `LoadHook`，经
+   `AnchorLoad` 从一次正常文件执行取得首载源码、局部变量共享单元的锚点及
+   可重载判定。`Plugin:AdoptLoad` 留存首载记录并捕获函数/符卡版本。
+   同文件再次执行时保留首载记录并禁用热重载，不从新活体状态补建首载历史。
+2. **稳定候选**：`Watcher` / `SnapshotStore` 双读字节一致后标为 stable；
+   `Plugin` 路由候选、复读磁盘并取得新鲜活体绑定。首载拒绝不能回退旧路径。
+3. **发现与准备**：`Driver:Discover` 经 `FileMatch` 与 Card 的 `Match` 发现
+   单元；`Card.PrepareVersioned` / `PrepareFileVersioned` 经
+   `Driver:PrepareDiscovery` 调用 `Locate` / `Inject`，证明卡对应关系并按
+   实际已发布版本选择回调和必要 helper。`CardVersions` / `FunctionVersions`
+   负责版本与依赖；`FileApply` 负责文件门禁。候选顶层与回调体不执行。
+4. **原子发布**：`Driver:CommitDiscovery` 将单个准备好的 Card 聚合计划
+   交给调用方绑定的一次性事务入口，经 Card 的 `Commit` 调用 `CardCommit`。
+   事务复读并执行 `CommitCheck`，消耗 `CommitPhase` 令牌后完成闭包接线、
+   共享单元写入和回调发布，最后安装版本快照；可恢复失败按日志逆序回滚，
+   恢复失败则禁用该会话的后续发布。这不是跨适配器事务。
+5. **完成核对与重启**：`Plugin` 以真实提交 receipt 经 `FileApply` 核对整文件
+   剩余，决定保留或移除候选。文件 Apply 到此结束；Current 使用 Card 冻结的
+   目标请求 `PracticeBinding.Restart`。失败后 Retry 仅消费冻结目标，重查身份
+   并重试切关，不重读候选、编译或提交；重启与定义完成分别记账。
 
-适配器契约（`Pipeline/Adapter.lua` / `Pipeline/Driver.lua` 文件头有完整版）：
+公共发现契约位于 `Pipeline/Adapter.lua` / `Pipeline/Driver.lua`：
+`Match` 发现单元，`Locate` 匹配身份，`Inject` 准备新值，`Commit` 发布，
+可选的 `Restart` 请求重启。具体适配器独立放在 `Adapters/`；生产 Card 的
+`Commit` 只能使用上述原子事务入口，不自行调用旧 `CardCallbacks.Publish`。
+Host/Value 仍是保留的适配器实现，未接入生产 Apply。
 
-```
-Locate(node, env)          -> handle|nil, reason   结构身份匹配，不碰活体
-Inject(handle, node, env)  -> plan|nil, reason     只造新值（新闭包/新表达式）
-Commit(handle, plan, env)  -> ok, reason           唯一活体变更点，帧边界
-Restart(handle, plan, env) -> ok, reason           可选、可失败、可单独重试
-```
+提交作用域由 Monitor 的 layout 按钮调用 `ApplyFromUI`、`ApplyFileFromUI`
+或 `RetryRestartFromUI` 打开。`View:update` → `Plugin:Tick` 只驱动激活和监视，
+不打开提交作用域。令牌负责主线程、生命周期与重入门禁；实际调用时机仍由
+可信 UI 入口保证，令牌本身不证明引擎相位。
 
-四钩子之外还有四件事由 `Plugin` 承担，不能跟着适配器一起搬走：
-
-- **候选文件路由**：一个 driver run 只规划一个文件，没有「哪份候选管这张卡」的
-  概念，所以「挑出定义当前 class 的候选」留在 Plugin。
-- **活体绑定复查**：Driver 的变更检测比对语句文本，撞不上「活体绑定变了」；
-  解析与提交之间这张卡被换掉，必须在这里拦下。
-- **提交后 `registry:SetAll`**：把新编译的具名函数写回 `UpvalueRegistry`，供下一次
-  热重载解析同文件其它闭包。漏掉不会立刻报错，下一次重载才会绑到旧闭包。
-- **重启重试状态**：已提交的 run 由 Plugin 持有，失败的重启交给 `Driver:Restart`。
-
-提交只允许从帧边界的 UI 阶段进入，由 `View:update` → `Plugin:Tick` 天然满足。
-同一个驱动已经为 `stage.group.DefStageFunc` 准备了宿主适配器（`Adapters/Host.lua`），
-但它尚未接入 Apply 事务。
+`GeneratedBossLoader`、`Legacy/Functions` 和无首载 entry 的旧 Apply 分支
+保留给兼容调用与历史回归。旧 `Card.Plan` → `Driver:Commit` / `Driver:Restart`
+以及提交后更新 `UpvalueRegistry` 的说明仅适用于这条旧路径。
+生产入口使用首载锚点和实际发布版本，不靠旧 map 或整文件源码推进版本。
 
 ## 窗口
 
@@ -226,16 +227,22 @@ Restart(handle, plan, env) -> ok, reason           可选、可失败、可单�
 | `__init__.lua` | afterTHlib 安装捕获 hook 并初始化 watcher（baseline + start）|
 | `Runtime/Plugin.lua` | 生命周期、候选路由、绑定复查、提交与重启事务 |
 | `Runtime/Watcher.lua` / `Runtime/SnapshotStore.lua` | 去抖、双读验证、显式 stable 状态、字节快照 |
-| `Load/UpvalueRegistry.lua` | 加载时捕获的顶层函数和真实加载源码 |
-| `GeneratedBossLoader.lua` | 加载捕获、词法器、具名函数片段编译 |
+| `Load/AnchorLoad.lua` / `Load/LoadHook.lua` | 一次正常加载的锚点捕获与 hook |
+| `Load/UpvalueRegistry.lua` | 首载值与源码的兼容视图，不是生产版本账本 |
+| `GeneratedBossLoader.lua` / `Legacy/Functions.lua` | 旧加载/值注入兼容入口与函数片段实现 |
 | `Adapters/Card/GeneratedBossScanner.lua` | 产物格式检查、UI 类名提示 |
 | `Adapters/Card/PracticeBinding.lua` | 当前卡解析、练习重启及旧函数补丁工具 |
-| `Pipeline/Adapter.lua` / `Pipeline/NodeRegistry.lua` / `Pipeline/Driver.lua` | 四钩子契约、载体路由、规划与提交/重启驱动 |
-| `Adapters/Card/Card.lua` | 符卡适配器：把 `Select` / `Build` / `Publish` / `Restart` 映射到四钩子 |
-| `Adapters/Card/CardCallbacks.lua` | 卡片定位、结构核对、回调编译、局部变量绑定与发布 |
-| `Adapters/Host.lua` / `Source/TopLevelIR.lua` / `Load/LoadCapture.lua` / `Adapters/Value.lua` | 宿主适配器与通用解析/捕获/值层（`Host` 尚未接入运行时）|
+| `Pipeline/Adapter.lua` / `Pipeline/NodeRegistry.lua` / `Pipeline/Driver.lua` | 公共契约、发现路由与准备/事务调度；保留旧驱动接口 |
+| `Adapters/Card/Card.lua` | 符卡适配器：身份/绑定证据、版本准备、事务委托和冻结重启目标 |
+| `Adapters/Card/CardTarget.lua` / `Adapters/Card/CardVersions.lua` | 当前/文件根对应证明与实际发布版本选择 |
+| `Source/FunctionVersions.lua` | 局部函数版本比较与必要依赖选择 |
+| `Apply/FileApply.lua` | 文件门禁、Include 排除与完整剩余核对 |
+| `Apply/CardCommit.lua` / `Apply/CommitCheck.lua` / `Apply/CommitPhase.lua` | 原子提交、最终只读校验与提交作用域 |
+| `Adapters/Card/CardCallbacks.lua` | 卡结构读取证据；保留旧回调编译/绑定/发布接口 |
+| `Source/TopLevelIR.lua` / `Load/LoadCapture.lua` | 顶层分析与捕获工具 |
+| `Adapters/Host.lua` / `Adapters/Value.lua` | 保留的宿主/值适配器，均未接入生产 Apply |
 | `UI/View.lua` / `UI/Tab/` / `Runtime/ChangeLog.lua` | 调试窗口和日志 |
-| `tests/` | Lua 5.1 / LuaJIT 的 spec 与真实引擎 smoke |
+| `tests/` | 离线 spec 与待适配新版入口的历史引擎 smoke |
 
 表中模块路径均相对于本目录的 `SpellHotReload/`（引导文件除外）。
 
@@ -297,40 +304,47 @@ lua plugin/SpellHotReload/SpellHotReload/tests/Run.lua
 luajit plugin/SpellHotReload/SpellHotReload/tests/Run.lua
 ```
 
-涵盖嵌套任务、所有回调、nil/false 局部变量、共享 upvalue、连续更新、
-原有具名函数方式、结构变化拒绝、稳定候选、过期字节、replay 和重启重试，
-以及重建类表（live 索引）、按名字跟随 SC Debug 包 → 全量包的槽位偏移、原地
-改名（重启后交出新名字）、未命名槽位按正/逆索引跟随（含两侧都对齐时的歧义
-拒绝），和 SC Debugger 到普通符卡练习的交接。
+`Run.lua` 仅调用 Sandbox、Inline、TopLevelIR、LoadCapture、Driver、Card、Host、
+Watcher 八个 spec，包含兼容与旧管线回归；不是所有测试的总入口，也不证明
+新版生产 Apply 或真实 SC Debug 切关已经验收。
 
-同一个入口还会跑通用层 spec：Sandbox 83、TopLevelIR 58、LoadCapture 46、
-Driver 75、Card 63、Host 93、Watcher 14 全部 0 failed（InlineSpec 在 LuaJIT 下
-88、Lua 5.1 下 86）。Plugin 的 Apply 走 `Card.Plan` + `Driver:Commit`，返回串
-与调用约定由 InlineSpec 覆盖，真实引擎行为由下面的 smoke 覆盖。
+新版定向测试均位于 `SpellHotReload/tests/`，按职责查找：
 
-真实引擎 smoke（会自动进入练习并退出，启动前关闭已有游戏实例）：
+| 范围 | spec 文件 |
+| --- | --- |
+| 首载与释放 | `AnchorLoadSpec.lua`、`LoadHookSpec.lua`、`CardSeedVersionsSpec.lua`、`SessionReleaseSpec.lua` |
+| 发现与准备调度 | `AdapterDiscoverySpec.lua`、`DriverDiscoverySpec.lua`、`DriverPrepareSpec.lua`、`DriverCommitSpec.lua` |
+| 身份、版本与依赖 | `CardRemappingSpec.lua`、`FileCardTargetSpec.lua`、`CardVersionsSpec.lua`、`FunctionVersionsSpec.lua` |
+| 提交与 UI 门禁 | `CommitCheckSpec.lua`、`CommitPhaseSpec.lua`、`CardCommitSpec.lua`、`CardCommitPolicySpec.lua`、`UICommitScopeSpec.lua` |
+| Apply 与候选剩余 | `VersionedApplySpec.lua`、`FileApplySpec.lua`、`FileApplyPolicySpec.lua`、`CandidateCompletionSpec.lua`、`MonitorVersionsSpec.lua` |
 
-```powershell
-.\LuaSTGSub.exe "start_game=true; setting.mod='DiMS'; setting.windowed=true; dofile('plugin/SpellHotReload/SpellHotReload/tests/EngineSmoke.lua')"
-```
-
-该测试依赖 DiMS 的 `DIMS_4B_Boss:Normal`，只在
-`userdata/spell_hot_reload_smoke/` 写入测试生成文件和 `result.txt`。
-成功标记为 `PASS`；实际覆盖生产加载 hook、文件监视、两次应用、新 Boss /
-任务、局部状态保留，以及 class/符卡注册数量不变。
-符卡 Apply 迁入 Driver 后于 2026-09-30 复跑通过，同时验证 Dismiss 在
-周期扫描与 Rescan 后仍保持有效。
-
-SC Debug 入口的 smoke 需要生成产物末端带 `Include 'THlib\UI\scdebugger.lua'`
-（用 SC Debug 入口重新打包；当前 `game/mod/DiMS/` 产物不含该 Include，
-直接跑会捕不到卡）：
+例如在同一 `game/` 工作目录下，分别用独立进程运行以下集成 fixture：
 
 ```powershell
-.\LuaSTGSub.exe "start_game=true; setting.mod='DiMS'; setting.windowed=true; dofile('plugin/SpellHotReload/SpellHotReload/tests/EngineSmokeScDebug.lua')"
+foreach ($runtime in 'lua', 'luajit') {
+    foreach ($spec in 'VersionedApplySpec', 'FileApplySpec', 'CandidateCompletionSpec', 'UICommitScopeSpec') {
+        & $runtime -e "package.path='plugin/SpellHotReload/?.lua;'..package.path;local r=require('SpellHotReload.tests.$spec').run();assert(r.failed==0)"
+        if ($LASTEXITCODE -ne 0) { throw "$runtime / $spec failed" }
+    }
+}
 ```
 
-它不修改 mod 文件，只把加载 hook 捕获到的源码字节当作候选交给完整的 Apply
-事务，所以生成接线不会被再次执行。覆盖 debug 侧卡片捕获、`scdebugger` 的 stage
-group 只注册一次、Apply 后离开 `SC Debugger` 并以普通符卡练习重启当前卡、
-`_sc_table["EXT_POS"]` 与捕获到的 live 序号一致、卡片对象身份保留。
-结果写入同一个 `userdata/spell_hot_reload_smoke/result.txt`（互相覆盖）。
+这些 spec 使用合成首载和模拟宿主，不启动游戏。LuaJIT 才执行真实共享单元提交；
+Lua 5.1 的缺能力拒绝或能力替身验证只证明各用例注明的范围。
+目录迁移后的离线回归通过，不代替当前版本的真实按钮、异步切关、完整首载
+初始化计数、标量状态保持及准备/提交故障与 Retry 验收。
+
+历史引擎 smoke 保留原路径，尚未适配新版生产入口：
+
+- `EngineSmoke.lua` 依赖 DiMS 的 `DIMS_4B_Boss:Normal`，创建
+  `userdata/spell_hot_reload_smoke/InlineSmoke_Boss.lua` 并写 `result.txt`。
+- `EngineSmokeScDebug.lua` 需要真实生成产物启动 SC Debugger（末端包含
+  `Include 'THlib\UI\scdebugger.lua'`），以首载字节构造候选，只写同目录 `result.txt`。
+- 上述两者新建 Plugin 后只复制旧 registry，并在 view:update 中直接调用无令牌的
+  `Apply()`；未采用生产 `AdoptLoad` 会话与可信 layout 提交入口。不能将它们的
+  历史 PASS 或 require 路径同步视为新版生产验证，运行前需适配并核对输入。
+- `EngineSmokeHost.lua` 使用独立旧 Driver 的 `Plan` / `Commit` 测试宿主注册，
+  不证明 Host 已接入生产 Apply；它也在上述目录生成输入并覆盖 `result.txt`。
+
+这些脚本会改变运行中的测试场景并自动退出；各结果文件互相覆盖。
+生产实机验证须另核对启动输入、输出及现有日志/存档保护，不能直接沿用旧脚本。
