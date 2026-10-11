@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------------
---- SpellHotReload.Driver
+--- SpellHotReload.Pipeline.Driver
 ---
 --- Walks a file's top-level carrier nodes and turns them into commits:
 ---
@@ -19,9 +19,9 @@
 --------------------------------------------------------------------------------
 
 local LoadCapture = require("SpellHotReload.Load.LoadCapture")
-local NodeRegistry = require("SpellHotReload.NodeRegistry")
-local FileMatch = require("SpellHotReload.FileMatch")
-local UnitIndex = require("SpellHotReload.UnitIndex")
+local NodeRegistry = require("SpellHotReload.Pipeline.NodeRegistry")
+local FileMatch = require("SpellHotReload.Pipeline.FileMatch")
+local UnitIndex = require("SpellHotReload.Pipeline.UnitIndex")
 
 local Driver = {}
 Driver.__index = Driver
@@ -199,7 +199,7 @@ function Driver:PrepareDiscovery(discovery, keys, contexts)
                 type(key) == "string" and key or nil)
         end
     end
-    local Adapter = require("SpellHotReload.Adapter")
+    local Adapter = require("SpellHotReload.Pipeline.Adapter")
     for _, entry in ipairs(selected.entries) do
         local unit, base = entry.unit, entry.context
         local context = base
@@ -262,7 +262,7 @@ function Driver:CommitDiscovery(prepared, transaction)
     if not selected or prepared.file~=selected.file or prepared.content~=selected.content
         or selected.entries[1]~=entry or not plain(entry) or entry.unit~=unit
         or entry.adapter~=record.adapter
-        or not require("SpellHotReload.Adapter").ValidateDiscovery(record.adapter)
+        or not require("SpellHotReload.Pipeline.Adapter").ValidateDiscovery(record.adapter)
         or not plain(entry.context)
         or not plain(entry.context.adapter) or not plain(context) or not plain(context.adapter)
         or context.common~=entry.context.common or context.common~=prepared.discovery.snapshot.common

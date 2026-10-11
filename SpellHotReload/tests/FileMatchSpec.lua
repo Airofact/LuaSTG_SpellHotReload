@@ -1,5 +1,5 @@
-local FileMatch = require("SpellHotReload.FileMatch")
-local Registry = require("SpellHotReload.NodeRegistry")
+local FileMatch = require("SpellHotReload.Pipeline.FileMatch")
+local Registry = require("SpellHotReload.Pipeline.NodeRegistry")
 local Lexer = require("SpellHotReload.Source.Lexer")
 local IR = require("SpellHotReload.Source.TopLevelIR")
 local M = {}

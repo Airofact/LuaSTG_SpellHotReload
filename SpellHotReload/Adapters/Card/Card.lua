@@ -591,7 +591,7 @@ end
 function Card.PrepareVersioned(capture, discovery, initial, proof, refresh)
     local unit, context = Card.RuntimeContext(capture, discovery, initial, proof, refresh)
     if not unit then return nil, "locate: " .. message(context) end
-    local Driver = require("SpellHotReload.Driver")
+    local Driver = require("SpellHotReload.Pipeline.Driver")
     local prepared, err, phase = Driver.PrepareDiscovery(discovery.owner, discovery,
         {unit.key}, {[unit.key]=context})
     if not prepared then

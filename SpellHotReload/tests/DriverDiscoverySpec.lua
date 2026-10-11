@@ -1,7 +1,7 @@
 -- Full-file discovery/selection via the existing Driver; no engine required.
-local Driver = require("SpellHotReload.Driver")
-local Registry = require("SpellHotReload.NodeRegistry")
-local Index = require("SpellHotReload.UnitIndex")
+local Driver = require("SpellHotReload.Pipeline.Driver")
+local Registry = require("SpellHotReload.Pipeline.NodeRegistry")
+local Index = require("SpellHotReload.Pipeline.UnitIndex")
 local IR = require("SpellHotReload.Source.TopLevelIR")
 local Card = require("SpellHotReload.Adapters.Card.Card")
 local Callbacks = require("SpellHotReload.Adapters.Card.CardCallbacks")

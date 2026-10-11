@@ -5,7 +5,7 @@ local M = {}
 local serial = 0
 function M.run()
     local Card = require("SpellHotReload.Adapters.Card.Card")
-    local Driver = require("SpellHotReload.Driver")
+    local Driver = require("SpellHotReload.Pipeline.Driver")
     local Load = require("SpellHotReload.Load.AnchorLoad")
     local Versions = require("SpellHotReload.Load.LoadVersions")
     local Cards = require("SpellHotReload.Adapters.Card.CardVersions")
@@ -38,7 +38,7 @@ function M.run()
     local publish,restart=Callbacks.Publish,Binding.Restart
     local resolve,compare=Target.Resolve,Cards.CompareLocated
     local modules={}
-    local module_keys={"SpellHotReload.Plugin","SpellHotReload.Watcher"}
+    local module_keys={"SpellHotReload.Runtime.Plugin","SpellHotReload.Runtime.Watcher"}
     for _,key in ipairs(module_keys) do modules[key]=package.loaded[key] end
     local mutations,traps=0,0
     local hostile=setmetatable({},{
@@ -248,7 +248,7 @@ function M.run()
         eq(prepared.location.discovery,f.discovery.snapshot,"prepared discovery compatible")
         -- Actual Plugin preparation call site, real downstream services. No commit or UI.
         package.loaded[module_keys[1]],package.loaded[module_keys[2]]=nil,{}
-        local Plugin=require("SpellHotReload.Plugin")
+        local Plugin=require("SpellHotReload.Runtime.Plugin")
         local p=setmetatable({_loads={[f.entry.file]=f.entry},_session_id=f.base.session_id,
             _commit={Poisoned=function() return false end}},Plugin)
         p._FreshVersioned=function(self,file,candidate,capture)

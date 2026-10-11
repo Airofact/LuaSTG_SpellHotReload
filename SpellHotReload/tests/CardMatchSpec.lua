@@ -19,12 +19,12 @@
 --- runtime mod is absent (e.g. the workspace-root pre-check runner).
 --------------------------------------------------------------------------------
 
-local Adapter = require("SpellHotReload.Adapter")
-local NodeRegistry = require("SpellHotReload.NodeRegistry")
-local FileMatch = require("SpellHotReload.FileMatch")
+local Adapter = require("SpellHotReload.Pipeline.Adapter")
+local NodeRegistry = require("SpellHotReload.Pipeline.NodeRegistry")
+local FileMatch = require("SpellHotReload.Pipeline.FileMatch")
 local Card = require("SpellHotReload.Adapters.Card.Card")
 local CardCallbacks = require("SpellHotReload.Adapters.Card.CardCallbacks")
-local Driver = require("SpellHotReload.Driver")
+local Driver = require("SpellHotReload.Pipeline.Driver")
 local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
 local Loader = require("SpellHotReload.GeneratedBossLoader")
 local IR = require("SpellHotReload.Source.TopLevelIR")

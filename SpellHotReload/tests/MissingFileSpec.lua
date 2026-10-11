@@ -1,6 +1,6 @@
 -- Confirm Missing without confusing editor delete+rewrite or unreadable files
 -- with session end. All executed source is synthetic; no game source executes.
-local Store = require("SpellHotReload.SnapshotStore")
+local Store = require("SpellHotReload.Runtime.SnapshotStore")
 local Hook = require("SpellHotReload.Load.LoadHook")
 local M = {}
 
@@ -19,7 +19,7 @@ function M.run()
     local saved_globals, saved_modules = {}, {}
     local globals = {"lstg", "setting", "_missing_exports", "_missing_runs"}
     local modules = {"lstg.FileSystemWatcher", "lstg.FileSystemWatcher.FileAction",
-        "SpellHotReload.Watcher", "SpellHotReload.Plugin"}
+        "SpellHotReload.Runtime.Watcher", "SpellHotReload.Runtime.Plugin"}
     for _, key in ipairs(globals) do saved_globals[key] = rawget(_G, key) end
     for _, key in ipairs(modules) do saved_modules[key] = package.loaded[key] end
     local restore = {}
@@ -36,10 +36,10 @@ function M.run()
                 return true
             end,close=function() closes = closes + 1 end}
         end}
-        package.loaded["SpellHotReload.Watcher"] = nil
-        package.loaded["SpellHotReload.Plugin"] = nil
-        local Watcher = require("SpellHotReload.Watcher")
-        local Plugin = require("SpellHotReload.Plugin")
+        package.loaded["SpellHotReload.Runtime.Watcher"] = nil
+        package.loaded["SpellHotReload.Runtime.Plugin"] = nil
+        local Watcher = require("SpellHotReload.Runtime.Watcher")
+        local Plugin = require("SpellHotReload.Runtime.Plugin")
         lstg = {Log=function() end,FileManager={EnumFiles=function()
             if enum_error then error("enumeration unavailable") end
             local entries = {}

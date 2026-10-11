@@ -2,12 +2,12 @@
 local M={}
 function M.run()
     local keys={"lstg.FileSystemWatcher","lstg.FileSystemWatcher.FileAction",
-        "SpellHotReload.Watcher","SpellHotReload.Plugin"}
+        "SpellHotReload.Runtime.Watcher","SpellHotReload.Runtime.Plugin"}
     local saved={}
     for _,k in ipairs(keys) do saved[k]=package.loaded[k] end
     package.loaded[keys[1]]={};package.loaded[keys[2]]={}
     package.loaded[keys[3]]=nil;package.loaded[keys[4]]=nil
-    local Plugin=require("SpellHotReload.Plugin")
+    local Plugin=require("SpellHotReload.Runtime.Plugin")
     local passed,failed,failures=0,0,{}
     local function eq(a,b,label)
         if a==b then passed=passed+1 else failed=failed+1;failures[#failures+1]=label end
@@ -100,7 +100,7 @@ function M.run()
 
         local file=debug.getinfo(1,"S").source:sub(2)
         -- Read-only consumer wiring check; this does not prove actual engine timing.
-        local path=file:match("^(.*[/\\])").."../Tab/MonitorTab.lua"
+        local path=file:match("^(.*[/\\])").."../UI/Tab/MonitorTab.lua"
         local stream=assert(io.open(path,"rb"));local bytes=stream:read("*a");stream:close()
         has(bytes,"plugin:ApplyFromUI()","Monitor Apply routed")
         has(bytes,"plugin:RetryRestartFromUI()","Monitor retry routed")

@@ -22,7 +22,7 @@ local function stable(store, file, bytes, update)
 end
 
 local function store_contract()
-    local Store = require("SpellHotReload.SnapshotStore")
+    local Store = require("SpellHotReload.Runtime.SnapshotStore")
     -- Deliberate hash collision: exact bytes, never just hash, control the gate.
     local store = Store.New({ hash = function() return "collision" end })
     store:SetAccepted(FILE, BASE, "baseline")
@@ -116,20 +116,20 @@ local function store_contract()
 end
 
 local function watcher_paths()
-    local Store = require("SpellHotReload.SnapshotStore")
+    local Store = require("SpellHotReload.Runtime.SnapshotStore")
     local saved = {
         lstg = rawget(_G, "lstg"),
         fs = package.loaded["lstg.FileSystemWatcher"],
         action = package.loaded["lstg.FileSystemWatcher.FileAction"],
-        watcher = package.loaded["SpellHotReload.Watcher"],
+        watcher = package.loaded["SpellHotReload.Runtime.Watcher"],
     }
     local action = { added = 1, modified = 2, removed = 3, renamed_old_name = 4, renamed_new_name = 5 }
     package.loaded["lstg.FileSystemWatcher"] = { create = function() error("native watcher not allowed") end }
     package.loaded["lstg.FileSystemWatcher.FileAction"] = action
-    package.loaded["SpellHotReload.Watcher"] = nil
+    package.loaded["SpellHotReload.Runtime.Watcher"] = nil
     _G.lstg = { Log = function() end }
     local ok, err = pcall(function()
-        local Watcher = require("SpellHotReload.Watcher")
+        local Watcher = require("SpellHotReload.Runtime.Watcher")
         for _, path in ipairs({ "event", "drift", "rescan" }) do
             local disk = { [FILE] = EDIT, [OTHER] = BASE }
             local store, ready, queued = Store.New(), {}, {}
@@ -225,7 +225,7 @@ local function watcher_paths()
     end)
     package.loaded["lstg.FileSystemWatcher"] = saved.fs
     package.loaded["lstg.FileSystemWatcher.FileAction"] = saved.action
-    package.loaded["SpellHotReload.Watcher"] = saved.watcher
+    package.loaded["SpellHotReload.Runtime.Watcher"] = saved.watcher
     _G.lstg = saved.lstg
     if not ok then error(err, 0) end
 end

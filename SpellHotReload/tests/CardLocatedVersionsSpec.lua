@@ -4,7 +4,7 @@ local M={}
 function M.run()
     local Cards=require("SpellHotReload.Adapters.Card.CardVersions")
     local Target=require("SpellHotReload.Adapters.Card.CardTarget")
-    local Driver=require("SpellHotReload.Driver")
+    local Driver=require("SpellHotReload.Pipeline.Driver")
     local Card=require("SpellHotReload.Adapters.Card.Card")
     local Load=require("SpellHotReload.Load.AnchorLoad")
     local Capture=require("SpellHotReload.Load.LoadVersions")

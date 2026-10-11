@@ -146,10 +146,10 @@ function M.run()
         _G._other_init = old_other
 
         -- Full Plugin transaction with a disk reader and stage restart stand-in.
-        local watcher_name = "SpellHotReload.Watcher"
+        local watcher_name = "SpellHotReload.Runtime.Watcher"
         local saved_watcher = package.loaded[watcher_name]
         if not saved_watcher then package.loaded[watcher_name] = {} end
-        local Plugin = require("SpellHotReload.Plugin")
+        local Plugin = require("SpellHotReload.Runtime.Plugin")
         package.loaded[watcher_name] = saved_watcher
         local p = Plugin.New()
         p._activated, p._supported, p._sandbox_ok = true, true, true

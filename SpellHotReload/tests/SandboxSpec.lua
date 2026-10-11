@@ -40,7 +40,7 @@ end
 --------------------------------------------------------------------------------
 
 local function test_store()
-    local Store = require("SpellHotReload.SnapshotStore")
+    local Store = require("SpellHotReload.Runtime.SnapshotStore")
     local s = Store.New()
 
     local h1 = s.ContentHash("abc")
@@ -320,7 +320,7 @@ end
 --------------------------------------------------------------------------------
 
 local function test_changelog()
-    local ChangeLog = require("SpellHotReload.ChangeLog")
+    local ChangeLog = require("SpellHotReload.Runtime.ChangeLog")
     local log = ChangeLog.New()
 
     eq(log:Count(), 0, "ChangeLog starts empty")

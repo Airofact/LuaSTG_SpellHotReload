@@ -1,7 +1,7 @@
 -- One prepared aggregate, exact-input scoped writer; no general group transaction.
 local M={}
 function M.run()
-    local Driver=require("SpellHotReload.Driver")
+    local Driver=require("SpellHotReload.Pipeline.Driver")
     local Card=require("SpellHotReload.Adapters.Card.Card")
     local passed,failed,failures=0,0,{}
     local function test(v,label)

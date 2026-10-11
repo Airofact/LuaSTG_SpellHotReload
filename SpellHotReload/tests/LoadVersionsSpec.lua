@@ -8,11 +8,11 @@ function M.run()
     local Anchor = require("SpellHotReload.Load.Anchor")
     local Cards = require("SpellHotReload.Adapters.Card.CardVersions")
     local Source = require("SpellHotReload.Source.FunctionPlan")
-    local watcher_key = "SpellHotReload.Watcher"
+    local watcher_key = "SpellHotReload.Runtime.Watcher"
     local old_watcher = package.loaded[watcher_key]
-    local old_plugin = package.loaded["SpellHotReload.Plugin"]
+    local old_plugin = package.loaded["SpellHotReload.Runtime.Plugin"]
     if not old_watcher then package.loaded[watcher_key] = {} end
-    local Plugin = require("SpellHotReload.Plugin")
+    local Plugin = require("SpellHotReload.Runtime.Plugin")
     package.loaded[watcher_key] = old_watcher
     local passed, failed, failures = 0, 0, {}
     local function check(v, label)
@@ -363,7 +363,7 @@ function M.run()
     end)
     for _, engine in ipairs(engines) do Hook.Release(engine) end
     Card.SeedVersions = original_capture
-    package.loaded["SpellHotReload.Plugin"] = old_plugin
+    package.loaded["SpellHotReload.Runtime.Plugin"] = old_plugin
     debug.upvaluejoin, debug.setupvalue, _G.jit = saved_join, saved_set, saved_jit
     for _, key in ipairs(keys) do rawset(_G, key, saved[key]) end
     if not ok then check(false, "unexpected error: " .. tostring(problem)) end

@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------------
---- SpellHotReload.UnitIndex
+--- SpellHotReload.Pipeline.UnitIndex
 ---
 --- Deterministic, read-only index over one FileMatch snapshot.
 ---

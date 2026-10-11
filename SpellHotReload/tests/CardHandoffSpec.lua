@@ -4,7 +4,7 @@ local M = {}
 local serial = 0
 function M.run()
     local Card=require("SpellHotReload.Adapters.Card.Card")
-    local Driver=require("SpellHotReload.Driver")
+    local Driver=require("SpellHotReload.Pipeline.Driver")
     local Load=require("SpellHotReload.Load.AnchorLoad")
     local Versions=require("SpellHotReload.Load.LoadVersions")
     local Commit=require("SpellHotReload.Apply.CardCommit")
@@ -34,7 +34,7 @@ function M.run()
     local restart,replay,current=Binding.Restart,Binding.IsReplay,Binding.CaptureCurrent
     local commit_hook,restart_hook,publish=Card.Commit,Card.Restart,Callbacks.Publish
     local create_hook=require("SpellHotReload.Source.Compose").Create
-    local names={"SpellHotReload.Plugin","SpellHotReload.Watcher","lstg.FileSystemWatcher","lstg.FileSystemWatcher.FileAction"}
+    local names={"SpellHotReload.Runtime.Plugin","SpellHotReload.Runtime.Watcher","lstg.FileSystemWatcher","lstg.FileSystemWatcher.FileAction"}
     local modules={};for _,key in ipairs(names) do modules[key]=package.loaded[key] end
     local controllers,plugins={},{}
     local defaults={}
@@ -198,7 +198,7 @@ function M.run()
         if join then
             package.loaded[names[3]],package.loaded[names[4]]={},{}
             package.loaded[names[1]],package.loaded[names[2]]=nil,nil
-            local Plugin=require("SpellHotReload.Plugin")
+            local Plugin=require("SpellHotReload.Runtime.Plugin")
             f=fixture()
             local plugin=Plugin.New();plugins[#plugins+1]=plugin
             must(plugin:AdoptLoad(f.entry.file,f.entry))

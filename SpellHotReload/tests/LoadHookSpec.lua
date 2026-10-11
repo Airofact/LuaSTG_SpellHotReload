@@ -2,10 +2,10 @@
 local Hook = require("SpellHotReload.Load.LoadHook")
 local Capture = require("SpellHotReload.Load.AnchorLoad")
 local Loader = require("SpellHotReload.GeneratedBossLoader")
-local watcher_name = "SpellHotReload.Watcher"
+local watcher_name = "SpellHotReload.Runtime.Watcher"
 local old_watcher = package.loaded[watcher_name]
 if not old_watcher then package.loaded[watcher_name] = {} end
-local Plugin = require("SpellHotReload.Plugin")
+local Plugin = require("SpellHotReload.Runtime.Plugin")
 local Watcher = package.loaded[watcher_name]
 package.loaded[watcher_name] = old_watcher
 local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")

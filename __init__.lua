@@ -13,7 +13,7 @@
 --------------------------------------------------------------------------------
 
 local lstg_debug = require("lib.Ldebug")
-local Plugin = require("SpellHotReload.Plugin")
+local Plugin = require("SpellHotReload.Runtime.Plugin")
 local View = require("SpellHotReload.UI.View")
 local LoadHook = require("SpellHotReload.Load.LoadHook")
 

@@ -10,7 +10,7 @@ function M.run()
     local function eq(a,b,label) check(a==b,label..": "..tostring(a).." ~= "..tostring(b)) end
     local function has(s,p,label) check(type(s)=="string" and s:find(p,1,true),label..": "..tostring(s)) end
     local function must(v,e) assert(v,type(e)=="table" and e.message or e);return v end
-    local Store=require("SpellHotReload.SnapshotStore")
+    local Store=require("SpellHotReload.Runtime.SnapshotStore")
     local FILE="Complete_Boss.lua"
     local function stable(store,bytes,update)
         local c=store:BeginCandidate(FILE,update or store._next_generation,"spec")
@@ -55,14 +55,14 @@ function M.run()
     end
     local globals={"lstg","boss","_editor_class","_tmp_sc","_sc_table","ext","IsValid","jit","Include"}
     local saved={};for _,name in ipairs(globals) do saved[name]=rawget(_G,name) end
-    local modules={"lstg.FileSystemWatcher","lstg.FileSystemWatcher.FileAction","SpellHotReload.Watcher","SpellHotReload.Plugin"}
+    local modules={"lstg.FileSystemWatcher","lstg.FileSystemWatcher.FileAction","SpellHotReload.Runtime.Watcher","SpellHotReload.Runtime.Plugin"}
     local loaded={};for _,name in ipairs(modules) do loaded[name]=package.loaded[name] end
     local action={added=1,modified=2,removed=3,renamed_old_name=4,renamed_new_name=5}
     package.loaded[modules[1]]={create=function() error("native watcher forbidden") end}
     package.loaded[modules[2]]=action
     package.loaded[modules[3]],package.loaded[modules[4]]=nil,nil
-    local Plugin=require("SpellHotReload.Plugin")
-    local Watcher=require("SpellHotReload.Watcher")
+    local Plugin=require("SpellHotReload.Runtime.Plugin")
+    local Watcher=require("SpellHotReload.Runtime.Watcher")
     local Load=require("SpellHotReload.Load.AnchorLoad")
     local Anchor=require("SpellHotReload.Load.Anchor")
     local Binding=require("SpellHotReload.Adapters.Card.PracticeBinding")

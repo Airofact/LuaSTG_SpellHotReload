@@ -25,7 +25,7 @@ function M.run()
     for key in pairs(saved_loaded) do package.loaded[key]=nil end
     local loader_name=prefix.."GeneratedBossLoader"
     local functions_name=prefix.."Legacy.Functions"
-    local watcher_name=prefix.."Watcher"
+    local watcher_name=prefix.."Runtime.Watcher"
     local saved_preload=package.preload[loader_name]
     local globals={"lstg","boss","stage","_editor_class","_tmp_sc","_legacy34_effect"}
     local saved_globals={}
@@ -42,8 +42,8 @@ function M.run()
     package.loaded[watcher_name]={}
     local F,Value,Host,Callbacks,original_build,original_extract
     case("cold adapter graph without loader or legacy construction",function()
-        local Driver=require(prefix.."Driver")
-        local Plugin=require(prefix.."Plugin")
+        local Driver=require(prefix.."Pipeline.Driver")
+        local Plugin=require(prefix.."Runtime.Plugin")
         local instance=Plugin.New()
         eq(type(Driver.New()),"table","generic driver cold load")
         eq(instance:IsReleased(),false,"plugin cold lifecycle")

@@ -4,7 +4,7 @@ local M={}
 function M.run(opts)
     opts=opts or {}
     local Target=opts.target or require("SpellHotReload.Adapters.Card.CardTarget")
-    local Driver=require("SpellHotReload.Driver")
+    local Driver=require("SpellHotReload.Pipeline.Driver")
     local Card=require("SpellHotReload.Adapters.Card.Card")
     local Callbacks=require("SpellHotReload.Adapters.Card.CardCallbacks")
     local Load=require("SpellHotReload.Load.AnchorLoad")

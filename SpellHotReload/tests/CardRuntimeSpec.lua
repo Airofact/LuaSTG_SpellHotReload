@@ -43,7 +43,7 @@ function M.run()
     local proof={}
     local live={binding=initial,classes=classes,entry=entry,snapshot=snapshot,session_id=target.session_id}
     local common={file="Runtime_Boss.lua",content="synthetic candidate"}
-    local Driver=require("SpellHotReload.Driver")
+    local Driver=require("SpellHotReload.Pipeline.Driver")
     local driver=Driver.New();assert(driver:RegisterDiscovery(Card))
     local discovery=assert(driver:Discover(common.file,
         "_editor_class['K'].cards={}\n_tmp_sc=boss.card.New('Live',1,2,3,4)\nfunction _tmp_sc:init() end\ntable.insert(_editor_class['K'].cards,_tmp_sc)"))
@@ -219,7 +219,7 @@ function M.run()
     if not ok then failed=failed+1;failures[#failures+1]="unexpected: "..tostring(problem) end
     -- Controller dispatch checks use explicit fake receipts/context, not shared
     -- semantics. Real transaction/Monitor behavior remains in the existing suites.
-    local names={"lstg.FileSystemWatcher","lstg.FileSystemWatcher.FileAction","SpellHotReload.Watcher","SpellHotReload.Plugin"}
+    local names={"lstg.FileSystemWatcher","lstg.FileSystemWatcher.FileAction","SpellHotReload.Runtime.Watcher","SpellHotReload.Runtime.Plugin"}
     local saved_modules={}
     for _,n in ipairs(names) do saved_modules[n]=package.loaded[n] end
     package.loaded[names[1]],package.loaded[names[2]]={},{}
@@ -231,7 +231,7 @@ function M.run()
     for _,n in ipairs(methods) do originals[n],counts[n]=Card[n],0 end
     local replay,capture_current=Binding.IsReplay,Binding.CaptureCurrent
     local wired,werr=pcall(function()
-        local Plugin=require("SpellHotReload.Plugin")
+        local Plugin=require("SpellHotReload.Runtime.Plugin")
         local candidate={stable=true,generation=7,first_content="synthetic candidate"}
         local context={common=common,adapter={file=discovered.context.adapter.file,
             unit=unit.context}}

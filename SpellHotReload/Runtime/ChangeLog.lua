@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------------
---- SpellHotReload.ChangeLog
+--- SpellHotReload.Runtime.ChangeLog
 ---
 --- Bounded, in-memory record of watcher / candidate / apply / restart events,
 --- surfaced in the dedicated "Change Log" tab. Entries carry a monotonic id, a

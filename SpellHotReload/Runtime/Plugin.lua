@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------------
---- SpellHotReload.Plugin
+--- SpellHotReload.Runtime.Plugin
 ---
 --- Singleton lifecycle and orchestration. Owns the SnapshotStore, Watcher, and
 --- View; resolves the mod root; activates the watcher from `afterTHlib` (resolve
@@ -14,16 +14,16 @@
 --- No-entry legacy callers remain isolated for historical regression fixtures.
 --------------------------------------------------------------------------------
 
-local Watcher = require("SpellHotReload.Watcher")
-local SnapshotStore = require("SpellHotReload.SnapshotStore")
+local Watcher = require("SpellHotReload.Runtime.Watcher")
+local SnapshotStore = require("SpellHotReload.Runtime.SnapshotStore")
 local Scanner = require("SpellHotReload.Adapters.Card.GeneratedBossScanner")
 local Compose = require("SpellHotReload.Source.Compose")
 local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
-local ChangeLog = require("SpellHotReload.ChangeLog")
+local ChangeLog = require("SpellHotReload.Runtime.ChangeLog")
 local UpvalueRegistry = require("SpellHotReload.Load.UpvalueRegistry")
 local Anchor = require("SpellHotReload.Load.Anchor")
 local AnchorRegistry = require("SpellHotReload.Load.AnchorRegistry")
-local Driver = require("SpellHotReload.Driver")
+local Driver = require("SpellHotReload.Pipeline.Driver")
 local Card = require("SpellHotReload.Adapters.Card.Card")
 local CardCommit = require("SpellHotReload.Apply.CardCommit")
 local session_serial = 0

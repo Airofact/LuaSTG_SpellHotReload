@@ -60,10 +60,10 @@ end)
     local stage_count, group_count = 0, #stage.groups
     for _ in pairs(stage.stages) do stage_count = stage_count + 1 end
 
-    local Watcher = require("SpellHotReload.Watcher")
-    local PluginMod = require("SpellHotReload.Plugin")
-    local Driver = require("SpellHotReload.Driver")
-    local NodeRegistry = require("SpellHotReload.NodeRegistry")
+    local Watcher = require("SpellHotReload.Runtime.Watcher")
+    local PluginMod = require("SpellHotReload.Runtime.Plugin")
+    local Driver = require("SpellHotReload.Pipeline.Driver")
+    local NodeRegistry = require("SpellHotReload.Pipeline.NodeRegistry")
     local Host = require("SpellHotReload.Adapters.Host")
 
     local p = PluginMod.New()

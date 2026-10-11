@@ -6,13 +6,13 @@ function M.run()
     local globals={"lstg","boss","_editor_class","_tmp_sc","_sc_table","ext","_va_runs","_va_api","jit","IsValid"}
     local saved={}
     for _,name in ipairs(globals) do saved[name]=rawget(_G,name) end
-    local modules={"lstg.FileSystemWatcher","lstg.FileSystemWatcher.FileAction","SpellHotReload.Watcher","SpellHotReload.Plugin"}
+    local modules={"lstg.FileSystemWatcher","lstg.FileSystemWatcher.FileAction","SpellHotReload.Runtime.Watcher","SpellHotReload.Runtime.Plugin"}
     local loaded={}
     for _,name in ipairs(modules) do loaded[name]=package.loaded[name] end
     package.loaded[modules[1]]={}
     package.loaded[modules[2]]={}
     package.loaded[modules[3]]=nil;package.loaded[modules[4]]=nil
-    local Plugin=require("SpellHotReload.Plugin")
+    local Plugin=require("SpellHotReload.Runtime.Plugin")
     local Load=require("SpellHotReload.Load.AnchorLoad")
     local Anchor=require("SpellHotReload.Load.Anchor")
     local Binding=require("SpellHotReload.Adapters.Card.PracticeBinding")
@@ -94,7 +94,7 @@ function M.run()
         f.p._sandbox_error="shared-cell debug APIs unavailable"
         f.disk=EDIT
         f.p._store:SetAccepted(FILE,SOURCE,"baseline")
-        local Watcher=require("SpellHotReload.Watcher")
+        local Watcher=require("SpellHotReload.Runtime.Watcher")
         f.p._watcher=Watcher.New({root="mod/Test",store=f.p._store,quiet_frames=1,read_gap=1,drift_interval=5})
         f.p._watcher.ReadFile=function()
             f.reads=f.reads+1

@@ -190,7 +190,7 @@ end
    重启失败时定义已经就位，run 被保留，**Retry Restart** 走 `Driver:Restart(run)`
    只重试切关，不重新编译。
 
-适配器契约（`Adapter.lua` / `Driver.lua` 文件头有完整版）：
+适配器契约（`Pipeline/Adapter.lua` / `Pipeline/Driver.lua` 文件头有完整版）：
 
 ```
 Locate(node, env)          -> handle|nil, reason   结构身份匹配，不碰活体
@@ -224,17 +224,17 @@ Restart(handle, plan, env) -> ok, reason           可选、可失败、可单�
 | 文件 | 职责 |
 | --- | --- |
 | `__init__.lua` | afterTHlib 安装捕获 hook 并初始化 watcher（baseline + start）|
-| `Plugin.lua` | 生命周期、候选路由、绑定复查、提交与重启事务 |
-| `Watcher.lua` / `SnapshotStore.lua` | 去抖、双读验证、显式 stable 状态、字节快照 |
+| `Runtime/Plugin.lua` | 生命周期、候选路由、绑定复查、提交与重启事务 |
+| `Runtime/Watcher.lua` / `Runtime/SnapshotStore.lua` | 去抖、双读验证、显式 stable 状态、字节快照 |
 | `Load/UpvalueRegistry.lua` | 加载时捕获的顶层函数和真实加载源码 |
 | `GeneratedBossLoader.lua` | 加载捕获、词法器、具名函数片段编译 |
 | `Adapters/Card/GeneratedBossScanner.lua` | 产物格式检查、UI 类名提示 |
 | `Adapters/Card/PracticeBinding.lua` | 当前卡解析、练习重启及旧函数补丁工具 |
-| `Adapter.lua` / `NodeRegistry.lua` / `Driver.lua` | 四钩子契约、载体路由、规划与提交/重启驱动 |
+| `Pipeline/Adapter.lua` / `Pipeline/NodeRegistry.lua` / `Pipeline/Driver.lua` | 四钩子契约、载体路由、规划与提交/重启驱动 |
 | `Adapters/Card/Card.lua` | 符卡适配器：把 `Select` / `Build` / `Publish` / `Restart` 映射到四钩子 |
 | `Adapters/Card/CardCallbacks.lua` | 卡片定位、结构核对、回调编译、局部变量绑定与发布 |
 | `Adapters/Host.lua` / `Source/TopLevelIR.lua` / `Load/LoadCapture.lua` / `Adapters/Value.lua` | 宿主适配器与通用解析/捕获/值层（`Host` 尚未接入运行时）|
-| `UI/View.lua` / `UI/Tab/` / `ChangeLog.lua` | 调试窗口和日志 |
+| `UI/View.lua` / `UI/Tab/` / `Runtime/ChangeLog.lua` | 调试窗口和日志 |
 | `tests/` | Lua 5.1 / LuaJIT 的 spec 与真实引擎 smoke |
 
 表中模块路径均相对于本目录的 `SpellHotReload/`（引导文件除外）。
@@ -252,12 +252,18 @@ Restart(handle, plan, env) -> ok, reason           可选、可失败、可单�
   `UpvalueRegistry`。
 - `SpellHotReload/Adapters/` 独立放具体适配器：`Host.lua`、`Value.lua`，以及
   `Card/` 下的 `Card`、`CardCallbacks`、`CardTarget`、`CardVersions`、
-  `PracticeBinding`、`GeneratedBossScanner`。公共契约 `Adapter.lua`、调度器
-  `Driver.lua` 和注册表 `NodeRegistry.lua` 仍在平铺位置。Host/Value 的接线状态保持。
+  `PracticeBinding`、`GeneratedBossScanner`。公共契约 `Pipeline/Adapter.lua`、调度器
+  `Pipeline/Driver.lua` 和注册表 `Pipeline/NodeRegistry.lua` 位于 `Pipeline/`。
+  Host/Value 的接线状态保持。
 - `SpellHotReload/Apply/` 放 `FileApply`、`CardCommit`、`CommitCheck`、`CommitPhase`，
   分别负责文件门禁与剩余核对、原子提交、最终只读校验和提交作用域。
 - `SpellHotReload/Source/FunctionVersions.lua` 负责局部函数的版本比较和依赖选择，
   与同目录的源码分析、函数准备配合；它不直接提交或重启。
+- `SpellHotReload/Runtime/` 放 `Plugin`、`Watcher`、`SnapshotStore`、`ChangeLog`，
+  负责会话编排、文件监视、候选快照与事件记录。
+- `SpellHotReload/Pipeline/` 放 `Adapter`、`NodeRegistry`、`FileMatch`、`UnitIndex`、
+  `Driver`，负责公共适配器契约、注册路由、全文件发现、单元索引与规划/提交调度。
+  具体适配器仍独立放在 `Adapters/`，文件门禁与原子提交仍放在 `Apply/`。
 - `SpellHotReload/tests/` 包含离线 spec 与引擎 smoke。
 
 UI 的 require 路径为 `SpellHotReload.UI.View` 与
@@ -275,6 +281,12 @@ Source 和 Load 模块使用 `SpellHotReload.Source.<模块名>` 与
 `SpellHotReload.Source.FunctionVersions` 加载。对应旧平铺路径不再提供入口。
 本次只调整模块路径；数据中的 Kind/kind、适配器 Id、版本及接口保持原值。
 更新后需要重启游戏。现有跨目录引用保留，目录不代表严格的依赖分层。
+
+运行编排和公共调度分别以 `SpellHotReload.Runtime.<模块名>` 与
+`SpellHotReload.Pipeline.<模块名>` 加载；对应旧平铺 require 路径不再提供入口。
+仓库根 `__init__.lua`、调试注册 ID、事件名称、Watcher 日志前缀和数据协议保持。
+`GeneratedBossLoader.lua` 与 `Legacy/Functions.lua` 保留原路径；此分组不退役兼容入口。
+更新后需要重启游戏，让新路径和会话 hook 重新加载。
 
 ## 验证
 

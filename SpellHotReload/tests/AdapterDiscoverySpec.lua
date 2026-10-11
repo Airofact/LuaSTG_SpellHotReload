@@ -1,4 +1,4 @@
-local Adapter = require("SpellHotReload.Adapter")
+local Adapter = require("SpellHotReload.Pipeline.Adapter")
 local M = {}
 
 function M.run()

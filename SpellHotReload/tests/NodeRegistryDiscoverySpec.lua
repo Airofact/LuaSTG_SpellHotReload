@@ -1,5 +1,5 @@
-local Registry = require("SpellHotReload.NodeRegistry")
-local Adapter = require("SpellHotReload.Adapter")
+local Registry = require("SpellHotReload.Pipeline.NodeRegistry")
+local Adapter = require("SpellHotReload.Pipeline.Adapter")
 local M = {}
 
 function M.run()

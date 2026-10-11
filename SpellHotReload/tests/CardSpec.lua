@@ -12,9 +12,9 @@
 --- (see tests/Run.lua).
 --------------------------------------------------------------------------------
 
-local Adapter = require("SpellHotReload.Adapter")
-local NodeRegistry = require("SpellHotReload.NodeRegistry")
-local Driver = require("SpellHotReload.Driver")
+local Adapter = require("SpellHotReload.Pipeline.Adapter")
+local NodeRegistry = require("SpellHotReload.Pipeline.NodeRegistry")
+local Driver = require("SpellHotReload.Pipeline.Driver")
 local CardCallbacks = require("SpellHotReload.Adapters.Card.CardCallbacks")
 local Card = require("SpellHotReload.Adapters.Card.Card")
 local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")

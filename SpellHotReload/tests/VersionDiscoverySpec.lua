@@ -2,7 +2,7 @@
 -- Only miniature synthetic first-load files execute; never game-generated code.
 local M = {}
 function M.run()
-    local Driver = require("SpellHotReload.Driver")
+    local Driver = require("SpellHotReload.Pipeline.Driver")
     local Card = require("SpellHotReload.Adapters.Card.Card")
     local Cards = require("SpellHotReload.Adapters.Card.CardVersions")
     local Source = require("SpellHotReload.Source.FunctionPlan")

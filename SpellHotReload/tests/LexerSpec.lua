@@ -101,7 +101,7 @@ function M.run()
     -- is forbidden, not merely when an old cached module happens to be present.
     local keys = {
         "GeneratedBossLoader", "Source.Lexer", "Source.TopLevelIR", "Load.LoadCapture", "Source.Binding",
-        "Load.Anchor", "Source.Compose", "Load.AnchorLoad", "Load.LoadHook", "FileMatch",
+        "Load.Anchor", "Source.Compose", "Load.AnchorLoad", "Load.LoadHook", "Pipeline.FileMatch",
     }
     local loaded, preloaded = {}, {}
     for _, key in ipairs(keys) do

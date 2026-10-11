@@ -177,7 +177,7 @@ local function install()
     local View = require("SpellHotReload.UI.View")
     local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
     local Card = require("SpellHotReload.Adapters.Card.CardCallbacks")
-    local Plugin = require("SpellHotReload.Plugin")
+    local Plugin = require("SpellHotReload.Runtime.Plugin")
     local live = assert(View.plugin, "plugin view not initialized")
     live_registry_source = function(file_name) return live:GetRegistry():GetSource(file_name) end
     local view = {}

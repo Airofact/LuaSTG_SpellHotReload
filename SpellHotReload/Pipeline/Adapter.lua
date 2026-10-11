@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------------
---- SpellHotReload.Adapter
+--- SpellHotReload.Pipeline.Adapter
 ---
 --- The four-hook contract every carrier adapter implements, plus validation and
 --- the shared declining fallback.

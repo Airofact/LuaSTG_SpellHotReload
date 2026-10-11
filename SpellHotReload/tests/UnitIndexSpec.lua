@@ -1,6 +1,6 @@
-local UnitIndex = require("SpellHotReload.UnitIndex")
-local FileMatch = require("SpellHotReload.FileMatch")
-local Registry = require("SpellHotReload.NodeRegistry")
+local UnitIndex = require("SpellHotReload.Pipeline.UnitIndex")
+local FileMatch = require("SpellHotReload.Pipeline.FileMatch")
+local Registry = require("SpellHotReload.Pipeline.NodeRegistry")
 local M = {}
 
 function M.run()

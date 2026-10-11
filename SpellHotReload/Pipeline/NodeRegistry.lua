@@ -1,12 +1,12 @@
 --------------------------------------------------------------------------------
---- SpellHotReload.NodeRegistry
+--- SpellHotReload.Pipeline.NodeRegistry
 ---
 --- Routes a node to the adapter that owns its carrier. Unregistered carriers
 --- fall back to Adapter.Fallback, so the driver can walk a whole file without
 --- special-casing the carriers it does not understand yet.
 --------------------------------------------------------------------------------
 
-local Adapter = require("SpellHotReload.Adapter")
+local Adapter = require("SpellHotReload.Pipeline.Adapter")
 
 local Registry = {}
 Registry.__index = Registry

@@ -106,10 +106,10 @@ function M.run()
 
     -- Plugin requires the Watcher, whose native module the plain runtime has no
     -- way to load; stub it exactly as the in-game specs do, then restore.
-    local watcher_name = "SpellHotReload.Watcher"
+    local watcher_name = "SpellHotReload.Runtime.Watcher"
     local saved_watcher = package.loaded[watcher_name]
     package.loaded[watcher_name] = {}
-    local Plugin = require("SpellHotReload.Plugin")
+    local Plugin = require("SpellHotReload.Runtime.Plugin")
     package.loaded[watcher_name] = saved_watcher
 
     ----------------------------------------------------------------------------

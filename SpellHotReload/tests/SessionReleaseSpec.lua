@@ -2,7 +2,7 @@
 -- synthetic Lua source is executed. Weak tables verify plugin-owned reachability.
 local Hook = require("SpellHotReload.Load.LoadHook")
 local Capture = require("SpellHotReload.Load.AnchorLoad")
-local Store = require("SpellHotReload.SnapshotStore")
+local Store = require("SpellHotReload.Runtime.SnapshotStore")
 local Registry = require("SpellHotReload.Load.UpvalueRegistry")
 local M = {}
 local this_file = debug.getinfo(1, "S").source:sub(2)
@@ -23,7 +23,7 @@ function M.run()
     local saved_globals, saved_modules = {}, {}
     local globals = {"lstg", "setting", "GameExit", "_release_during_load"}
     local modules = {"lstg.FileSystemWatcher", "lstg.FileSystemWatcher.FileAction",
-        "SpellHotReload.Watcher", "SpellHotReload.Plugin", "lib.Ldebug", "SpellHotReload.UI.View"}
+        "SpellHotReload.Runtime.Watcher", "SpellHotReload.Runtime.Plugin", "lib.Ldebug", "SpellHotReload.UI.View"}
     for _, key in ipairs(globals) do saved_globals[key] = rawget(_G, key) end
     for _, key in ipairs(modules) do saved_modules[key] = package.loaded[key] end
     local ok, failure = pcall(function()
@@ -36,10 +36,10 @@ function M.run()
             end}
         end}
         package.loaded["lstg.FileSystemWatcher.FileAction"] = {}
-        package.loaded["SpellHotReload.Watcher"] = nil
-        package.loaded["SpellHotReload.Plugin"] = nil
-        local Watcher = require("SpellHotReload.Watcher")
-        local Plugin = require("SpellHotReload.Plugin")
+        package.loaded["SpellHotReload.Runtime.Watcher"] = nil
+        package.loaded["SpellHotReload.Runtime.Plugin"] = nil
+        local Watcher = require("SpellHotReload.Runtime.Watcher")
+        local Plugin = require("SpellHotReload.Runtime.Plugin")
         lstg = {Log=function() end,FileManager={EnumFiles=function() return {} end}}
         setting = nil
         local function engine()

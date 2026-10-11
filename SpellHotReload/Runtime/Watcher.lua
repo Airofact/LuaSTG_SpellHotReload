@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------------
---- SpellHotReload.Watcher
+--- SpellHotReload.Runtime.Watcher
 ---
 --- Polls `lstg.FileSystemWatcher` for changes to generated Boss files under the
 --- active mod directory, applies an allowlist + quiet-window debounce, and turns

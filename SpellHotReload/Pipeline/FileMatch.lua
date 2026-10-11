@@ -3,7 +3,7 @@
 --- Every snapshot also carries the shared TopLevelIR analysis and the Binding
 --- declaration/visibility model; neither is a binding-safety proof.
 local IR = require("SpellHotReload.Source.TopLevelIR")
-local Adapter = require("SpellHotReload.Adapter")
+local Adapter = require("SpellHotReload.Pipeline.Adapter")
 local Binding = require("SpellHotReload.Source.Binding")
 local M = {}
 

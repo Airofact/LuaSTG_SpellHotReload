@@ -5,7 +5,7 @@ function M.run()
     local Card = require("SpellHotReload.Adapters.Card.Card")
     local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
     local Scanner = require("SpellHotReload.Adapters.Card.GeneratedBossScanner")
-    local Driver = require("SpellHotReload.Driver")
+    local Driver = require("SpellHotReload.Pipeline.Driver")
     local Load = require("SpellHotReload.Load.AnchorLoad")
     local passed, failed, failures = 0, 0, {}
     local function check(v, label)
@@ -190,7 +190,7 @@ function M.run()
     if not ok then failed=failed+1;failures[#failures+1]="unexpected: " .. tostring(problem) end
 
     -- Real Plugin call sites, fake capture/commit for dispatch only.
-    local module_keys = {"SpellHotReload.Plugin","SpellHotReload.Watcher"}
+    local module_keys = {"SpellHotReload.Runtime.Plugin","SpellHotReload.Runtime.Watcher"}
     local modules = {}
     for _, key in ipairs(module_keys) do modules[key]=package.loaded[key] end
     package.loaded[module_keys[1]], package.loaded[module_keys[2]] = nil, {}
@@ -199,7 +199,7 @@ function M.run()
     for _, method in ipairs(methods) do originals[method], counts[method] = Card[method], 0 end
     local plugins = {}
     local wired, werr = pcall(function()
-        local Plugin = require("SpellHotReload.Plugin")
+        local Plugin = require("SpellHotReload.Runtime.Plugin")
         local file = "Dispatch_Boss.lua"
         local capture = {snapshot={revision=0}}
         local first = {loaded_source="original",map={},reloadable=false}
