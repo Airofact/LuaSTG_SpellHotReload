@@ -1,13 +1,13 @@
 -- First-load snapshot integration. Only miniature synthetic files execute.
 local M = {}
 function M.run()
-    local Capture = require("SpellHotReload.LoadVersions")
+    local Capture = require("SpellHotReload.Load.LoadVersions")
     local Card = require("SpellHotReload.Card")
-    local Hook = require("SpellHotReload.LoadHook")
-    local Load = require("SpellHotReload.AnchorLoad")
-    local Anchor = require("SpellHotReload.Anchor")
+    local Hook = require("SpellHotReload.Load.LoadHook")
+    local Load = require("SpellHotReload.Load.AnchorLoad")
+    local Anchor = require("SpellHotReload.Load.Anchor")
     local Cards = require("SpellHotReload.CardVersions")
-    local Source = require("SpellHotReload.FunctionPlan")
+    local Source = require("SpellHotReload.Source.FunctionPlan")
     local watcher_key = "SpellHotReload.Watcher"
     local old_watcher = package.loaded[watcher_key]
     local old_plugin = package.loaded["SpellHotReload.Plugin"]

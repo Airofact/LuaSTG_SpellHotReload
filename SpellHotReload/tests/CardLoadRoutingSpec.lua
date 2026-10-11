@@ -6,7 +6,7 @@ function M.run()
     local Binding = require("SpellHotReload.PracticeBinding")
     local Scanner = require("SpellHotReload.GeneratedBossScanner")
     local Driver = require("SpellHotReload.Driver")
-    local Load = require("SpellHotReload.AnchorLoad")
+    local Load = require("SpellHotReload.Load.AnchorLoad")
     local passed, failed, failures = 0, 0, {}
     local function check(v, label)
         if v then passed = passed + 1 else failed = failed + 1; failures[#failures + 1] = label end

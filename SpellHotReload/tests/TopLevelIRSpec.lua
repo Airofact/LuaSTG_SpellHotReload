@@ -5,7 +5,7 @@
 --- Lua 5.1 and LuaJIT with the game directory as cwd (see tests/Run.lua).
 --------------------------------------------------------------------------------
 
-local IR = require("SpellHotReload.TopLevelIR")
+local IR = require("SpellHotReload.Source.TopLevelIR")
 
 local M = {}
 local passed, failed = 0, 0

@@ -1,7 +1,7 @@
 local FileMatch = require("SpellHotReload.FileMatch")
 local Registry = require("SpellHotReload.NodeRegistry")
-local Lexer = require("SpellHotReload.Lexer")
-local IR = require("SpellHotReload.TopLevelIR")
+local Lexer = require("SpellHotReload.Source.Lexer")
+local IR = require("SpellHotReload.Source.TopLevelIR")
 local M = {}
 
 function M.run()

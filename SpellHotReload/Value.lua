@@ -28,7 +28,7 @@
 --- value. `Value.Restartable` is therefore false.
 --------------------------------------------------------------------------------
 
-local Lexer = require("SpellHotReload.Lexer")
+local Lexer = require("SpellHotReload.Source.Lexer")
 
 local Value = {}
 

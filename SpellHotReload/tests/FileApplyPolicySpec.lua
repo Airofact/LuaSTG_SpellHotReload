@@ -3,8 +3,8 @@
 local M={}
 function M.run()
     local FileApply=require("SpellHotReload.FileApply")
-    local IR=require("SpellHotReload.TopLevelIR")
-    local Binding=require("SpellHotReload.Binding")
+    local IR=require("SpellHotReload.Source.TopLevelIR")
+    local Binding=require("SpellHotReload.Source.Binding")
     local passed,failed,failures=0,0,{}
     local function check(v,label)
         if v then passed=passed+1 else failed=failed+1;failures[#failures+1]=label end

@@ -226,14 +226,14 @@ Restart(handle, plan, env) -> ok, reason           可选、可失败、可单�
 | `__init__.lua` | afterTHlib 安装捕获 hook 并初始化 watcher（baseline + start）|
 | `Plugin.lua` | 生命周期、候选路由、绑定复查、提交与重启事务 |
 | `Watcher.lua` / `SnapshotStore.lua` | 去抖、双读验证、显式 stable 状态、字节快照 |
-| `UpvalueRegistry.lua` | 加载时捕获的顶层函数和真实加载源码 |
+| `Load/UpvalueRegistry.lua` | 加载时捕获的顶层函数和真实加载源码 |
 | `GeneratedBossLoader.lua` | 加载捕获、词法器、具名函数片段编译 |
 | `GeneratedBossScanner.lua` | 产物格式检查、UI 类名提示 |
 | `PracticeBinding.lua` | 当前卡解析、练习重启及旧函数补丁工具 |
 | `Adapter.lua` / `NodeRegistry.lua` / `Driver.lua` | 四钩子契约、载体路由、规划与提交/重启驱动 |
 | `Card.lua` | 符卡适配器：把 `Select` / `Build` / `Publish` / `Restart` 映射到四钩子 |
 | `CardCallbacks.lua` | 卡片定位、结构核对、回调编译、局部变量绑定与发布 |
-| `Host.lua` / `TopLevelIR.lua` / `LoadCapture.lua` / `Value.lua` | 宿主适配器与通用解析/捕获/值层（`Host` 尚未接入运行时）|
+| `Host.lua` / `Source/TopLevelIR.lua` / `Load/LoadCapture.lua` / `Value.lua` | 宿主适配器与通用解析/捕获/值层（`Host` 尚未接入运行时）|
 | `UI/View.lua` / `UI/Tab/` / `ChangeLog.lua` | 调试窗口和日志 |
 | `tests/` | Lua 5.1 / LuaJIT 的 spec 与真实引擎 smoke |
 
@@ -244,11 +244,22 @@ Restart(handle, plan, env) -> ok, reason           可选、可失败、可单�
 - 仓库根 `__init__.lua` 是 LuaSTG 插件入口。
 - `SpellHotReload/UI/View.lua` 管理 Tool 窗口与每帧 Tick；
   `SpellHotReload/UI/Tab/` 放 Monitor、Change Log 和页签枚举。
+- `SpellHotReload/Source/` 放源码处理模块：`Lexer`、`TopLevelIR`、`Binding`、
+  `CodeCache`、`Compose`、`FunctionPlan`，分别负责词法、顶层分析、可见绑定、
+  编译缓存、闭包接线和函数准备。
+- `SpellHotReload/Load/` 放首载与会话模块：`Anchor`、`AnchorSession`、
+  `AnchorRegistry`、`AnchorLoad`、`LoadCapture`、`LoadHook`、`LoadVersions`、
+  `UpvalueRegistry`。
 - `SpellHotReload/tests/` 包含离线 spec 与引擎 smoke。
 
 UI 的 require 路径为 `SpellHotReload.UI.View` 与
 `SpellHotReload.UI.Tab.<模块名>`；旧 `SpellHotReload.View` /
 `SpellHotReload.Tab.*` 不再提供入口。更新后需要重启游戏，让新路径重新加载。
+
+Source 和 Load 模块使用 `SpellHotReload.Source.<模块名>` 与
+`SpellHotReload.Load.<模块名>` 加载；原来的平铺 require 路径不再提供入口。
+目录按职责分组，既有跨目录依赖保留；例如 `Source.Compose` 使用 `Load.Anchor`。
+数据中的 `Kind` / `kind` 标识、版本号及调用接口保持原值，不随模块路径改名。
 
 ## 验证
 

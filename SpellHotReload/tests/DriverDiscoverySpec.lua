@@ -2,10 +2,10 @@
 local Driver = require("SpellHotReload.Driver")
 local Registry = require("SpellHotReload.NodeRegistry")
 local Index = require("SpellHotReload.UnitIndex")
-local IR = require("SpellHotReload.TopLevelIR")
+local IR = require("SpellHotReload.Source.TopLevelIR")
 local Card = require("SpellHotReload.Card")
 local Callbacks = require("SpellHotReload.CardCallbacks")
-local Lexer = require("SpellHotReload.Lexer")
+local Lexer = require("SpellHotReload.Source.Lexer")
 local M = {}
 function M.run(options)
     local DriverAPI = options and options.driver or Driver

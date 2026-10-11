@@ -81,10 +81,10 @@
 --- release snapshots/reports/selections on session end and invalidate them on
 --- missing files, source/target changes and successful publication. This module
 --- neither owns the session nor advances Watcher accepted/Dismiss state.
-local Plan = require("SpellHotReload.FunctionPlan")
-local Compose = require("SpellHotReload.Compose")
-local Anchor = require("SpellHotReload.Anchor")
-local Lexer = require("SpellHotReload.Lexer")
+local Plan = require("SpellHotReload.Source.FunctionPlan")
+local Compose = require("SpellHotReload.Source.Compose")
+local Anchor = require("SpellHotReload.Load.Anchor")
+local Lexer = require("SpellHotReload.Source.Lexer")
 local M = { Kind = "SpellHotReload.FunctionVersions", Version = 1 }
 
 local function plain(v) return type(v) == "table" and getmetatable(v) == nil end

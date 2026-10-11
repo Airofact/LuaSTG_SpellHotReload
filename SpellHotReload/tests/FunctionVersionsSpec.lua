@@ -1,9 +1,9 @@
 local M = {}
 function M.run()
     local Versions = require("SpellHotReload.FunctionVersions")
-    local Plan = require("SpellHotReload.FunctionPlan")
-    local Anchor = require("SpellHotReload.Anchor")
-    local Compose = require("SpellHotReload.Compose")
+    local Plan = require("SpellHotReload.Source.FunctionPlan")
+    local Anchor = require("SpellHotReload.Load.Anchor")
+    local Compose = require("SpellHotReload.Source.Compose")
     local passed, failed, failures = 0, 0, {}
     local function check(value, label)
         if value then passed = passed + 1 else

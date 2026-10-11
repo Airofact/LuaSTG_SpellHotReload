@@ -5,7 +5,7 @@
 --- and LuaJIT with the game directory as cwd (see tests/Run.lua).
 --------------------------------------------------------------------------------
 
-local LC = require("SpellHotReload.LoadCapture")
+local LC = require("SpellHotReload.Load.LoadCapture")
 
 local M = {}
 local passed, failed = 0, 0

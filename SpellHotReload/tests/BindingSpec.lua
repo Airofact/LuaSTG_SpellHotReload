@@ -1,5 +1,5 @@
-local Binding = require("SpellHotReload.Binding")
-local IR = require("SpellHotReload.TopLevelIR")
+local Binding = require("SpellHotReload.Source.Binding")
+local IR = require("SpellHotReload.Source.TopLevelIR")
 local M = {}
 
 function M.run()

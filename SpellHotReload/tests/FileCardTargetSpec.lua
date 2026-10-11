@@ -4,8 +4,8 @@ local M={}
 function M.run(opts)
     opts=opts or {}
     local Target=opts.target or require("SpellHotReload.CardTarget")
-    local Load=require("SpellHotReload.AnchorLoad")
-    local Capture=require("SpellHotReload.LoadVersions")
+    local Load=require("SpellHotReload.Load.AnchorLoad")
+    local Capture=require("SpellHotReload.Load.LoadVersions")
     local Driver=require("SpellHotReload.Driver")
     local Card=require("SpellHotReload.Card")
     local passed,failed,failures=0,0,{}

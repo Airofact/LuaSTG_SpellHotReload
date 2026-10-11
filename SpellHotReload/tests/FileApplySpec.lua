@@ -13,10 +13,10 @@ function M.run()
     package.loaded[modules[2]]={}
     package.loaded[modules[3]]=nil;package.loaded[modules[4]]=nil
     local Plugin=require("SpellHotReload.Plugin")
-    local Load=require("SpellHotReload.AnchorLoad")
-    local Anchor=require("SpellHotReload.Anchor")
+    local Load=require("SpellHotReload.Load.AnchorLoad")
+    local Anchor=require("SpellHotReload.Load.Anchor")
     local Binding=require("SpellHotReload.PracticeBinding")
-    local Compose=require("SpellHotReload.Compose")
+    local Compose=require("SpellHotReload.Source.Compose")
     local Card=require("SpellHotReload.Card")
     local passed,failed,failures=0,0,{}
     local function check(v,label)

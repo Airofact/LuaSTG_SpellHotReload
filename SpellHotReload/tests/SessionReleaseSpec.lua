@@ -1,9 +1,9 @@
 -- Production session-end lifecycle. Engine handles are stand-ins; only
 -- synthetic Lua source is executed. Weak tables verify plugin-owned reachability.
-local Hook = require("SpellHotReload.LoadHook")
-local Capture = require("SpellHotReload.AnchorLoad")
+local Hook = require("SpellHotReload.Load.LoadHook")
+local Capture = require("SpellHotReload.Load.AnchorLoad")
 local Store = require("SpellHotReload.SnapshotStore")
-local Registry = require("SpellHotReload.UpvalueRegistry")
+local Registry = require("SpellHotReload.Load.UpvalueRegistry")
 local M = {}
 local this_file = debug.getinfo(1, "S").source:sub(2)
 local bootstrap = this_file:match("^(.*[/\\])") .. "../../__init__.lua"

@@ -30,12 +30,12 @@
 --- honestly keep the map and refuse to reload instead of failing the spec.
 --------------------------------------------------------------------------------
 
-local Anchor = require("SpellHotReload.Anchor")
-local AnchorLoad = require("SpellHotReload.AnchorLoad")
-local Compose = require("SpellHotReload.Compose")
+local Anchor = require("SpellHotReload.Load.Anchor")
+local AnchorLoad = require("SpellHotReload.Load.AnchorLoad")
+local Compose = require("SpellHotReload.Source.Compose")
 local Loader = require("SpellHotReload.GeneratedBossLoader")
-local IR = require("SpellHotReload.TopLevelIR")
-local Binding = require("SpellHotReload.Binding")
+local IR = require("SpellHotReload.Source.TopLevelIR")
+local Binding = require("SpellHotReload.Source.Binding")
 
 local M = {}
 local passed, failed = 0, 0

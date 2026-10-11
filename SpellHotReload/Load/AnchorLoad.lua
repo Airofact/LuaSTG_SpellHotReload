@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------------
---- SpellHotReload.AnchorLoad
+--- SpellHotReload.Load.AnchorLoad
 ---
 --- The R2 load-path capture output: run one generated file exactly once and get
 --- both the legacy `name -> value` map and the file's anchor out of that single
@@ -40,9 +40,9 @@
 --- cell or publishes anything.
 --------------------------------------------------------------------------------
 
-local Anchor = require("SpellHotReload.Anchor")
-local Compose = require("SpellHotReload.Compose")
-local Capture = require("SpellHotReload.LoadCapture")
+local Anchor = require("SpellHotReload.Load.Anchor")
+local Compose = require("SpellHotReload.Source.Compose")
+local Capture = require("SpellHotReload.Load.LoadCapture")
 
 local M = {}
 

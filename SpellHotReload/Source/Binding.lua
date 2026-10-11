@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------------
---- SpellHotReload.Binding
+--- SpellHotReload.Source.Binding
 ---
 --- Lexical declaration set and definition-point visibility for one shared
 --- TopLevelIR analysis snapshot.

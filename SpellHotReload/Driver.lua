@@ -18,7 +18,7 @@
 --- `unchanged` and never injected. Without a baseline every node is planned.
 --------------------------------------------------------------------------------
 
-local LoadCapture = require("SpellHotReload.LoadCapture")
+local LoadCapture = require("SpellHotReload.Load.LoadCapture")
 local NodeRegistry = require("SpellHotReload.NodeRegistry")
 local FileMatch = require("SpellHotReload.FileMatch")
 local UnitIndex = require("SpellHotReload.UnitIndex")

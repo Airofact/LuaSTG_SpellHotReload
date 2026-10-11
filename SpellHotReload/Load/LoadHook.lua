@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------------
---- SpellHotReload.LoadHook
+--- SpellHotReload.Load.LoadHook
 ---
 --- Capture selected files at normal load time through AnchorLoad.Capture. The
 --- selector belongs to the caller; the current bootstrap keeps its existing
@@ -9,7 +9,7 @@
 --- with their reason. A run failure MUST NOT fall through and replay the body.
 --------------------------------------------------------------------------------
 
-local AnchorLoad = require("SpellHotReload.AnchorLoad")
+local AnchorLoad = require("SpellHotReload.Load.AnchorLoad")
 
 local M = {}
 -- The wrapper owns its state; the index must not root an engine/wrapper cycle

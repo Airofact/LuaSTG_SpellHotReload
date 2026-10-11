@@ -1,8 +1,8 @@
 --- R3 preparation spec: all mutations below are explicit test-only manual
 --- commits, never FunctionPlan.Prepare. No target engine/real source execution.
-local Plan = require("SpellHotReload.FunctionPlan")
-local Anchor = require("SpellHotReload.Anchor")
-local Compose = require("SpellHotReload.Compose")
+local Plan = require("SpellHotReload.Source.FunctionPlan")
+local Anchor = require("SpellHotReload.Load.Anchor")
+local Compose = require("SpellHotReload.Source.Compose")
 local M = {}
 
 function M.run()

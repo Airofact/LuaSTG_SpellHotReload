@@ -15,7 +15,7 @@
 local lstg_debug = require("lib.Ldebug")
 local Plugin = require("SpellHotReload.Plugin")
 local View = require("SpellHotReload.UI.View")
-local LoadHook = require("SpellHotReload.LoadHook")
+local LoadHook = require("SpellHotReload.Load.LoadHook")
 
 local plugin = nil
 local view = nil

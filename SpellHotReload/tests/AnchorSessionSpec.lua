@@ -18,8 +18,8 @@
 --- honestly refuse to capture rather than fail the spec.
 --------------------------------------------------------------------------------
 
-local AnchorSession = require("SpellHotReload.AnchorSession")
-local Anchor = require("SpellHotReload.Anchor")
+local AnchorSession = require("SpellHotReload.Load.AnchorSession")
+local Anchor = require("SpellHotReload.Load.Anchor")
 
 local M = {}
 local passed, failed = 0, 0

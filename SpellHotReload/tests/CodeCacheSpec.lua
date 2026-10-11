@@ -5,9 +5,9 @@
 --- assertions detect the original defect. Lua 5.1 covers refusal/no-cache paths.
 --------------------------------------------------------------------------------
 
-local Cache = require("SpellHotReload.CodeCache")
-local Anchor = require("SpellHotReload.Anchor")
-local Compose = require("SpellHotReload.Compose")
+local Cache = require("SpellHotReload.Source.CodeCache")
+local Anchor = require("SpellHotReload.Load.Anchor")
+local Compose = require("SpellHotReload.Source.Compose")
 local M = {}
 local compile = loadstring or load
 
@@ -70,10 +70,10 @@ function M.run()
         on = function() error("must not toggle JIT") end,
     }
     with_jit(runtime, function()
-        local loaded = package.loaded["SpellHotReload.CodeCache"]
-        package.loaded["SpellHotReload.CodeCache"] = nil
-        local cold = require("SpellHotReload.CodeCache")
-        package.loaded["SpellHotReload.CodeCache"] = loaded
+        local loaded = package.loaded["SpellHotReload.Source.CodeCache"]
+        package.loaded["SpellHotReload.Source.CodeCache"] = nil
+        local cold = require("SpellHotReload.Source.CodeCache")
+        package.loaded["SpellHotReload.Source.CodeCache"] = loaded
         eq(type(cold.Invalidate), "function", "cold module exposes operation")
         eq(calls, 0, "cold require does not flush/probe")
         eq(Cache.Invalidate(), true, "present cache flush")

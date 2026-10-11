@@ -5,8 +5,8 @@ local serial = 0
 function M.run(opts)
     opts = opts or {}
     local Card = require("SpellHotReload.Card")
-    local Load = require("SpellHotReload.AnchorLoad")
-    local Versions = require("SpellHotReload.LoadVersions")
+    local Load = require("SpellHotReload.Load.AnchorLoad")
+    local Versions = require("SpellHotReload.Load.LoadVersions")
     local Cards = require("SpellHotReload.CardVersions")
     local Guard = require("SpellHotReload.CommitCheck")
     local passed, failed, failures = 0, 0, {}

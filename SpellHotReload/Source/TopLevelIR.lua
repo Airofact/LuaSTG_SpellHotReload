@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------------
---- SpellHotReload.TopLevelIR
+--- SpellHotReload.Source.TopLevelIR
 ---
 --- Pure top-level analyzer for generated Lua sources. Splits a file into
 --- top-level statements and classifies each carrier slot into the generic
@@ -17,7 +17,7 @@
 --- and LuaJIT without an engine.
 --------------------------------------------------------------------------------
 
-local Lexer = require("SpellHotReload.Lexer")
+local Lexer = require("SpellHotReload.Source.Lexer")
 
 local M = {}
 

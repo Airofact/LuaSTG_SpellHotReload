@@ -6,8 +6,8 @@ function M.run()
         assert(a == b, label .. ": " .. tostring(a) .. " ~= " .. tostring(b))
         passed = passed + 1
     end
-    local Lexer = require("SpellHotReload.Lexer")
-    local Capture = require("SpellHotReload.LoadCapture")
+    local Lexer = require("SpellHotReload.Source.Lexer")
+    local Capture = require("SpellHotReload.Load.LoadCapture")
     local Loader = require("SpellHotReload.GeneratedBossLoader")
     eq(Loader.Probe, nil, "unused behavioral probe removed")
     eq(#Lexer.Tokenize(""), 0, "empty")
@@ -72,9 +72,9 @@ function M.run()
         eq(lex_calls, 2, "legacy name scanner delegates")
         eq(Loader.ExtractFunction(source, "f"), source, "legacy fragment bytes")
         eq(lex_calls, 3, "legacy fragment scanner delegates")
-        require("SpellHotReload.TopLevelIR").Analyze(source)
+        require("SpellHotReload.Source.TopLevelIR").Analyze(source)
         eq(lex_calls, 4, "generic IR delegates directly")
-        assert(require("SpellHotReload.Compose").Create("function() return a end",
+        assert(require("SpellHotReload.Source.Compose").Create("function() return a end",
             nil, {"a"}, {form="expression"}))
         eq(lex_calls, 5, "generic composition delegates directly")
     end)
@@ -89,7 +89,7 @@ function M.run()
     ok, reason = pcall(function()
         Loader.BuildTrailer({"a"})
         eq(trailer_calls, 1, "compatibility trailer delegates")
-        assert(require("SpellHotReload.AnchorLoad").Trailer({"a"}))
+        assert(require("SpellHotReload.Load.AnchorLoad").Trailer({"a"}))
         eq(trailer_calls, 2, "dual trailer uses generic capture")
         assert(Capture.Run("local a = false"))
         eq(trailer_calls, 3, "map capture uses its own trailer")
@@ -100,8 +100,8 @@ function M.run()
     -- A fresh generic load graph must work when requiring the legacy loader
     -- is forbidden, not merely when an old cached module happens to be present.
     local keys = {
-        "GeneratedBossLoader", "Lexer", "TopLevelIR", "LoadCapture", "Binding",
-        "Anchor", "Compose", "AnchorLoad", "LoadHook", "FileMatch",
+        "GeneratedBossLoader", "Source.Lexer", "Source.TopLevelIR", "Load.LoadCapture", "Source.Binding",
+        "Load.Anchor", "Source.Compose", "Load.AnchorLoad", "Load.LoadHook", "FileMatch",
     }
     local loaded, preloaded = {}, {}
     for _, key in ipairs(keys) do
@@ -113,10 +113,10 @@ function M.run()
         error("generic path required legacy loader")
     end
     ok, reason = pcall(function()
-        local IR = require("SpellHotReload.TopLevelIR")
-        local C = require("SpellHotReload.Compose")
-        local A = require("SpellHotReload.AnchorLoad")
-        local H = require("SpellHotReload.LoadHook")
+        local IR = require("SpellHotReload.Source.TopLevelIR")
+        local C = require("SpellHotReload.Source.Compose")
+        local A = require("SpellHotReload.Load.AnchorLoad")
+        local H = require("SpellHotReload.Load.LoadHook")
         eq(#assert(IR.Analyze("local a,b=nil,false")), 2, "independent generic analysis")
         local made = assert(C.Create("function() return a end", nil, {"a"}, {form="expression"}))
         eq(type(made.fn), "function", "independent composition")

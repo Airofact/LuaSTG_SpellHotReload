@@ -32,8 +32,8 @@
 --------------------------------------------------------------------------------
 
 local Loader = require("SpellHotReload.GeneratedBossLoader")
-local AnchorLoad = require("SpellHotReload.AnchorLoad")
-local UpvalueRegistry = require("SpellHotReload.UpvalueRegistry")
+local AnchorLoad = require("SpellHotReload.Load.AnchorLoad")
+local UpvalueRegistry = require("SpellHotReload.Load.UpvalueRegistry")
 
 local M = {}
 local passed, failed = 0, 0

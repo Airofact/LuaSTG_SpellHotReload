@@ -1,6 +1,6 @@
 -- Normal-load replacement tests. No generated game source is executed.
-local Hook = require("SpellHotReload.LoadHook")
-local Capture = require("SpellHotReload.AnchorLoad")
+local Hook = require("SpellHotReload.Load.LoadHook")
+local Capture = require("SpellHotReload.Load.AnchorLoad")
 local Loader = require("SpellHotReload.GeneratedBossLoader")
 local watcher_name = "SpellHotReload.Watcher"
 local old_watcher = package.loaded[watcher_name]

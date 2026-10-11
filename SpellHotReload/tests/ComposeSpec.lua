@@ -30,8 +30,8 @@
 --- instead of failing the spec.
 --------------------------------------------------------------------------------
 
-local Compose = require("SpellHotReload.Compose")
-local Anchor = require("SpellHotReload.Anchor")
+local Compose = require("SpellHotReload.Source.Compose")
+local Anchor = require("SpellHotReload.Load.Anchor")
 
 local M = {}
 local passed, failed = 0, 0

@@ -270,7 +270,7 @@ end
 
 local function test_loader()
     local Loader = require("SpellHotReload.GeneratedBossLoader")
-    local Registry = require("SpellHotReload.UpvalueRegistry")
+    local Registry = require("SpellHotReload.Load.UpvalueRegistry")
 
     -- ExtractFunction
     local SRC = table.concat({

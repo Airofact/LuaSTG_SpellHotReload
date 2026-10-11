@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------------
---- SpellHotReload.AnchorRegistry
+--- SpellHotReload.Load.AnchorRegistry
 ---
 --- The R2 file registry: `file -> anchor`, with the legacy `name -> value` map
 --- demoted from state truth to a read-through view of that anchor.
@@ -41,7 +41,7 @@
 --- for the anchor it must never replace.
 --------------------------------------------------------------------------------
 
-local Anchor = require("SpellHotReload.Anchor")
+local Anchor = require("SpellHotReload.Load.Anchor")
 
 local M = {}
 

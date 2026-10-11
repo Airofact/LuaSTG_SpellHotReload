@@ -11,7 +11,7 @@
 local Phase = require("SpellHotReload.CommitPhase")
 local Guard = require("SpellHotReload.CommitCheck")
 local Card = require("SpellHotReload.Card")
-local Cache = require("SpellHotReload.CodeCache")
+local Cache = require("SpellHotReload.Source.CodeCache")
 local M = { Kind = "SpellHotReload.CardCommit", Version = 1 }
 local phase_new, guard_check, next_version, invalidate =
     Phase.New, Guard.Check, Card.ProposeVersion, Cache.Invalidate

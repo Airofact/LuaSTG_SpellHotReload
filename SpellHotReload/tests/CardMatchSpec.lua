@@ -27,7 +27,7 @@ local CardCallbacks = require("SpellHotReload.CardCallbacks")
 local Driver = require("SpellHotReload.Driver")
 local Binding = require("SpellHotReload.PracticeBinding")
 local Loader = require("SpellHotReload.GeneratedBossLoader")
-local IR = require("SpellHotReload.TopLevelIR")
+local IR = require("SpellHotReload.Source.TopLevelIR")
 
 local M = {}
 local passed, failed = 0, 0

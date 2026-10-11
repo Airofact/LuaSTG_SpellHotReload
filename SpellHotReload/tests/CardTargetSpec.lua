@@ -5,8 +5,8 @@ local serial=0
 function M.run(opts)
     opts=opts or {}
     local Target=opts.target or require("SpellHotReload.CardTarget")
-    local Load=require("SpellHotReload.AnchorLoad")
-    local Versions=require("SpellHotReload.LoadVersions")
+    local Load=require("SpellHotReload.Load.AnchorLoad")
+    local Versions=require("SpellHotReload.Load.LoadVersions")
     local Cards=require("SpellHotReload.CardVersions")
     local Tx=require("SpellHotReload.CardCommit")
     local passed,failed,failures=0,0,{}

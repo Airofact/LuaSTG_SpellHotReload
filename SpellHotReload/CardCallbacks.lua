@@ -1,6 +1,6 @@
 -- Read Editor Sharp's card registrations without executing generated wiring.
 -- Build only callback closures, retaining captured locals from the running card.
-local Lexer = require("SpellHotReload.Lexer")
+local Lexer = require("SpellHotReload.Source.Lexer")
 local M = {}
 local compile = loadstring or load
 local CALLBACKS = { "before", "init", "frame", "render", "beforedel", "del", "after" }

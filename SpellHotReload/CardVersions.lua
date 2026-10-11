@@ -46,10 +46,10 @@
 --- Tables are read-only by contract, not a sandbox. upvalueid is optional, never
 --- replaced with a Probe. Without it physical rejoin by outside code is unproved.
 local Functions = require("SpellHotReload.FunctionVersions")
-local Source = require("SpellHotReload.FunctionPlan")
+local Source = require("SpellHotReload.Source.FunctionPlan")
 local Card = require("SpellHotReload.Card")
-local Compose = require("SpellHotReload.Compose")
-local Lexer = require("SpellHotReload.Lexer")
+local Compose = require("SpellHotReload.Source.Compose")
+local Lexer = require("SpellHotReload.Source.Lexer")
 local Target = require("SpellHotReload.CardTarget")
 local M = { Kind = "SpellHotReload.CardVersions", Version = 1 }
 local CALLBACKS = { "before", "init", "frame", "render", "beforedel", "del", "after" }

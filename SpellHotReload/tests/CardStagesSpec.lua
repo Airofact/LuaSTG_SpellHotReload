@@ -6,13 +6,13 @@ local serial = 0
 function M.run()
     local Card = require("SpellHotReload.Card")
     local Driver = require("SpellHotReload.Driver")
-    local Load = require("SpellHotReload.AnchorLoad")
-    local Versions = require("SpellHotReload.LoadVersions")
+    local Load = require("SpellHotReload.Load.AnchorLoad")
+    local Versions = require("SpellHotReload.Load.LoadVersions")
     local Cards = require("SpellHotReload.CardVersions")
     local Target = require("SpellHotReload.CardTarget")
     local Callbacks = require("SpellHotReload.CardCallbacks")
     local Binding = require("SpellHotReload.PracticeBinding")
-    local Anchor = require("SpellHotReload.Anchor")
+    local Anchor = require("SpellHotReload.Load.Anchor")
     local passed, failed, failures = 0, 0, {}
     local function check(v,label)
         if v then passed=passed+1 else failed=failed+1;failures[#failures+1]=label end

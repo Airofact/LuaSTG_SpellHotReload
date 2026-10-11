@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------------
---- SpellHotReload.Lexer
+--- SpellHotReload.Source.Lexer
 ---
 --- Shared, engine-independent lexer for source analysis and closure composition.
 --- Tokens preserve the existing kind/value/byte-pos/block-depth contract. This

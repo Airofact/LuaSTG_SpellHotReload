@@ -779,7 +779,7 @@ end
 ---No source/body replay, join, setter, publication, restart or module cache.
 ---Dependencies are lazy to avoid the CardVersions -> Card cycle.
 function Card.SeedVersions(entry, session_id, classes, defaults)
-    local Source = require("SpellHotReload.FunctionPlan")
+    local Source = require("SpellHotReload.Source.FunctionPlan")
     local Functions = require("SpellHotReload.FunctionVersions")
     local Cards = require("SpellHotReload.CardVersions")
     local function fail(code, detail, e, key)

@@ -5,10 +5,10 @@ local serial = 0
 function M.run()
     local Card=require("SpellHotReload.Card")
     local Driver=require("SpellHotReload.Driver")
-    local Load=require("SpellHotReload.AnchorLoad")
-    local Versions=require("SpellHotReload.LoadVersions")
+    local Load=require("SpellHotReload.Load.AnchorLoad")
+    local Versions=require("SpellHotReload.Load.LoadVersions")
     local Commit=require("SpellHotReload.CardCommit")
-    local Anchor=require("SpellHotReload.Anchor")
+    local Anchor=require("SpellHotReload.Load.Anchor")
     local Binding=require("SpellHotReload.PracticeBinding")
     local Callbacks=require("SpellHotReload.CardCallbacks")
     local passed,failed,failures=0,0,{}
@@ -33,7 +33,7 @@ function M.run()
     local join,set=debug.upvaluejoin,debug.setupvalue
     local restart,replay,current=Binding.Restart,Binding.IsReplay,Binding.CaptureCurrent
     local commit_hook,restart_hook,publish=Card.Commit,Card.Restart,Callbacks.Publish
-    local create_hook=require("SpellHotReload.Compose").Create
+    local create_hook=require("SpellHotReload.Source.Compose").Create
     local names={"SpellHotReload.Plugin","SpellHotReload.Watcher","lstg.FileSystemWatcher","lstg.FileSystemWatcher.FileAction"}
     local modules={};for _,key in ipairs(names) do modules[key]=package.loaded[key] end
     local controllers,plugins={},{}
@@ -235,16 +235,16 @@ function M.run()
             local pending=plugin._pending_restart_run
             check(pending~=nil,"committed frozen run retained")
             local snapshot=plugin:GetVersions(f.entry.file).snapshot
-            local create=require("SpellHotReload.Compose").Create
+            local create=require("SpellHotReload.Source.Compose").Create
             local discover=plugin._driver.Discover
             local read=plugin._watcher.ReadFile
             plugin._driver.Discover=function() error("retry discovery forbidden") end
             plugin._watcher.ReadFile=function() error("retry disk read forbidden") end
-            require("SpellHotReload.Compose").Create=function() error("retry compile forbidden") end
+            require("SpellHotReload.Source.Compose").Create=function() error("retry compile forbidden") end
             f.entry.missing=true;f.entry.reloadable=false
             Binding.Restart=function() engine=engine+1 end
             result=plugin:RetryRestartFromUI()
-            require("SpellHotReload.Compose").Create=create
+            require("SpellHotReload.Source.Compose").Create=create
             plugin._driver.Discover=discover;plugin._watcher.ReadFile=read
             has(result,"restarted","production Missing retry success")
             eq(commits,1,"retry never recommits");eq(restarts,2,"retry uses restart hook")
@@ -271,7 +271,7 @@ function M.run()
         end
     end)
     -- Restore even after unexpected assertion/host failures.
-    require("SpellHotReload.Compose").Create=create_hook
+    require("SpellHotReload.Source.Compose").Create=create_hook
     Card.Commit,Card.Restart,Callbacks.Publish=commit_hook,restart_hook,publish
     Binding.Restart,Binding.IsReplay,Binding.CaptureCurrent=restart,replay,current
     debug.upvaluejoin,debug.setupvalue=join,set

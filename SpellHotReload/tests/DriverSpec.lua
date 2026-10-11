@@ -10,7 +10,7 @@ local Adapter = require("SpellHotReload.Adapter")
 local NodeRegistry = require("SpellHotReload.NodeRegistry")
 local Driver = require("SpellHotReload.Driver")
 local Value = require("SpellHotReload.Value")
-local IR = require("SpellHotReload.TopLevelIR")
+local IR = require("SpellHotReload.Source.TopLevelIR")
 
 local M = {}
 local passed, failed = 0, 0

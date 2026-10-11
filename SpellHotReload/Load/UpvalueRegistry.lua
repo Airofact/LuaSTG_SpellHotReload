@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------------
---- SpellHotReload.UpvalueRegistry
+--- SpellHotReload.Load.UpvalueRegistry
 ---
 --- A `file -> (name -> value)` store of a generated Boss file's top-level locals,
 --- captured at load time by intercepting `lstg.DoFile` (see GeneratedBossLoader).

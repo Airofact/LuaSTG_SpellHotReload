@@ -3,9 +3,9 @@
 local M = {}
 function M.run()
     local Card = require("SpellHotReload.Card")
-    local Compat = require("SpellHotReload.LoadVersions")
-    local Load = require("SpellHotReload.AnchorLoad")
-    local Source = require("SpellHotReload.FunctionPlan")
+    local Compat = require("SpellHotReload.Load.LoadVersions")
+    local Load = require("SpellHotReload.Load.AnchorLoad")
+    local Source = require("SpellHotReload.Source.FunctionPlan")
     local Functions = require("SpellHotReload.FunctionVersions")
     local Cards = require("SpellHotReload.CardVersions")
     local passed,failed,failures=0,0,{}
@@ -99,7 +99,7 @@ function M.run()
         end
     end
     local held_module,held_preload
-    local version_key="SpellHotReload.LoadVersions"
+    local version_key="SpellHotReload.Load.LoadVersions"
     local ok,problem=pcall(function()
         test(type(seed)=="function","adapter seeder exported")
         eq(Compat.Kind,"SpellHotReload.LoadVersions","compatibility kind")

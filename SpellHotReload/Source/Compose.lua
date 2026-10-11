@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------------
---- SpellHotReload.Compose
+--- SpellHotReload.Source.Compose
 ---
 --- The anchor-cell composition primitive: connect a freshly compiled closure to
 --- the cells an Anchor already holds, and build that closure from a fragment so
@@ -40,9 +40,9 @@
 --- holder of anything.
 --------------------------------------------------------------------------------
 
-local Anchor = require("SpellHotReload.Anchor")
-local Lexer = require("SpellHotReload.Lexer")
-local CodeCache = require("SpellHotReload.CodeCache")
+local Anchor = require("SpellHotReload.Load.Anchor")
+local Lexer = require("SpellHotReload.Source.Lexer")
+local CodeCache = require("SpellHotReload.Source.CodeCache")
 
 local M = {}
 

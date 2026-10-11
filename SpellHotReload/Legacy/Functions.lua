@@ -5,7 +5,7 @@
 -- Trusted legacy fragments only: its factory is executed in the real environment;
 -- this module is neither a sandbox nor a safe arbitrary-source evaluation API.
 -- Nil slots/lexical identity/full dependency impact require the versioned model.
-local Lexer = require("SpellHotReload.Lexer")
+local Lexer = require("SpellHotReload.Source.Lexer")
 local Functions = {}
 
 local function compile(src, name)

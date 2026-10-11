@@ -9,9 +9,9 @@ function M.run()
     local Target = require("SpellHotReload.CardTarget")
     local Card = require("SpellHotReload.Card")
     local Driver = require("SpellHotReload.Driver")
-    local Load = require("SpellHotReload.AnchorLoad")
+    local Load = require("SpellHotReload.Load.AnchorLoad")
     local Commit = require("SpellHotReload.CardCommit")
-    local Anchor = require("SpellHotReload.Anchor")
+    local Anchor = require("SpellHotReload.Load.Anchor")
     local passed, failed, failures = 0, 0, {}
     local function check(v, label)
         if v then passed=passed+1 else failed=failed+1;failures[#failures+1]=label end

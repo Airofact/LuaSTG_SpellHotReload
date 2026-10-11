@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------------
---- SpellHotReload.AnchorSession
+--- SpellHotReload.Load.AnchorSession
 ---
 --- The R2 session half of "one file, one anchor": it owns the first load of a
 --- supported file, keeps the anchor that load produced, and defines when the
@@ -33,7 +33,7 @@
 --- and the piece the Apply pipeline asks for the anchor it must never replace.
 --------------------------------------------------------------------------------
 
-local Anchor = require("SpellHotReload.Anchor")
+local Anchor = require("SpellHotReload.Load.Anchor")
 
 local M = {}
 

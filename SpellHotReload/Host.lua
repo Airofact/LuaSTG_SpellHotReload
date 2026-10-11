@@ -37,8 +37,8 @@
 --- `TopLevelIR.HostCalls`.
 --------------------------------------------------------------------------------
 
-local Lexer = require("SpellHotReload.Lexer")
-local TopLevelIR = require("SpellHotReload.TopLevelIR")
+local Lexer = require("SpellHotReload.Source.Lexer")
+local TopLevelIR = require("SpellHotReload.Source.TopLevelIR")
 
 local Host = {}
 

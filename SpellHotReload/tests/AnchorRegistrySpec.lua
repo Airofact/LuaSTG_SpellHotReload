@@ -28,8 +28,8 @@
 --- non-reloadable file is still registrable and readable.
 --------------------------------------------------------------------------------
 
-local AnchorLoad = require("SpellHotReload.AnchorLoad")
-local AnchorRegistry = require("SpellHotReload.AnchorRegistry")
+local AnchorLoad = require("SpellHotReload.Load.AnchorLoad")
+local AnchorRegistry = require("SpellHotReload.Load.AnchorRegistry")
 
 local M = {}
 local passed, failed = 0, 0

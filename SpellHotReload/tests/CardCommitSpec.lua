@@ -6,10 +6,10 @@ local serial=0
 function M.run(opts)
     opts = opts or {}
     local Tx = opts.transaction or require("SpellHotReload.CardCommit")
-    local Load = require("SpellHotReload.AnchorLoad")
-    local Capture = require("SpellHotReload.LoadVersions")
+    local Load = require("SpellHotReload.Load.AnchorLoad")
+    local Capture = require("SpellHotReload.Load.LoadVersions")
     local Cards = require("SpellHotReload.CardVersions")
-    local Anchor = require("SpellHotReload.Anchor")
+    local Anchor = require("SpellHotReload.Load.Anchor")
     local passed, failed, failures = 0, 0, {}
     local function test(v, label)
         if v then passed=passed+1 else failed=failed+1;failures[#failures+1]=label end

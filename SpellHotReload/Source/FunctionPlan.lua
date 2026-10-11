@@ -5,10 +5,10 @@
 --- checked but never executed. No join, setupvalue, publication or restart.
 --- Public plans are read-only by contract; R4 must recheck every read before
 --- joining all closures, writing cells and publishing callbacks atomically.
-local IR = require("SpellHotReload.TopLevelIR")
-local Binding = require("SpellHotReload.Binding")
-local Anchor = require("SpellHotReload.Anchor")
-local Compose = require("SpellHotReload.Compose")
+local IR = require("SpellHotReload.Source.TopLevelIR")
+local Binding = require("SpellHotReload.Source.Binding")
+local Anchor = require("SpellHotReload.Load.Anchor")
+local Compose = require("SpellHotReload.Source.Compose")
 local M = { Kind = "SpellHotReload.FunctionPlan", Version = 1 }
 local compile = loadstring or load
 

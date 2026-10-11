@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------------
---- SpellHotReload.Anchor
+--- SpellHotReload.Load.Anchor
 ---
 --- One file, one anchor: the load-time handle that keeps a generated file's
 --- top-level locals in their real cells, so a later hot reload can connect a
@@ -31,9 +31,9 @@
 --- that cannot be captured is executed once, as-is.
 --------------------------------------------------------------------------------
 
-local IR = require("SpellHotReload.TopLevelIR")
-local Binding = require("SpellHotReload.Binding")
-local CodeCache = require("SpellHotReload.CodeCache")
+local IR = require("SpellHotReload.Source.TopLevelIR")
+local Binding = require("SpellHotReload.Source.Binding")
+local CodeCache = require("SpellHotReload.Source.CodeCache")
 
 local M = {}
 

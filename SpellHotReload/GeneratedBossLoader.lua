@@ -23,9 +23,9 @@
 --- CardCallbacks additionally extracts and rebuilds the current card's callbacks.
 --------------------------------------------------------------------------------
 
-local Lexer = require("SpellHotReload.Lexer")
+local Lexer = require("SpellHotReload.Source.Lexer")
 local Functions = require("SpellHotReload.Legacy.Functions")
-local Capture = require("SpellHotReload.LoadCapture")
+local Capture = require("SpellHotReload.Load.LoadCapture")
 
 local Loader = {}
 

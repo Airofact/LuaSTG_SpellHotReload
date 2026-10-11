@@ -2,9 +2,9 @@
 --- Inputs/outputs are read-only by contract, not protected Lua tables.
 --- Every snapshot also carries the shared TopLevelIR analysis and the Binding
 --- declaration/visibility model; neither is a binding-safety proof.
-local IR = require("SpellHotReload.TopLevelIR")
+local IR = require("SpellHotReload.Source.TopLevelIR")
 local Adapter = require("SpellHotReload.Adapter")
-local Binding = require("SpellHotReload.Binding")
+local Binding = require("SpellHotReload.Source.Binding")
 local M = {}
 
 local function plain(value)

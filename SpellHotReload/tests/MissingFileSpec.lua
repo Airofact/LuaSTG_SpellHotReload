@@ -1,7 +1,7 @@
 -- Confirm Missing without confusing editor delete+rewrite or unreadable files
 -- with session end. All executed source is synthetic; no game source executes.
 local Store = require("SpellHotReload.SnapshotStore")
-local Hook = require("SpellHotReload.LoadHook")
+local Hook = require("SpellHotReload.Load.LoadHook")
 local M = {}
 
 function M.run()

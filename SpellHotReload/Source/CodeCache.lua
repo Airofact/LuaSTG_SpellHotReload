@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------------
---- SpellHotReload.CodeCache
+--- SpellHotReload.Source.CodeCache
 ---
 --- Mutation boundary for LuaJIT code which may have constified an upvalue or
 --- inlined its reader. debug.setupvalue/upvaluejoin do not invalidate those

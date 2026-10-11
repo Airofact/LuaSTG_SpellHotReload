@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------------
---- SpellHotReload.LoadCapture
+--- SpellHotReload.Load.LoadCapture
 ---
 --- Generalized load-time capture service for the generic reload model.
 ---
@@ -28,7 +28,7 @@
 --- do not block capture.
 --------------------------------------------------------------------------------
 
-local IR = require("SpellHotReload.TopLevelIR")
+local IR = require("SpellHotReload.Source.TopLevelIR")
 
 local M = {}
 

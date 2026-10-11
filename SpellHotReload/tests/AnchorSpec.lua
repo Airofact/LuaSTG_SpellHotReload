@@ -20,7 +20,7 @@
 --- 5.1) must honestly refuse to capture rather than fail the spec.
 --------------------------------------------------------------------------------
 
-local Anchor = require("SpellHotReload.Anchor")
+local Anchor = require("SpellHotReload.Load.Anchor")
 
 local M = {}
 local passed, failed = 0, 0
