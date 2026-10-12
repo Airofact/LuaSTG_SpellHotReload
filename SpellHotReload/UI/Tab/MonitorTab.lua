@@ -175,7 +175,7 @@ function MonitorTab.layout(view)
         ImGui.TextDisabled("No candidate snapshots")
     else
         ImGui.Text("Candidates (" .. #files .. "):")
-        ImGui.TextDisabled("Apply: safe definitions; complete candidates disappear; remaining changes stay pending; no restart. Dismiss: hide these bytes.")
+        ImGui.TextWrapped("Apply: safe definitions; complete candidates disappear; remaining changes stay pending; no restart. Dismiss: hide these bytes.")
         local has_stable = false
         for idx, file_name in ipairs(files) do
             local cand = store:GetCandidate(file_name)
