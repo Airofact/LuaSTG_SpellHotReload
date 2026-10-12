@@ -771,10 +771,16 @@ function Plugin:InspectCandidate(file)
         if not discovery then return nil, "discover: " .. message(derr) end
         local prepared, perr = self:_PrepareVersioned(file,candidate,capture,discovery,initial)
         if not prepared then return nil, perr end
+        -- Reuse this current-root report for read-only file leftovers. This is
+        -- not file Apply preflight, selection, or commit/removal permission.
+        local inspected, remainder, diagnostic = pcall(
+            require("SpellHotReload.Apply.FileApply").Remaining, prepared.selection.report)
         local model, fresh = Card.InspectPrepared(prepared,capture,function()
             return self:_FreshVersioned(file,candidate,capture)
         end)
         if not model then return nil, fresh end
+        model.file_remainder = inspected and remainder and {pending=remainder.pending}
+            or {error=message(inspected and diagnostic or remainder)}
         live = fresh
         self._candidate_inspections[file] = {model=model, content=candidate.first_content,
             generation=candidate.generation, capture=capture, snapshot=capture.snapshot,

@@ -100,10 +100,16 @@ function M.Remaining(report)
     local function pending(kind,key,reason,point,previous)
         result.pending[#result.pending+1]={kind=kind,key=key,reason=reason,
             first=point and point.first,last=point and point.last,
-            previous_first=previous and previous.first,previous_last=previous and previous.last}
+            previous_first=previous and previous.first,previous_last=previous and previous.last,
+            label=point and point.label,line=point and point.line,
+            previous_label=previous and previous.label,previous_line=previous and previous.line}
     end
     local function residual(scan, claims, structures)
-        local rows, declarations, next_token = {}, {}, 1
+        local rows, declarations, labels, next_token = {}, {}, {}, 1
+        -- Diagnostic names from the existing IR; never claim or ignore a statement.
+        for _, node in ipairs(scan.analysis.nodes) do
+            labels[node.tok.first] = labels[node.tok.first] or node.path or node.name or node.callee
+        end
         for _, declaration in ipairs(scan.bindings.declarations) do
             if not evidence.function_names[declaration.name] then
                 declarations[declaration.statement] = declaration.name
@@ -136,7 +142,8 @@ function M.Remaining(report)
                     end
                     rows[#rows+1]={signature=table.concat(pieces,"|") .. "@" .. table.concat(visible,","),
                         kind=kind, key=declarations[index] and ("local:" .. declarations[index]) or ("file:" .. state.file),
-                        first=statement.source_range.first,last=statement.source_range.last}
+                        first=statement.source_range.first,last=statement.source_range.last,
+                        label=labels[first],line=statement.line}
                 end
             end
         end

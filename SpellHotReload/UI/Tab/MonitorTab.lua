@@ -49,7 +49,35 @@ local function describe_inspection(ImGui, model, id)
         ImGui.TextWrapped(string.format("    Selection: %s; live slot %d -> source slot %d (%s)",
             target.key,target.live_slot,target.source_slot,target.match))
     end
-    ImGui.TextDisabled("    Names/constructors are not published; old live metadata is retained.")
+    ImGui.TextDisabled("Current preview: card/helpers only; selected may be unchanged.")
+    local remainder = model.file_remainder
+    if remainder then
+        if remainder.error then
+            ImGui.TextWrapped("File remainder unavailable: " .. remainder.error)
+        else
+            local unknown, first = 0, nil
+            for _, row in ipairs(remainder.pending) do
+                if row.kind == "unknown" then unknown = unknown + 1; first = first or row end
+            end
+            local function describe(row)
+                local candidate = row.first ~= nil
+                local line = candidate and row.line or row.previous_line
+                local label = candidate and row.label or row.previous_label
+                local point = candidate and row.first or row.previous_first
+                local where = (candidate and "candidate" or "loaded")
+                    .. (line and (" line " .. line) or (point and (" byte " .. point) or ""))
+                return string.format("%s | %s | %s: %s", row.kind, label or row.key, where, row.reason)
+            end
+            ImGui.Text(string.format("File remainder: %d pending / %d uncovered top-level",
+                #remainder.pending, unknown))
+            if first then ImGui.TextWrapped(describe(first)) end
+            if ImGui.CollapsingHeader("File remainder details##remainder_" .. id) then
+                for _, row in ipairs(remainder.pending) do ImGui.TextWrapped(describe(row)) end
+            end
+        end
+    end
+    ImGui.TextDisabled("File Apply checks separately; this preview is not permission.")
+    ImGui.TextDisabled("Names/constructors remain live; initialization is not replayed.")
     if not ImGui.CollapsingHeader("Published units + candidate actions##versions_" .. id) then return end
     local function row(unit)
         local flags = (unit.selected and "selected" or (unit.pending and "pending" or "keep"))
@@ -238,7 +266,13 @@ function MonitorTab.layout(view)
 
     local last = view.last_result or plugin:GetLastResult()
     if last ~= nil then
-        ImGui.TextWrapped("Result: " .. tostring(last))
+        local prefix = "Result: "
+        if type(last) == "string" and last:find("completion unavailable", 1, true) then
+            prefix = "After commit / completion check: "
+        elseif type(last) == "string" and last:match("^compare:") then
+            prefix = "Before commit / comparison refused: "
+        end
+        ImGui.TextWrapped(prefix .. tostring(last))
     end
 end
 

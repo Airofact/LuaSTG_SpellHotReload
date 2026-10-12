@@ -155,6 +155,8 @@ function M.run()
         eq(f.legacy,0,label.." no legacy fallback")
     end
     local old_describe=require("SpellHotReload.Adapters.Card.CardVersions").Describe
+    local FileApply=require("SpellHotReload.Apply.FileApply")
+    local old_remaining=FileApply.Remaining
     local ok,problem=pcall(function()
         local f=fixture()
         eq(f.p:InspectCandidate(nil),nil,"invalid file refused")
@@ -306,6 +308,60 @@ function M.run()
             eq(row(model.cards,"card:1:K:3").pending,true,"changed-layout sibling not guessed")
             check(scalar_tree(model.pending_sources),"unowned description excludes source descriptor")
 
+            -- A changed object method is outside Card/helper preview, even when
+            -- Current is selected/keep. Inspect must expose it without publishing.
+            f=fixture();local before=f.capture.snapshot
+            local object_edit=SOURCE.."\n_editor_class['K'].extra=function() error('candidate ran') end"
+            candidate(f,object_edit)
+            local discoveries=f.discoveries
+            model=must(f.p:InspectCandidate(FILE))
+            local pending=model.file_remainder and model.file_remainder.pending
+            eq(type(pending),"table","file remainder attached to Current preview")
+            local unknown
+            for _,item in ipairs(pending or {}) do if item.kind=="unknown" then unknown=item;break end end
+            check(unknown~=nil,"uncovered object method visible")
+            eq(unknown and unknown.label,"_editor_class['K'].extra","diagnostic uses IR field name")
+            local _,newlines=SOURCE:gsub("\n","")
+            eq(unknown and unknown.line,newlines+2,"candidate line from shared IR")
+            eq(unknown and unknown.first,#SOURCE+2,"candidate byte range retained")
+            eq(f.discoveries,discoveries+1,"no second file discovery")
+            check(scalar_tree(model.file_remainder),"file remainder detached scalars")
+            eq(f.classes.K.extra,nil,"candidate object method not published")
+            unchanged(f,before,"uncovered inspection")
+            model.file_remainder.pending[1].reason="corrupted"
+            local cached=must(f.p:GetCandidateInspection(FILE,Binding.CaptureCurrent()))
+            check(cached.file_remainder.pending[1].reason~="corrupted","remainder cache detached")
+            has(f.p:ApplyFileFromUI(FILE),"compare: unbounded top-level change","file rejects before commit")
+            eq(f.capture.snapshot,before,"refused file keeps published snapshot")
+            has(f.p:ApplyFromUI(),"completion unavailable","Current retains committed definitions on failed completion")
+            eq(f.p._store:GetCandidate(FILE)~=nil,true,"completion failure keeps candidate")
+            eq(f.classes.K.extra,nil,"neither Apply publishes object method")
+
+            -- Remainder failure must remain a diagnostic, while late drift must
+            -- still invalidate the entire inspection through its final refresh.
+            for _,fault in ipairs({"return","throw","generation"}) do
+                f=fixture();local before=f.capture.snapshot
+                candidate(f,object_edit)
+                FileApply.Remaining=function(report)
+                    if fault=="return" then return nil,{message="remainder fixture failure"} end
+                    if fault=="throw" then error("remainder fixture failure") end
+                    local result,err=old_remaining(report)
+                    candidate(f,object_edit)
+                    return result,err
+                end
+                v,e=f.p:InspectCandidate(FILE);FileApply.Remaining=old_remaining
+                if fault=="generation" then
+                    eq(v,nil,"late remainder drift refuses inspection")
+                    eq(next(f.p._candidate_inspections),nil,"late remainder drift stores no cache")
+                else
+                    model=must(v,e)
+                    has(model.file_remainder.error,"remainder fixture failure",fault.." diagnostic visible")
+                    eq(model.file_remainder.pending,nil,fault.." no fictional empty remainder")
+                    check(scalar_tree(model.file_remainder),fault.." detached error")
+                end
+                unchanged(f,before,fault.." remainder inspection")
+            end
+
             -- ImGui binding stub: proves layout consumption/control dispatch, not rendering.
             local texts,buttons,clicked={},{},""
             local function emit(text) texts[#texts+1]=text end
@@ -324,6 +380,9 @@ function M.run()
             Monitor.layout(view)
             local rendered=table.concat(texts,"\n")
             has(rendered,"published r0","UI shows actual revision")
+            has(rendered,"File remainder:","UI separates file remainder from Current units")
+            has(rendered,"selected may be unchanged","UI distinguishes selected from changed")
+            has(rendered,"not permission","file preview is not Apply permission")
             has(rendered,"not commit authorization","UI labels inspection not authority")
             has(rendered,"pending","UI shows pending wrappers/functions")
             has(rendered,"preserve-state","UI shows initializer boundary")
@@ -341,12 +400,33 @@ function M.run()
             enter(f,2);clicked="";texts={};Monitor.layout(view)
             has(table.concat(texts,"\n"),"Last partial publication: r1","UI partial ledger shown")
             eq(f.p:GetCandidateInspection(FILE,Binding.CaptureCurrent()),nil,"UI cannot treat old inspection as commit plan")
+
+            f=fixture();candidate(f,object_edit);must(f.p:InspectCandidate(FILE))
+            view={plugin=f.p};clicked=""
+            package.loaded.imgui.ImGui.CollapsingHeader=function() return false end
+            texts={};Monitor.layout(view);rendered=table.concat(texts,"\n")
+            has(rendered,"1 uncovered top-level","collapsed summary retains uncovered count")
+            has(rendered,"_editor_class['K'].extra","collapsed summary retains definition")
+            has(rendered,"candidate line "..(newlines+2),"collapsed summary retains source line")
+            has(rendered,"top-level change not published or not confirmed","collapsed summary retains reason")
+            check(not rendered:find("Published callbacks",1,true),"unit details folded")
+            view.last_result="compare: fixture refusal";texts={};Monitor.layout(view)
+            has(table.concat(texts,"\n"),"Before commit / comparison refused:","file comparison stage shown")
+            view.last_result="applied; completion unavailable: fixture";texts={};Monitor.layout(view)
+            has(table.concat(texts,"\n"),"After commit / completion check:","failed completion stage shown")
+            view.last_result="fixture unspecified failure";texts={};Monitor.layout(view)
+            has(table.concat(texts,"\n"),"Result: fixture unspecified failure","unknown stage not inferred")
+            FileApply.Remaining=function() return nil,{message="remainder UI failure"} end
+            must(f.p:InspectCandidate(FILE));FileApply.Remaining=old_remaining
+            texts={};Monitor.layout(view)
+            has(table.concat(texts,"\n"),"File remainder unavailable: remainder UI failure","diagnostic failure remains visible")
         end
     end)
     debug.getupvalue,debug.setupvalue,debug.upvaluejoin=get,set,join
     if saved.jit then _G.jit=saved.jit end
     Binding.Restart,Card.Plan,Compose.Create=old_restart,old_plan,old_create
     require("SpellHotReload.Adapters.Card.CardVersions").Describe=old_describe
+    FileApply.Remaining=old_remaining
     for _,p in ipairs(plugins) do if not p:IsReleased() then p:Release() end end
     for _,name in ipairs(globals) do rawset(_G,name,saved[name]) end
     for _,name in ipairs(modules) do package.loaded[name]=loaded[name] end
