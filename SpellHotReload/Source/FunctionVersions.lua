@@ -324,7 +324,9 @@ local function compare(state, content, snapshot, partial)
     if partial then
         -- Empty selection still proves the complete fixed declaration/Anchor
         -- contract. Candidate definition failures below have per-name scope.
-        prepared, perr = Plan.PrepareDiscovery(snapshot, state.entry, {}, identities)
+        local prepare_one, scope_error = Plan.DiscoveryPreparer(snapshot, state.entry)
+        if not prepare_one then return nil, scope_error end
+        prepared, perr = prepare_one({}, identities)
         if not prepared then return nil, perr end
         for _,name in ipairs(state.names) do
             local current,why=Anchor.Get(state.entry,name)
@@ -337,7 +339,7 @@ local function compare(state, content, snapshot, partial)
             -- read-set too; old closures sharing cells is not a value check.
             prepared.read_set[#prepared.read_set+1]={name=name,anchor=state.entry.anchor,
                 index=slot,value=current}
-            local one,err=Plan.PrepareDiscovery(snapshot,state.entry,{name},identities)
+            local one,err=prepare_one({name},identities)
             if not one then blocked[name]=err
             else
                 prepared.functions[#prepared.functions+1]=one.functions[1]

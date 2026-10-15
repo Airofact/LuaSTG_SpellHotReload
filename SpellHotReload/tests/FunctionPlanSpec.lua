@@ -106,6 +106,67 @@ function M.run()
         eq(#empty.joins, 0, "empty joins")
         eq(#empty.writes, 0, "empty writes")
 
+        -- Multiple isolated definitions share source work without sharing live checks.
+        local Driver = require("SpellHotReload.Pipeline.Driver")
+        local Card = require("SpellHotReload.Adapters.Card.Card")
+        local IR = require("SpellHotReload.Source.TopLevelIR")
+        local Bindings = require("SpellHotReload.Source.Binding")
+        local driver = Driver.New()
+        assert(driver:RegisterDiscovery(Card))
+        local discovery = assert(driver:Discover("FunctionPlan_Boss.lua", candidate, {}))
+        local snapshot = discovery.snapshot
+        local prepare_one = assert(Plan.DiscoveryPreparer(snapshot, entry))
+        local analyze_ir, analyze_bindings = IR.Analyze, Bindings.Analyze
+        local ir_calls, binding_calls = 0, 0
+        IR.Analyze = function(...)
+            ir_calls = ir_calls + 1; return analyze_ir(...)
+        end
+        Bindings.Analyze = function(...)
+            binding_calls = binding_calls + 1; return analyze_bindings(...)
+        end
+        local scoped_ok, scoped_error = pcall(function()
+            eq(#assert(prepare_one({}, published)).functions, 0, "scoped global preflight")
+            local first = assert(prepare_one({"helper"}, published))
+            eq(#first.functions, 1, "scoped helper prepared")
+            eq(first.functions[1].created.used[1], "counter", "scoped real capture retained")
+            local bad, why = prepare_one({"counter"}, {counter=function() end})
+            eq(bad, nil, "isolated nondefinition refused")
+            eq(why.code, "unsupported", "isolated refusal code")
+            local second = assert(prepare_one({"pattern"}, published))
+            eq(second.functions[1].created.used[1], "helper", "safe consumer survives refused sibling")
+            for i = 1, 12 do assert(prepare_one({"helper"}, published)) end
+            eq(ir_calls, 1, "many isolated requests parse loaded source once")
+            eq(binding_calls, 1, "many isolated requests bind loaded source once")
+            eq(Anchor.Get(entry, "helper"), helper, "scoped preparation never publishes")
+            eq(Anchor.Get(entry, "counter"), 0, "scoped preparation preserves state")
+            bad, why = prepare_one({"helper"}, {helper=function() end})
+            eq(bad, nil, "cached scans do not authorize wrong live identity")
+            eq(why.code, "stale", "identity refusal remains stale")
+            snapshot.common.content = candidate .. " "
+            bad, why = prepare_one({}, published)
+            snapshot.common.content = candidate
+            eq(bad, nil, "changed candidate cannot reuse source scope")
+            eq(why.code, "stale", "changed candidate scope refused")
+            local held = snapshot.analysis
+            snapshot.analysis = {}
+            bad, why = prepare_one({}, published)
+            snapshot.analysis = held
+            eq(bad, nil, "replaced analysis cannot reuse source scope")
+            eq(why.code, "stale", "replaced analysis scope refused")
+            entry.loaded_source = source .. " "
+            bad, why = prepare_one({}, published)
+            entry.loaded_source = source
+            eq(bad, nil, "changed loaded source cannot reuse source scope")
+            eq(why.code, "stale", "changed loaded scope refused")
+            local separate = assert(Plan.DiscoveryPreparer(snapshot, entry))
+            assert(separate({}, published))
+            eq(ir_calls, 2, "new comparison does not retain old scan cache")
+        end)
+        IR.Analyze, Bindings.Analyze = analyze_ir, analyze_bindings
+        -- Restore fixture fields even when an unexpected error interrupted the checks.
+        snapshot.common.content, snapshot.analysis, entry.loaded_source = candidate, discovery.snapshot.common.analysis, source
+        assert(scoped_ok, scoped_error)
+
         local nil_source = "local unused\nlocal function f() return unused end"
         local nil_entry = capture(nil_source)
         local nil_plan = assert(Plan.Prepare(nil_source, nil_entry, { "f" }, current(nil_entry, { "f" })))

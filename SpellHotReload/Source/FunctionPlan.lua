@@ -178,7 +178,7 @@ end
 ---selection, semantic diff/impact, unit versions and the R4 transaction.
 ---Supports local function f, local f=function, f=function and function f after
 ---a visible forward local declaration. No factories, aliases or unknown RHS.
-local function prepare(content, entry, selected, published, snapshot)
+local function prepare(content, entry, selected, published, snapshot, scans)
     local file = plain(entry) and entry.file or nil
     if not plain(entry) or not Anchor.Live(entry) or type(entry.anchor) ~= "function"
         or not plain(entry.slots) or type(entry.loaded_source) ~= "string" then
@@ -201,10 +201,20 @@ local function prepare(content, entry, selected, published, snapshot)
         end
         requested[name] = true
     end
-    local loaded, lerr, lcode = analyze(entry.loaded_source)
-    if loaded == nil then return failure(lcode, lerr, file) end
-    local candidate, cerr, ccode = analyze(content, snapshot)
-    if candidate == nil then return failure(ccode, cerr, file) end
+    local loaded = scans and scans.loaded
+    if loaded == nil then
+        local lerr, lcode
+        loaded, lerr, lcode = analyze(entry.loaded_source)
+        if loaded == nil then return failure(lcode, lerr, file) end
+        if scans then scans.loaded = loaded end
+    end
+    local candidate = scans and scans.candidate
+    if candidate == nil then
+        local cerr, ccode
+        candidate, cerr, ccode = analyze(content, snapshot)
+        if candidate == nil then return failure(ccode, cerr, file) end
+        if scans then scans.candidate = candidate end
+    end
     local old, new = loaded.bindings, candidate.bindings
     -- Fixed unique declarations, their kind and source order. This is stricter
     -- than name-set equality: reordered locals must not rebind old consumers.
@@ -279,6 +289,27 @@ end
 ---Reuse candidate discovery only; loaded checks and literal safety remain.
 function M.PrepareDiscovery(snapshot, entry, selected, published)
     return prepare(shared_content(snapshot), entry, selected, published, snapshot)
+end
+
+---One comparison's private source scans. Discard the returned preparer afterwards;
+---it is not a saved plan, a live-read cache, or commit authority. Every call still
+---checks the entry, declarations, selected identities and real closure captures.
+function M.DiscoveryPreparer(snapshot, entry)
+    local content = shared_content(snapshot)
+    if type(content) ~= "string" or not plain(entry)
+        or type(entry.loaded_source) ~= "string" then
+        return failure("unsupported", "discovery and loaded entry required")
+    end
+    local common, analysis, bindings = snapshot.common, snapshot.analysis, snapshot.bindings
+    local loaded_source, scans = entry.loaded_source, {}
+    return function(selected, published)
+        if snapshot.common ~= common or shared_content(snapshot) ~= content
+            or snapshot.analysis ~= analysis or snapshot.bindings ~= bindings
+            or entry.loaded_source ~= loaded_source then
+            return failure("stale", "preparation source scope changed", entry.file)
+        end
+        return prepare(content, entry, selected, published, snapshot, scans)
+    end
 end
 
 return M
