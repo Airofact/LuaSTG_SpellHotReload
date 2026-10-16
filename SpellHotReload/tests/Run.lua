@@ -1,17 +1,7 @@
--- Standalone entry point; run with the game directory as cwd.
+-- Standalone smoke entry; full offline validation also executes each spec separately.
 package.path = "plugin/SpellHotReload/?.lua;" .. package.path
-local baseline = require("SpellHotReload.tests.SandboxSpec").run()
-assert(baseline.failed == 0, "baseline tests failed")
-require("SpellHotReload.tests.InlineSpec").run()
-local ir = require("SpellHotReload.tests.TopLevelIRSpec").run()
-assert(ir.failed == 0, "top-level IR tests failed")
-local capture = require("SpellHotReload.tests.LoadCaptureSpec").run()
-assert(capture.failed == 0, "load capture tests failed")
-local driver = require("SpellHotReload.tests.DriverSpec").run()
-assert(driver.failed == 0, "driver tests failed")
-local card = require("SpellHotReload.tests.CardSpec").run()
-assert(card.failed == 0, "card adapter tests failed")
-local host = require("SpellHotReload.tests.HostSpec").run()
-assert(host.failed == 0, "host adapter tests failed")
-local watcher = require("SpellHotReload.tests.WatcherSpec").run()
-assert(watcher.failed == 0, "watcher tests failed")
+for _,name in ipairs({"SandboxSpec","LexerSpec","TopLevelIRSpec","LoadCaptureSpec",
+    "AdapterDiscoverySpec","DriverDiscoverySpec","WatcherSpec","CurrentRestartSpec"}) do
+    local result=require("SpellHotReload.tests."..name).run()
+    assert(result.failed==0,name.." failed")
+end

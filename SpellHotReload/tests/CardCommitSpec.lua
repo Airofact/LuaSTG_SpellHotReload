@@ -1,3 +1,4 @@
+local Planning=require("SpellHotReload.tests.PlanningFixture")
 -- Synthetic first loads and fault injection, never engine/game chunks.
 -- Lua5.1 raw/cell-only cases use a presence-only join fixture (never invoked);
 -- real new-closure sharing and hot-JIT cases require actual LuaJIT APIs.
@@ -7,7 +8,7 @@ function M.run(opts)
     opts = opts or {}
     local Tx = opts.transaction or require("SpellHotReload.Apply.CardCommit")
     local Load = require("SpellHotReload.Load.AnchorLoad")
-    local Capture = require("SpellHotReload.Load.LoadVersions")
+    local Capture = require("SpellHotReload.Adapters.Card.Card")
     local Cards = require("SpellHotReload.Adapters.Card.CardVersions")
     local Anchor = require("SpellHotReload.Load.Anchor")
     local passed, failed, failures = 0, 0, {}
@@ -70,10 +71,10 @@ function M.run(opts)
         local entry=must(Load.Capture(source,{name="Tx_Boss.lua",
             capability={getupvalue=true,setupvalue=true,upvaluejoin=true}}))
         entry.file="Tx_Boss.lua"
-        local capture=must(Capture.Capture(entry,sid,_editor_class,defaults))
+        local capture=must(Capture.SeedVersions(entry,sid,_editor_class,defaults))
         local content=kind=="raw" and source:gsub("return 10 end","return 20 end")
             or (kind=="cell" and source:gsub("return 100 end","return 200 end") or full)
-        local report=must(Cards.Compare(capture.snapshot,content))
+        local report=must(Planning.Report(capture,content))
         local keys=kind=="cell" and {"card:1:K:3"} or {"card:1:K:2","card:1:K:3"}
         local selection=must(Cards.Select(report,keys))
         local live={capture=capture,snapshot=capture.snapshot,entry=entry,session_id=sid,
@@ -145,7 +146,7 @@ function M.run(opts)
         for _,op in ipairs(s.publications) do eq(rawget(op.target,op.key),op.value,"all raw callbacks installed") end
         eq(l.classes.K.cards[2]:frame(),20,"A next call")
         eq(l.classes.K.cards[3]:frame(),20,"B next call")
-        test(#Cards.Compare(c.snapshot,l.content).changed==0,"published definitions compare clean")
+        test(#Planning.Report(c,l.content).changed==0,"published definitions compare clean")
 
         tx,s,c,l=fixture("cell")
         eq(#s.joins,0,"constant function needs no new joins")
@@ -158,20 +159,20 @@ function M.run(opts)
         -- Optional callback deletion publishes its captured genuine default.
         tx,s,c,l=fixture("raw")
         l.content=source:gsub("function _tmp_sc:frame%(%) return 10 end","")
-        s=must(Cards.Select(must(Cards.Compare(c.snapshot,l.content)),{"card:1:K:2"}))
+        s=must(Cards.Select(must(Planning.Report(c,l.content)),{"card:1:K:2"}))
         receipt=must(scoped(tx,s,c,l))
         eq(l.classes.K.cards[2].frame,defaults.frame,"deleted optional default restored")
         eq(c.snapshot.units["card:1:K:2"].callbacks.frame.body,nil,"deleted version body")
-        test(#Cards.Compare(c.snapshot,l.content).changed>0,"unselected deletion pending")
+        test(#Planning.Report(c,l.content).changed>0,"unselected deletion pending")
         -- Bodies are not run by commit, even bodies which immediately throw.
         tx,s,c,l=fixture("raw")
         l.content=source:gsub("return 10 end","error('body must not run') end")
-        s=must(Cards.Select(must(Cards.Compare(c.snapshot,l.content)),{"card:1:K:2"}))
+        s=must(Cards.Select(must(Planning.Report(c,l.content)),{"card:1:K:2"}))
         must(scoped(tx,s,c,l))
         eq(_tx_runs,1,"throwing candidate body not executed by commit")
         -- No-op validates ownership/scope, consumes once but never flushes.
         tx,s,c,l=fixture("raw")
-        s=must(Cards.Select(must(Cards.Compare(c.snapshot,source)),{}));l.content=source
+        s=must(Cards.Select(must(Planning.Report(c,source)),{}));l.content=source
         flushes=0;rawset(_G,"jit",{flush=function() flushes=flushes+1 end})
         local duplicate
         local ran=tx:Run(function(token)
@@ -435,9 +436,9 @@ function M.run(opts)
             eq(_tx_runs,1,"full no initialization/wiring replay")
             -- Continued candidate and partial publication preserve pending.
             tx,s,c,l=fixture("full")
-            s=must(Cards.Select(must(Cards.Compare(c.snapshot,full)),{"card:1:K:2"}))
+            s=must(Cards.Select(must(Planning.Report(c,full)),{"card:1:K:2"}))
             must(scoped(tx,s,c,l))
-            local diff=must(Cards.Compare(c.snapshot,full))
+            local diff=must(Planning.Report(c,full))
             test(#diff.changed>0,"unselected B remains pending")
             eq(l.classes.K.cards[3]:init(),100,"unneeded other function untouched")
             l.snapshot=c.snapshot

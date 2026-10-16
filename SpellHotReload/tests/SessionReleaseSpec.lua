@@ -3,7 +3,6 @@
 local Hook = require("SpellHotReload.Load.LoadHook")
 local Capture = require("SpellHotReload.Load.AnchorLoad")
 local Store = require("SpellHotReload.Runtime.SnapshotStore")
-local Registry = require("SpellHotReload.Load.UpvalueRegistry")
 local M = {}
 local this_file = debug.getinfo(1, "S").source:sub(2)
 local bootstrap = this_file:match("^(.*[/\\])") .. "../../__init__.lua"
@@ -80,16 +79,6 @@ function M.run()
         check(newer.generation > generation, "generation remains monotonic")
         eq(store:RecordFirstRead("A_Boss.lua", generation, "stale", 6), nil, "old ticket refused")
 
-        local registry, map = Registry.New(), {helper=function() return 9 end}
-        registry:SetAll("A_Boss.lua", map)
-        registry:SetSource("A_Boss.lua", "loaded bytes")
-        local held = registry:Get("A_Boss.lua")
-        check(registry:Release(), "release legacy registry")
-        check(registry:Release(), "legacy release idempotent")
-        eq(registry:Get("A_Boss.lua"), nil, "legacy map released")
-        eq(registry:GetSource("A_Boss.lua"), nil, "legacy source released")
-        eq(held.helper(), 9, "caller-held map not mutated")
-
         -- A retained watcher handle must drop callbacks/store and stay retired.
         local watcher_store, owner = Store.New(), {}
         local owner_weak, store_weak = weak(owner), weak(watcher_store)
@@ -135,7 +124,7 @@ function M.run()
         local entry = assert(Capture.Capture([[local state = {}
 local function consumer() return state end]]))
         check(p:AdoptLoad("A_Boss.lua", entry), "adopt complete load")
-        local anchors, legacy, snapshots = p:GetAnchors(), p:GetRegistry(), p:GetStore()
+        local anchors, snapshots = p:GetAnchors(), p:GetStore()
         local tool = require("SpellHotReload.UI.View")
         tool:initialize(p)
         p:SetView(tool)
@@ -173,8 +162,6 @@ local function consumer() return state end]]))
         eq(p:GetView(), nil, "plugin drops view")
         eq(p:GetLoad("A_Boss.lua"), nil, "plugin drops full load entry")
         eq(anchors:Entry("A_Boss.lua"), nil, "anchor registry cleared in place")
-        eq(legacy:Get("A_Boss.lua"), nil, "legacy registry cleared in place")
-        eq(legacy:GetSource("A_Boss.lua"), nil, "source bytes cleared")
         eq(#snapshots:GetCandidateFileNames(), 0, "plugin clears candidate bytes")
         eq(#snapshots:GetAcceptedFileNames(), 0, "plugin clears baseline bytes")
         eq(p:GetLog():Count(), 0, "log references cleared")
@@ -191,13 +178,10 @@ local function consumer() return state end]]))
         eq(p:_apply(), "session ended", "ended internal Apply refused")
         eq(p:RetryRestart(), "session ended", "ended restart refused")
         check(not p:Dismiss("A_Boss.lua"), "ended dismiss refused")
-        check(not p:CaptureAnchor("A", "bytes", {}, {}, function() end), "ended capture refused")
         check(not p:AdoptLoad("A", {loaded_source="bytes"}), "ended adoption refused")
         check(not p:_CheckLoad("A"), "ended absent-entry fallback refused")
-        check(not p:_Publish("A", {helper=consumer}), "ended publication refused")
         p:SetView({})
         eq(p:GetView(), nil, "ended plugin cannot acquire view")
-        eq(legacy:Get("A"), nil, "guards cannot resurrect legacy values")
 
         -- Retire a direct hook and preserve original argument/result arity.
         local e, notifications = engine(), 0

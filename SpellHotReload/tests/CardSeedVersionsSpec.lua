@@ -1,9 +1,9 @@
+local Planning=require("SpellHotReload.tests.PlanningFixture")
 -- Card-owned first-load aggregation; genuine miniature files only.
 -- Lua5.1 uses presence-only capability for read-only metadata, never sharing proof.
 local M = {}
 function M.run()
     local Card = require("SpellHotReload.Adapters.Card.Card")
-    local Compat = require("SpellHotReload.Load.LoadVersions")
     local Load = require("SpellHotReload.Load.AnchorLoad")
     local Source = require("SpellHotReload.Source.FunctionPlan")
     local Functions = require("SpellHotReload.Source.FunctionVersions")
@@ -98,19 +98,15 @@ function M.run()
             eq(e.code,code,label.." code");test(type(e.message)=="string",label.." safe message")
         end
     end
-    local held_module,held_preload
-    local version_key="SpellHotReload.Load.LoadVersions"
     local ok,problem=pcall(function()
         test(type(seed)=="function","adapter seeder exported")
-        eq(Compat.Kind,"SpellHotReload.LoadVersions","compatibility kind")
-        eq(Compat.Version,1,"compatibility version")
         local entry,classes,defaults=fixture()
         local old_init,old_helper=classes.K.cards[2].init,entry.map.helper
         debug.setupvalue=function() mutations=mutations+1;error("seed writes") end
         debug.upvaluejoin=function() mutations=mutations+1;error("seed joins") end
         rawset(_G,"jit",{flush=function() mutations=mutations+1;error("seed flushes") end})
         local direct=must(Card.SeedVersions(entry,"seed:session",classes,defaults))
-        local compat=must(Compat.Capture(entry,"seed:session",classes,defaults))
+        local compat=must(Card.SeedVersions(entry,"seed:session",classes,defaults))
         equivalent(direct,compat,entry,classes,"real seed")
         eq(direct.snapshot.revision,0,"aggregate first revision")
         eq(direct.snapshot.functions.revision,0,"local first revision")
@@ -134,16 +130,10 @@ function M.run()
         eq(entry.map.helper,old_helper,"original trailer map unchanged")
         eq(_seed_versions_runs,1,"no source replay")
         eq(mutations,0,"no seed mutators")
-        -- Production is independent of the compatibility module, even cold.
-        held_module,held_preload=package.loaded[version_key],package.preload[version_key]
-        package.loaded[version_key]=nil
-        package.preload[version_key]=function() error("legacy metadata facade forbidden") end
         local captured,reason=Card.CaptureVersions(entry,"seed:session")
-        test(captured~=nil,"production does not depend on compatibility facade")
-        eq(reason,nil,"production facade-independent success")
+        test(captured~=nil,"production captures directly")
+        eq(reason,nil,"production capture success")
         if captured then equivalent(captured,direct,entry,classes,"production seed") end
-        package.loaded[version_key],package.preload[version_key]=held_module,held_preload
-        held_module,held_preload=nil,nil
         -- A DiMS escape tail contributes two opaque, non-selectable slots.
         -- It must not disable reload for combat cards elsewhere in the file.
         restore()
@@ -181,7 +171,7 @@ function M.run()
         eq(#escape_capture.snapshot.order,3,"only explicit combat callbacks become roots")
         eq(escape_calls,1,"normal load executes escape exactly once")
         eq(argument_calls,1,"normal load evaluates escape arguments exactly once")
-        local report=must(Cards.Compare(escape_capture.snapshot,escaped))
+        local report=must(Planning.Report(escape_capture,escaped))
         test(report~=nil,"unchanged full file remains comparable")
         eq(escape_calls,1,"version comparison does not replay escape")
         eq(argument_calls,1,"version comparison does not replay escape arguments")
@@ -229,16 +219,6 @@ function M.run()
             v,e=Card.SeedVersions(unpack(inputs))
             refusal(v,e,"unsupported","hostile capture input")
         end
-        -- Compatibility is a forwarding entry, not a second metadata algorithm.
-        local marker,tail={},{}
-        Card.SeedVersions=function(a,b,c,d)
-            eq(a,entry,"compat entry exact input");eq(b,"compat:session","compat explicit session")
-            eq(c,classes,"compat explicit classes");eq(d,defaults,"compat explicit defaults")
-            return marker,nil,tail,nil
-        end
-        local results=pack(Compat.Capture(entry,"compat:session",classes,defaults))
-        eq(results.n,4,"compat return arity retained");eq(results[1],marker,"compat result identity")
-        eq(results[3],tail,"compat tail identity")
         -- Each pure dependency is consumed in order, and every refusal is exact.
         for stop=0,5 do
             restore()
@@ -288,14 +268,13 @@ function M.run()
                 eq(v.snapshot,aggregate,"aggregate output exact identity")
                 eq(v.ownership,ownership,"ownership output exact identity")
                 eq(v.classes,classes,"classes output exact identity")
-                eq(v.kind,Compat.Kind,"output compatibility marker");eq(v.version,Compat.Version,"output compatibility version")
+                eq(v.kind,"SpellHotReload.LoadVersions","output compatibility marker");eq(v.version,1,"output compatibility version")
             else
                 eq(v,nil,"dependency refusal "..stop);eq(e,marker,"dependency error identity "..stop)
             end
         end
         eq(traps,0,"no hostile metamethod")
     end)
-    if held_module or held_preload then package.loaded[version_key],package.preload[version_key]=held_module,held_preload end
     restore()
     for _,key in ipairs(keys) do rawset(_G,key,globals[key]) end
     if not ok then error(problem) end

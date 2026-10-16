@@ -205,7 +205,7 @@ function SnapshotStore:HasPartialPublication(file_name)
 	return self._partial[file_name] ~= nil
 end
 
----Set an accepted snapshot directly (baseline or legacy full-file publication).
+---Set an accepted snapshot directly (initial watcher baseline).
 ---After a partial publication, only Clear/new session may establish a baseline.
 ---@param file_name string
 ---@param content string

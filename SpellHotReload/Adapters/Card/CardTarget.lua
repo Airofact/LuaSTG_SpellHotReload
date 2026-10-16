@@ -8,10 +8,9 @@
 -- Full FIRST-load ownership (including other classes/placeholders) is checked.
 -- No parsing, compiling, debug API, game calls, joins, writes, cache or restart.
 -- LocateDiscovery / CheckDiscovery prove a CURRENT root source correspondence.
--- CardVersions.Compare still refuses non-fixed layouts; production is unchanged.
 -- LocateFileDiscovery / CheckFileDiscovery enumerate genuine captured owners
 -- without practice bindings. They prove correspondence, NOT binding safety,
--- publication permission or complete file coverage. Production is unchanged.
+-- publication permission or complete file coverage.
 -- Pure tables are read-only by contract; release targets with their session.
 local Card = require("SpellHotReload.Adapters.Card.Card")
 local M = { Kind="SpellHotReload.CardTarget", Version=1 }
@@ -68,7 +67,7 @@ local function ownership(base,capture,live,file)
     for _,owner in ipairs(capture.ownership) do
         if not plain(owner) or type(owner.class_key)~="string" or owners[owner.class_key]
             or not plain(owner.class) or rawget(live.classes,owner.class_key)~=owner.class
-            or rawget(owner.class,"cards")~=owner.list or dense(owner.slots)==nil
+            or not rawequal(rawget(owner.class,"cards"),owner.list) or dense(owner.slots)==nil
             or dense(owner.list)~=#owner.slots then
             return fail("ownership","first-load class/list ownership changed",file)
         end

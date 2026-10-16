@@ -16,6 +16,7 @@ function M.run()
     local Load=require("SpellHotReload.Load.AnchorLoad")
     local Anchor=require("SpellHotReload.Load.Anchor")
     local Binding=require("SpellHotReload.Adapters.Card.PracticeBinding")
+    local Restart=require("SpellHotReload.Runtime.CurrentRestart")
     local Compose=require("SpellHotReload.Source.Compose")
     local Card=require("SpellHotReload.Adapters.Card.Card")
     local passed,failed,failures=0,0,{}
@@ -26,7 +27,7 @@ function M.run()
     local function has(s,p,label) check(type(s)=="string" and s:find(p,1,true)~=nil,label.." ("..tostring(s)..")") end
     local function must(v,err) assert(v,type(err)=="table" and err.message or err);return v end
     local get,set,join=debug.getupvalue,debug.setupvalue,debug.upvaluejoin
-    local old_restart,old_plan,old_create=Binding.Restart,Card.Plan,Compose.Create
+    local old_restart,old_create=Restart.Handoff,Compose.Create
     local plugins,current={},nil
     local callbacks={"before","init","frame","render","beforedel","del","after"}
     local defaults={}
@@ -77,7 +78,7 @@ function M.run()
         _sc_table={}
         ext={replay={IsReplay=function() return current and current.replay==true end}}
         lstg={var={},Log=function() end,FileManager={EnumFiles=function() return {{FILE,false}} end}}
-        local f={constructions=0,restarts=0,reads=0,discoveries=0,creates=0,legacy=0,classes=_editor_class}
+        local f={constructions=0,restarts=0,reads=0,discoveries=0,creates=0,classes=_editor_class}
         current=f
         boss={card={_default_card=defaults,New=function(name)
             f.constructions=f.constructions+1
@@ -111,10 +112,7 @@ function M.run()
             if f.on_discover then f.on_discover(f) end
             return discover(self,...)
         end
-        local function legacy() f.legacy=f.legacy+1;error("legacy publication forbidden") end
-        driver.Commit,driver.Restart,f.p._Publish,f.p._registry.SetAll,f.p._anchors.SetAll=legacy,legacy,legacy,legacy,legacy
-        Card.Plan=legacy
-        Binding.Restart=function(class_key,name,card,slot,include_previous)
+        Restart.Handoff=function(class_key,name,card,slot,include_previous)
             f.restarts=f.restarts+1
             f.restart_args={class_key,name,card,slot,include_previous}
             if f.on_restart then f.on_restart(f) end
@@ -137,14 +135,12 @@ function M.run()
         end
         eq(f.p._store:HasPartialPublication(FILE),false,label.." no partial record")
         eq(f.restarts,0,label.." no restart")
-        eq(f.legacy,0,label.." no fallback")
     end
     local ok,problem=pcall(function()
         local f=fixture()
         if not join then
             has(f.p:ApplyFileFromUI(FILE),"patch capability unavailable","real Lua5.1 refusal")
             eq(f.restarts,0,"missing join never restarts")
-            eq(f.legacy,0,"missing join never falls back")
         else
             local base=f.capture.snapshot
             _sc_table={};lstg.var.sc_index=nil -- deliberately no current practice
@@ -175,7 +171,6 @@ function M.run()
             eq(f.p._store:GetPartialPublication(FILE).revision,1,"publication ledger reflects actual commit")
             eq(_va_runs,1,"top-level initialization still once")
             eq(f.constructions,3,"no construction or registration replay")
-            eq(f.legacy,0,"no legacy fallback")
             local published=f.capture.snapshot
             has(f.p:ApplyFileFromUI(FILE),"no definition changes; no restart","repeat file Apply no-op")
             eq(f.capture.snapshot,published,"no-op has no manufactured version")
@@ -190,15 +185,15 @@ function M.run()
             has(f.p:ApplyFromUI(),"no definition changes","existing current restart remains available")
             eq(f.restarts,1,"only separate current action restarts")
             local reads,creates,discoveries=f.reads,f.creates,f.discoveries
-            Binding.Restart=function() f.restarts=f.restarts+1;error("restart fault") end
+            Restart.Handoff=function() f.restarts=f.restarts+1;error("restart fault") end
             has(f.p:ApplyFromUI(),"restart failed","separate restart fault")
             eq(f.p:HasRestartPending(),true,"failed current restart retained")
             has(f.p:ApplyFileFromUI(FILE),"retry restart first","file Apply cannot invalidate pending retry")
             check(f.reads>=reads,"current Apply performed fresh analysis")
             -- Above current Apply still analyzes. Verify Retry separately from its final counts.
             reads,creates,discoveries=f.reads,f.creates,f.discoveries
-            Binding.Restart=function() f.restarts=f.restarts+1 end
-            eq(f.p:RetryRestartFromUI(),"restarted","retry current handoff")
+            Restart.Handoff=function() f.restarts=f.restarts+1 end
+            eq(f.p:RetryRestartFromUI(),"restart requested","retry current handoff")
             eq(f.reads,reads,"Retry no disk");eq(f.creates,creates,"Retry no compile")
             eq(f.discoveries,discoveries,"Retry no discovery")
             local faults={"disk","generation","missing","replay","declarations","syntax","setter","flush"}
@@ -437,7 +432,7 @@ function M.run()
         end
     end)
     debug.getupvalue,debug.setupvalue,debug.upvaluejoin=get,set,join
-    Binding.Restart,Card.Plan,Compose.Create=old_restart,old_plan,old_create
+    Restart.Handoff,Compose.Create=old_restart,old_create
     for _,p in ipairs(plugins) do p:Release() end
     for _,name in ipairs(modules) do package.loaded[name]=loaded[name] end
     for _,name in ipairs(globals) do rawset(_G,name,saved[name]) end

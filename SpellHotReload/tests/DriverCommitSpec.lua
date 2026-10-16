@@ -15,7 +15,7 @@ function M.run()
         __tostring=function() traps=traps+1;error("hostile tostring") end})
     local function fixture(keys)
         local driver=Driver.New()
-        local adapter={Id="value",ContractVersion=2}
+        local adapter={Id="value",ContractVersion=3}
         adapter.Match=function()
             local units,claims={},{}
             for i,key in ipairs({"value:a","value:b"}) do

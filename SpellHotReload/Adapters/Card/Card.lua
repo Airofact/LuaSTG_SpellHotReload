@@ -1,53 +1,5 @@
---------------------------------------------------------------------------------
---- SpellHotReload.Adapters.Card.Card
----
---- Versioned runtime helpers below own current-root planning, frozen restart
---- and card-binding inspection rules. Versioned Locate/Inject/Commit consume
---- an explicit unit/context and caller-bound atomic transaction; Restart consumes
---- only a committed frozen handoff with a fresh lifecycle context.
---- Legacy entry points stay isolated and cannot bypass those requirements.
----
---- The legacy card adapter presents the card reload pipeline (CardCallbacks +
---- PracticeBinding) through the generic four-hook contract, so a card commit
---- travels the same Locate -> Inject -> Commit -> Restart path the driver
---- enforces for every other carrier.
----
---- Hook mapping (legacy):
----   Locate  -> CardCallbacks.Select(original, candidate, class_key, binding)
----   Inject  -> CardCallbacks.Build(descriptor, live_card, candidate, registry)
----   Commit  -> CardCallbacks.Publish(live_card, plan)           (live mutation)
----   Restart -> PracticeBinding.Restart(class_key, name, card, slot, include_previous)
----
---- A card is a unit, not a single statement: its identity spans a constructor
---- plus every callback statement, and the generated wiring must never run. The
---- "node" is therefore a request descriptor (see Card.Request), and Card.Plan
---- assembles a driver `run` holding one planned entry so the generic
---- Driver:Commit / Driver:Restart loop performs the live mutation and the stage
---- restart with the usual phase discipline.
----
---- Discovery (ContractVersion 2): Card also implements the file-level Match
---- contract, so one generated Boss file publishes one unit per card-list class
---- (`_editor_class["K"].cards = { ... }`) without depending on the current
---- practice. The unit context is the practice-independent descriptor (class
---- key, slot layout and the parsed CardCallbacks layout); Card.Bind adds the
---- live session binding and yields the request the legacy Locate/Inject pair
---- already consumes. Match compiles and tokenizes only - it never executes the
---- candidate wiring and never touches a live card.
----
---- Card env (the shared adapter env, with these fields):
----   file      string        logical file key (diagnostics only)
----   original  string        source as loaded at mod load (Select side A)
----   content   string        newly generated source (Select side B, Build input)
----   registry  table|nil     UpvalueRegistry:Get(file) (captured local functions)
---- `env.previous` / `env.source` are accepted as fallbacks for `env.original`.
---- Locate/Inject also accept the generic context shape
---- ({ common=..., adapter=... }); common supplies content, loaded_source,
---- registry and the live `binding` (see Card.Bind).
----
---- The restart switch stays on the driver call (Driver:Commit(run, { restart =
---- false })), matching every other restartable adapter.
---------------------------------------------------------------------------------
-
+-- Card discovery, current/file preparation and caller-bound atomic publication.
+-- Practice switching belongs to Runtime.CurrentRestart.
 local CardCallbacks = require("SpellHotReload.Adapters.Card.CardCallbacks")
 local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
 
@@ -57,19 +9,13 @@ local Card = {}
 
 Card.name = "Card"
 Card.Id = "card"
-Card.ContractVersion = 2
-Card.Restartable = true
-Card.carriers = { card = true }
+Card.ContractVersion = 3
 
 local RUNTIME_KIND = "SpellHotReload.Card.RuntimeContext"
 local HANDLE_KIND = "SpellHotReload.Card.VersionedHandle"
-local locate_versioned, inject_versioned, commit_versioned, restart_versioned
 local function runtime_of(context)
     local adapter = type(context) == "table" and rawget(context, "adapter") or nil
     if type(adapter) == "table" then return rawget(adapter, "runtime") end
-end
-local function versioned_handle(handle)
-    return type(handle) == "table" and rawget(handle, "kind") == HANDLE_KIND
 end
 local function versioned_refusal(handle, context, phase, detail)
     local common = type(context)=="table" and rawget(context,"common") or nil
@@ -77,76 +23,6 @@ local function versioned_refusal(handle, context, phase, detail)
     return false, {phase=phase, code="unsupported", message=detail,
         file=type(common)=="table" and rawget(common,"file") or nil,
         unit_key=type(unit)=="table" and rawget(unit,"key") or nil}
-end
-
----Normalize a request from a captured binding (PracticeBinding.CurrentBinding)
----or from an explicit table. `binding` is what CardCallbacks.Select consumes;
----it defaults to the captured `{ slot, name, names }` triple, or to the numeric
----slot when the caller has no live name snapshot.
----@param fields table  -- { class_key, card, slot?, name?, names?, include_previous?, binding?, mode? }
----@return table? request
----@return string? reason
-function Card.Request(fields)
-    if type(fields) ~= "table" then
-        return nil, "request fields must be a table"
-    end
-    local class_key = fields.class_key
-    if type(class_key) ~= "string" or class_key == "" then
-        return nil, "request needs a class_key"
-    end
-    if type(fields.card) ~= "table" then
-        return nil, "request needs the live card object"
-    end
-    local binding = fields.binding
-    if binding == nil then
-        if type(fields.names) == "table" or fields.name ~= nil then
-            binding = { slot = fields.slot, name = fields.name, names = fields.names }
-        else
-            binding = fields.slot
-        end
-    end
-    return {
-        class_key = class_key,
-        card = fields.card,
-        slot = fields.slot,
-        name = fields.name,
-        names = fields.names,
-        include_previous = fields.include_previous == true,
-        mode = fields.mode,
-        binding = binding,
-    }
-end
-
----Synthetic node for the registry and for diagnostics. The card unit has no
----single IR statement, so this stands in for one and keeps a stable identity
----across edits (class key + restart slot).
----@param request table
----@return table node
-function Card.Node(request)
-    return {
-        carrier = "card",
-        kind = "card",
-        name = request ~= nil and request.class_key or nil,
-        slot = (request ~= nil and request.slot) or 0,
-    }
-end
-
----Mirror of Driver.Signature for the synthetic card node.
----@param request table
----@return string
-function Card.Signature(request)
-    local class_key = request ~= nil and request.class_key or ""
-    local slot = (request ~= nil and request.slot) or 0
-    return table.concat({ "card", "card", tostring(class_key), tostring(slot) }, "|")
-end
-
----@param env table
----@return string? original
-local function source_of(env)
-    local original = env.original
-    if original == nil then original = env.previous end
-    if original == nil then original = env.source end
-    return original
 end
 
 --------------------------------------------------------------------------------
@@ -264,7 +140,7 @@ end
 
 ---Assemble the practice-independent card unit for one card-list class. `layout`
 ---is the CardCallbacks.Read result; the context keeps it (the descriptor
----CardCallbacks.Build consumes) plus a slot summary, and never claims lexical
+---current preparation consumes) plus a slot summary, and never claims lexical
 ---binding safety.
 ---@param class_key string
 ---@param ranges table  -- dense { {first,last}, ... }
@@ -349,226 +225,6 @@ function Card.Match(analysis, common)
     }
 end
 
----Normalize a generic context ({ common=..., adapter=... }) into the flat env
----the hooks already use. A legacy flat env passes through unchanged.
----@param value table?
----@return table env
-local function env_of(value)
-    if type(value) ~= "table" then return {} end
-    local common = value.common
-    if type(common) ~= "table" then return value end
-    local original = common.loaded_source
-    if original == nil then original = common.original end
-    if original == nil then original = common.previous end
-    return {
-        file = common.file,
-        content = common.content,
-        original = original,
-        registry = common.registry,
-        binding = common.binding,
-    }
-end
-
----Bind a discovered unit to the live session, producing the practice-dependent
----request Locate/Inject consume. The unit context is the practice-independent
----half (class key + slot layout); `source.binding` is the live card snapshot
----(PracticeBinding.CaptureCurrent(): slot/name/names/card).
----@param unit table
----@param source table  -- { binding = { slot=, name=, names=, card=, include_previous=? } }
----@return table? request
----@return string? reason
-function Card.Bind(unit, source)
-    local context = type(unit) == "table" and unit.context or nil
-    if type(context) ~= "table" or type(context.class_key) ~= "string"
-        or context.class_key == "" then
-        return nil, "Bind expects a card unit with a class_key"
-    end
-    local binding = type(source) == "table" and source.binding or nil
-    if type(binding) ~= "table" then
-        return nil, "no live card binding for " .. context.class_key
-    end
-    return Card.Request({
-        class_key = context.class_key,
-        card = binding.card,
-        slot = binding.slot,
-        name = binding.name,
-        names = binding.names,
-        include_previous = binding.include_previous,
-        binding = binding,
-    })
-end
-
----Accept either the legacy (request, env) pair or the generic (unit, context)
----pair; return the request to locate plus the flat env the hooks use.
-local function resolve(node, context)
-    local env = env_of(context)
-    if type(node) ~= "table" then
-        return nil, env, "Locate expects a card request or unit"
-    end
-    if type(node.context) == "table" and type(node.context.class_key) == "string" then
-        local request, reason = Card.Bind(node, env)
-        if request == nil then return nil, env, reason end
-        return request, env
-    end
-    return node, env
-end
-
----Locate the live card in the candidate source. Structure only: the running
----card object is never touched. Accepts a legacy request or a discovered unit.
----@return table? handle
----@return string? reason
-function Card.Locate(node, context)
-    if runtime_of(context) ~= nil then return locate_versioned(node, context) end
-    local request, env, rreason = resolve(node, context)
-    if request == nil then
-        return nil, rreason or "Locate expects a card request"
-    end
-    if type(request.class_key) ~= "string" or request.class_key == "" then
-        return nil, "Locate expects a card request"
-    end
-    local original = source_of(env)
-    if type(original) ~= "string" then
-        return nil, "env.original (loaded source) is required to locate a card"
-    end
-    if type(env.content) ~= "string" then
-        return nil, "env.content (candidate source) is required to locate a card"
-    end
-    local descriptor, reason = CardCallbacks.Select(original, env.content, request.class_key, request.binding)
-    if descriptor == nil then
-        return nil, reason
-    end
-    return { request = request, descriptor = descriptor, match = reason }, reason
-end
-
----Rebuild the matched descriptor's callbacks without touching the live card.
----Generated wiring is never executed and no callback body runs. Accepts the
----legacy flat env or the generic context shape.
----@return table? plan
----@return string? reason
-function Card.Inject(handle, request, env)
-    if runtime_of(env) ~= nil or versioned_handle(handle) then
-        return inject_versioned(handle, request, env)
-    end
-    env = env_of(env)
-    if type(handle) ~= "table" or type(handle.descriptor) ~= "table" then
-        return nil, "Inject expects a located card handle"
-    end
-    if type(env.content) ~= "string" then
-        return nil, "env.content is required to rebuild card callbacks"
-    end
-    local plan, reason = CardCallbacks.Build(handle.descriptor, handle.request.card, env.content, env.registry)
-    if plan == nil then return nil, reason end
-    plan.descriptor = handle.descriptor
-    plan.match = handle.match
-    return plan, handle.match
-end
-
----Versioned publication delegates only to the caller-bound atomic writer.
----Legacy publication remains isolated. Neither path restarts from Commit.
----@return boolean
----@return string|table? reason
----@return table? receipt -- versioned success only
-function Card.Commit(handle, plan, env)
-    if runtime_of(env) ~= nil or versioned_handle(handle)
-        or (type(plan) == "table" and rawget(plan, "kind") == "SpellHotReload.CardVersions.Selection") then
-        return commit_versioned(handle, plan, env)
-    end
-    if type(handle) ~= "table" or type(plan) ~= "table" then
-        return false, "Commit expects a card handle and plan"
-    end
-    CardCallbacks.Publish(handle.request.card, plan)
-
-    local request = handle.request
-    local name = request.name
-    local descriptor = plan.descriptor
-    if type(descriptor) == "table" and type(descriptor.name) == "string" and descriptor.name ~= "" then
-        name = descriptor.name
-    end
-    plan.restart = {
-        class_key = request.class_key,
-        name = name,
-        card = request.card,
-        slot = request.slot,
-        include_previous = request.include_previous == true,
-    }
-    return true
-end
-
----Start a fresh Spell Practice for the committed card. Safe to retry: a failed
----restart leaves the committed definitions in place.
----@return boolean
----@return string? reason
-function Card.Restart(handle, plan, env)
-    if (type(handle) == "table" and rawget(handle, "kind") == "versioned-card-restart")
-        or (type(env) == "table" and type(rawget(env, "adapter")) == "table"
-            and rawget(rawget(env, "adapter"), "restart") ~= nil) then
-        return restart_versioned(handle, plan, env)
-    end
-    if runtime_of(env) ~= nil or versioned_handle(handle)
-        or (type(plan) == "table" and rawget(plan, "kind") == "SpellHotReload.CardVersions.Selection") then
-        return versioned_refusal(handle, env, "restart",
-            "versioned restart requires the committed frozen handoff")
-    end
-    local context = (type(plan) == "table" and plan.restart)
-        or (type(handle) == "table" and handle.restart)
-    if context == nil then
-        return false, "no restart context (Commit never ran)"
-    end
-    local ok, err = pcall(Binding.Restart, context.class_key, context.name,
-        context.card, context.slot, context.include_previous)
-    if not ok then
-        return false, tostring(err)
-    end
-    return true
-end
-
----Locate + Inject for one request, packaged as a driver run. Hand the run to
----Driver:Commit (live mutation + restart) and Driver:Restart (retry); nothing
----the running game can observe changes here.
----@param request table
----@param env table
----@return table? run
----@return string? error
-function Card.Plan(request, env)
-    env = env or {}
-    local handle, lreason = Card.Locate(request, env)
-    if handle == nil then return nil, lreason end
-    local plan, ireason = Card.Inject(handle, request, env)
-    if plan == nil then return nil, ireason end
-
-    local entry = {
-        node = Card.Node(request),
-        signature = Card.Signature(request),
-        adapter = Card,
-        handle = handle,
-        plan = plan,
-        status = "planned",
-    }
-    return {
-        file = env.file,
-        content = env.content,
-        env = env,
-        request = request,
-        handle = handle,
-        plan = plan,
-        entries = { entry },
-        planned = 1,
-        unchanged = 0,
-        declined = 0,
-    }
-end
-
---------------------------------------------------------------------------------
---- versioned runtime: card-specific rules, explicit caller-owned context
----
---- Plugin owns fresh I/O/session views, the UI token/transaction, partial
---- bookkeeping, pending run and cache lifetime. These helpers do not accept a
---- Plugin receiver or store mutable adapter state. Only RestartVersioned calls
---- game code; preparation and inspection never publish, join or restart.
---- CardTarget/CardVersions import Card for source matching, so require those
---- services at call time after this module has finished loading.
---------------------------------------------------------------------------------
-
 local function message(err)
     if type(err) == "string" then return err end
     if type(err) == "table" and getmetatable(err) == nil and type(rawget(err, "message")) == "string" then
@@ -621,57 +277,6 @@ function Card.PrepareFileVersioned(capture, discovery, proof, refresh)
         {class_key=class_key,scope="file"},proof,refresh)
 end
 
----Allocate the frozen handoff BEFORE commit. Candidate names/slots never
----replace the genuine live name/slot in the eventual EXT_POS handoff.
-function Card.FreezeRestart(target, capture)
-    return {kind="versioned-card-restart", file=target.file, session_id=target.session_id,
-        entry=target.entry, anchor=target.entry.anchor, capture=capture, classes=target.classes,
-        class_key=target.class_key, class=target.class, list=target.list, card=target.card,
-        slot=target.slot, name=target.name, raw_name=rawget(target.card,"name"),
-        include_previous=target.include_previous, key=target.key}
-end
-
----Only a committed frozen run. Caller supplies its session/entry/lifecycle
----view, not current practice selection; Missing may still permit this retry.
-function Card.RestartVersioned(run, live)
-    if live.released or live.poisoned
-        or live.publication_error or run.session_id ~= live.session_id
-        or live.entry ~= run.entry or run.entry.anchor ~= run.anchor
-        or (run.entry.reloadable ~= true and not run.entry.missing)
-        or live.classes ~= run.classes
-        or rawget(run.classes,run.class_key) ~= run.class
-        or rawget(run.class,"cards") ~= run.list or rawget(run.list,run.slot) ~= run.card
-        or rawget(run.card,"name") ~= run.raw_name or run.capture.snapshot ~= run.snapshot then
-        return nil, "frozen restart target or session changed; restart game"
-    end
-    if Binding.IsReplay() then return nil, "replay mode not supported" end
-    -- include_previous can consume preceding slots too. Check original complete
-    -- ownership, not merely a still-present selected card in a changed list.
-    for _, owner in ipairs(run.capture.ownership) do
-        if rawget(run.classes,owner.class_key) ~= owner.class
-            or getmetatable(owner.class) ~= nil or getmetatable(owner.list) ~= nil
-            or rawget(owner.class,"cards") ~= owner.list or #owner.list ~= #owner.slots then
-            return nil, "frozen class/list ownership changed; restart game"
-        end
-        local count = 0
-        for slot in next, owner.list do
-            if type(slot) ~= "number" or slot < 1 or slot > #owner.slots or slot ~= math.floor(slot)
-                or rawget(owner.list,slot) ~= owner.slots[slot] then
-                return nil, "frozen slot ownership changed; restart game"
-            end
-            count = count + 1
-        end
-        if count ~= #owner.slots then return nil, "frozen slot ownership changed; restart game" end
-    end
-    local unit = run.snapshot.units[run.key]
-    for name, cb in next, unit.callbacks do
-        if rawget(run.card,name) ~= cb.fn then return nil, "committed callback changed; restart game" end
-    end
-    local ok, err = pcall(Binding.Restart, run.class_key, run.name, run.card, run.slot, run.include_previous)
-    if not ok then return nil, message(err) end
-    return true
-end
-
 ---Build scalar presentation, then revalidate after possible compiler/allocation
 ---callbacks. No commit authority is returned; callers own/cache the record.
 function Card.InspectPrepared(prepared, capture, refresh)
@@ -711,7 +316,7 @@ end
 
 ---First-load card metadata is adapter-owned. Plugin calls this synchronously
 ---once per adopted file/session and owns the sticky success/refusal record.
----Never reseed from current live state. Capture does not depend on the legacy facade.
+---Never reseed from current live state. Capture is synchronous and never reconstructs history.
 function Card.CaptureVersions(entry, session_id)
     local ok, capture, err = pcall(function()
         local classes = rawget(_G, "_editor_class")
@@ -842,6 +447,9 @@ function Card.CheckCommitInput(selection, capture, live)
     end
     if type(selection.content) ~= "string" or live.content ~= selection.content then
         return fail("stale", "candidate bytes changed", file)
+    end
+    if (selection.location == nil) == (selection.file_location == nil) then
+        return fail("unsupported", "exactly one current or file correspondence scope required", file)
     end
     if selection.location ~= nil then
         local Target = require("SpellHotReload.Adapters.Card.CardTarget")
@@ -1014,7 +622,7 @@ end
 --------------------------------------------------------------------------------
 --- Versioned Locate/Inject consume the SAME complete discovered unit/context.
 --- A per-call runtime extension belongs to adapter context, never Match's common
---- or a module-level session cache. Legacy entry points stay distinct.
+--- or a module-level session cache.
 --------------------------------------------------------------------------------
 
 local function stage_error(phase, stage, detail, file, key)
@@ -1076,7 +684,7 @@ local function runtime_context(unit, context, phase)
     return runtime, entry
 end
 
-locate_versioned = function(unit, context)
+function Card.Locate(unit, context)
     local runtime, entry = runtime_context(unit, context, "locate")
     if not runtime then return nil, entry end
     local Target = require("SpellHotReload.Adapters.Card.CardTarget")
@@ -1139,7 +747,7 @@ local function matching_handle(handle, unit, context, phase)
     return runtime, entry
 end
 
-inject_versioned = function(handle, unit, context)
+function Card.Inject(handle, unit, context)
     local runtime, err = matching_handle(handle, unit, context, "inject")
     if not runtime then return nil, err end
     local file = context.common.file
@@ -1162,7 +770,7 @@ end
 ---The writer accepts only this exact handle/selection/context. It delegates to
 ---the existing atomic kernel; phase/cache/Guard/seal/rollback/poison remain there.
 ---Success preserves the boolean/error contract; result 3 is the trusted receipt.
-commit_versioned = function(handle, plan, context)
+function Card.Commit(handle, plan, context)
     local unit = plain(handle) and rawget(handle, "unit") or nil
     local runtime, err = matching_handle(handle, unit, context, "commit")
     if not runtime then return false, err end
@@ -1184,36 +792,6 @@ commit_versioned = function(handle, plan, context)
     local receipt, problem = transaction(handle, plan, context)
     if not receipt then return false, problem end
     return true, nil, receipt
-end
-
----Retry consumes only the frozen run and an explicit current lifecycle view.
----No candidate unit/selection/discovery/compiler is retained in the handoff.
-restart_versioned = function(run, plan, context)
-    local common = plain(context) and rawget(context, "common") or nil
-    local adapter = plain(context) and rawget(context, "adapter") or nil
-    local live = plain(adapter) and rawget(adapter, "restart") or nil
-    local file = plain(run) and rawget(run, "file") or nil
-    local function refuse(detail)
-        local _, err = stage_error("restart", "restart", detail, file)
-        return false, err
-    end
-    if not plain(run) or run.kind~="versioned-card-restart" or plan~=nil
-        or not plain(common) or not plain(adapter) or not plain(live)
-        or runtime_of(context)~=nil or not plain(run.entry) or not plain(run.capture)
-        or not plain(run.snapshot) or not plain(run.snapshot.units)
-        or not plain(rawget(run.snapshot.units, run.key))
-        or not plain(rawget(run.snapshot.units, run.key).callbacks)
-        or not plain(run.classes) or not plain(run.class) or not plain(run.list) or not plain(run.card)
-        or not plain(run.capture.ownership) then
-        return refuse("committed frozen Card restart and explicit lifecycle context required")
-    end
-    if common.file~=file or common.session_id~=live.session_id
-        or common.registry_entry~=live.entry or common.published_units~=run.snapshot then
-        return refuse("frozen restart context changed; restart game")
-    end
-    local ok, err = Card.RestartVersioned(run, live)
-    if not ok then return refuse(err) end
-    return true
 end
 
 return Card

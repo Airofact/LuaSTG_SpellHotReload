@@ -1,4 +1,4 @@
--- Explicit Card Commit/Restart handoff. Synthetic first load only; no engine.
+-- Explicit Card transaction/runtime restart handoff. Synthetic first load only; no engine.
 -- Lua5.1 plans with a presence fixture, then proves the real kernel refuses join.
 local M = {}
 local serial = 0
@@ -6,10 +6,11 @@ function M.run()
     local Card=require("SpellHotReload.Adapters.Card.Card")
     local Driver=require("SpellHotReload.Pipeline.Driver")
     local Load=require("SpellHotReload.Load.AnchorLoad")
-    local Versions=require("SpellHotReload.Load.LoadVersions")
+    local Versions=require("SpellHotReload.Adapters.Card.Card")
     local Commit=require("SpellHotReload.Apply.CardCommit")
     local Anchor=require("SpellHotReload.Load.Anchor")
     local Binding=require("SpellHotReload.Adapters.Card.PracticeBinding")
+    local Restart=require("SpellHotReload.Runtime.CurrentRestart")
     local Callbacks=require("SpellHotReload.Adapters.Card.CardCallbacks")
     local passed,failed,failures=0,0,{}
     local function check(v,label)
@@ -21,7 +22,8 @@ function M.run()
     local function copy(v) local out={};for k,x in next,v do out[k]=x end;return out end
     local function refuse(call,phase,label)
         local called,v,e=pcall(call)
-        eq(called,true,label.." no throw");eq(v,false,label.." boolean refusal")
+        eq(called,true,label.." no throw")
+        if phase=="restart" then check(v~=true,label.." refusal") else eq(v,false,label.." boolean refusal") end
         eq(type(e),"table",label.." structured")
         if type(e)=="table" then
             eq(e.phase,phase,label.." phase");check(type(e.message)=="string",label.." message")
@@ -31,8 +33,8 @@ function M.run()
     local globals={"boss","_editor_class","_tmp_sc","_handoff_runs","jit","lstg"}
     local saved={};for _,key in ipairs(globals) do saved[key]=rawget(_G,key) end
     local join,set=debug.upvaluejoin,debug.setupvalue
-    local restart,replay,current=Binding.Restart,Binding.IsReplay,Binding.CaptureCurrent
-    local commit_hook,restart_hook,publish=Card.Commit,Card.Restart,Callbacks.Publish
+    local restart,replay,current=Restart.Handoff,Binding.IsReplay,Binding.CaptureCurrent
+    local commit_hook,restart_hook,publish=Card.Commit,Restart.Request,Callbacks.Publish
     local create_hook=require("SpellHotReload.Source.Compose").Create
     local names={"SpellHotReload.Runtime.Plugin","SpellHotReload.Runtime.Watcher","lstg.FileSystemWatcher","lstg.FileSystemWatcher.FileAction"}
     local modules={};for _,key in ipairs(names) do modules[key]=package.loaded[key] end
@@ -68,7 +70,7 @@ function M.run()
         local entry=must(Load.Capture(source(0),{name="Handoff_Boss.lua",
             capability={getupvalue=true,setupvalue=true,upvaluejoin=true}}))
         entry.file="Handoff_Boss.lua"
-        local capture=must(Versions.Capture(entry,"handoff:"..serial,_editor_class,defaults))
+        local capture=must(Versions.SeedVersions(entry,"handoff:"..serial,_editor_class,defaults))
         local base=capture.snapshot
         local initial={class_key="K",slot=1,name="A",card=_editor_class.K.cards[1],
             names={"A","B"},mode="practice",include_previous=false}
@@ -86,11 +88,10 @@ function M.run()
             discovery=discovery,fresh=function() return fresh end}
     end
     local function frozen(f,snapshot)
-        local run=Card.FreezeRestart(f.prepared.target,f.capture)
-        run.snapshot=snapshot
+        local run=Restart.Freeze(f.prepared.target,f.capture)
+        if snapshot then assert(Restart.BindReceipt(run,{snapshot=snapshot},f.capture)) end
         local view={session_id=f.base.session_id,entry=f.entry,classes=_editor_class}
-        return run,{common={file=f.entry.file,session_id=view.session_id,
-            registry_entry=f.entry,published_units=snapshot},adapter={restart=view}}
+        return run,view
     end
     local calls,traps=0,0
     local hostile=setmetatable({}, {__index=function() traps=traps+1;error("hostile index") end,
@@ -129,8 +130,8 @@ function M.run()
         refuse(function() return Card.Commit(h,p.selection,ctx) end,"commit","nonfunction writer")
         ctx.adapter.transaction=nil
         local run,rctx=frozen(f,nil)
-        Binding.Restart=function() calls=calls+1 end
-        refuse(function() return Card.Restart(run,nil,rctx) end,"restart","uncommitted run")
+        Restart.Handoff=function() calls=calls+1 end
+        refuse(function() return Restart.Request(run,rctx) end,"restart","uncommitted run")
         eq(traps,0,"no hostile table callbacks")
 
         -- Real atomic kernel; the adapter does not invent phase authority.
@@ -173,24 +174,25 @@ function M.run()
             local run,rctx=frozen(f,committed_receipt.snapshot)
             local restarts=0
             Binding.IsReplay=function() return false end
-            Binding.Restart=function(key,name,card,slot)
+            Restart.Handoff=function(key,name,card,slot)
                 restarts=restarts+1;eq(key,"K","frozen class");eq(name,"A","frozen name")
                 eq(card,f.initial.card,"frozen card");eq(slot,1,"frozen slot")
             end
-            eq(Card.Restart(run,nil,rctx),true,"committed restart")
+            eq(Restart.Request(run,rctx),true,"committed restart")
             f.entry.missing=true;f.entry.reloadable=false
-            eq(Card.Restart(run,nil,rctx),true,"Missing retry preserves committed run")
+            eq(Restart.Request(run,rctx),true,"Missing retry preserves committed run")
             eq(run.selection,nil,"no candidate plan retained");eq(run.discovery,nil,"no candidate discovery retained")
             eq(run.context,nil,"no transaction context retained")
-            refuse(function() return Card.Restart(run,p.selection,rctx) end,"restart","retry must not consume plan")
-            local wrong=copy(rctx);wrong.common=copy(rctx.common);wrong.common.file="foreign"
-            refuse(function() return Card.Restart(run,nil,wrong) end,"restart","foreign restart context")
+            refuse(function() return Restart.Request(run,p.selection) end,"restart","retry must not consume plan")
+            local wrong=copy(rctx);wrong.session_id="foreign"
+            refuse(function() return Restart.Request(run,wrong) end,"restart","foreign restart context")
             Binding.IsReplay=function() return true end
-            refuse(function() return Card.Restart(run,nil,rctx) end,"restart","replay retry")
-            eq(restarts,2,"refused retries never call engine")
+            refuse(function() return Restart.Request(run,rctx) end,"restart","replay retry")
+            eq(restarts,1,"accepted request never issued twice")
             Binding.IsReplay=function() return false end
-            Binding.Restart=function() error("restart fixture") end
-            local _,err=Card.Restart(run,nil,rctx)
+            run,rctx=frozen(f,committed_receipt.snapshot)
+            Restart.Handoff=function() error("restart fixture") end
+            local _,err=Restart.Request(run,rctx)
             has(err.message,"restart fixture","restart failure structured")
         end
 
@@ -211,6 +213,8 @@ function M.run()
             Binding.CaptureCurrent=function() return f.initial end
             Binding.IsReplay=function() return false end
             local commits,restarts,engine=0,0,0
+            eq(Card.Restart,nil,"production has no adapter restart hook")
+            eq(Binding.Restart,nil,"production has no legacy handoff facade")
             Card.Commit=function(h,plan,c)
                 commits=commits+1
                 eq(h.selection,plan,"production injected identity");eq(h.context,c,"production same context")
@@ -221,14 +225,14 @@ function M.run()
                 eq(err.code,"ownership","bound writer ownership error")
                 return commit_hook(h,plan,c)
             end
-            Card.Restart=function(run,plan,c)
+            Restart.Request=function(run,view)
                 restarts=restarts+1
-                eq(plan,nil,"production no retry candidate plan");eq(c.adapter.runtime,nil,"production no runtime candidate")
-                eq(c.common.published_units,run.snapshot,"production committed context")
-                eq(plugin._restart_active,true,"busy spans hook")
-                return restart_hook(run,plan,c)
+                eq(run.receipt.snapshot,run.snapshot,"production committed receipt")
+                eq(view.entry,run.entry,"production frozen lifecycle view")
+                eq(plugin._restart_active,true,"busy spans workflow request")
+                return restart_hook(run,view)
             end
-            Binding.Restart=function() engine=engine+1;error("engine retry fixture") end
+            Restart.Handoff=function() engine=engine+1;error("engine retry fixture") end
             local result=plugin:ApplyFromUI()
             has(result,"definitions committed; restart failed","production failed restart after commit")
             eq(commits,1,"production commit hook once");eq(restarts,1,"production restart hook once")
@@ -242,11 +246,11 @@ function M.run()
             plugin._watcher.ReadFile=function() error("retry disk read forbidden") end
             require("SpellHotReload.Source.Compose").Create=function() error("retry compile forbidden") end
             f.entry.missing=true;f.entry.reloadable=false
-            Binding.Restart=function() engine=engine+1 end
+            Restart.Handoff=function() engine=engine+1 end
             result=plugin:RetryRestartFromUI()
             require("SpellHotReload.Source.Compose").Create=create
             plugin._driver.Discover=discover;plugin._watcher.ReadFile=read
-            has(result,"restarted","production Missing retry success")
+            has(result,"restart requested","production Missing retry success")
             eq(commits,1,"retry never recommits");eq(restarts,2,"retry uses restart hook")
             eq(engine,2,"one engine call per handoff")
             eq(plugin:GetVersions(f.entry.file).snapshot,snapshot,"retry version not advanced")
@@ -272,8 +276,8 @@ function M.run()
     end)
     -- Restore even after unexpected assertion/host failures.
     require("SpellHotReload.Source.Compose").Create=create_hook
-    Card.Commit,Card.Restart,Callbacks.Publish=commit_hook,restart_hook,publish
-    Binding.Restart,Binding.IsReplay,Binding.CaptureCurrent=restart,replay,current
+    Card.Commit,Restart.Request,Callbacks.Publish=commit_hook,restart_hook,publish
+    Restart.Handoff,Binding.IsReplay,Binding.CaptureCurrent=restart,replay,current
     debug.upvaluejoin,debug.setupvalue=join,set
     for _,controller in ipairs(controllers) do controller:Release() end
     for _,plugin in ipairs(plugins) do plugin._watcher=nil;plugin:Release("handoff spec") end

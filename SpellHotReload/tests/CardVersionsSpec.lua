@@ -1,5 +1,8 @@
+local Planning=require("SpellHotReload.tests.PlanningFixture")
 local M = {}
 function M.run()
+    local Card=require("SpellHotReload.Adapters.Card.Card")
+    local captures={}
     local Versions = require("SpellHotReload.Adapters.Card.CardVersions")
     local Functions = require("SpellHotReload.Source.FunctionVersions")
     local Source = require("SpellHotReload.Source.FunctionPlan")
@@ -37,7 +40,7 @@ function M.run()
         -- Test-only genuine FIRST publication of a synthetic generated file.
         -- Only these miniature fixtures run, never a real game source.
         _G.boss = { card = { New = function(name)
-            local card = { name = name }
+            local card = { name = name, is_combat=true }
             for _, cb in ipairs(names) do card[cb] = defaults[cb] end
             return card
         end } }
@@ -63,9 +66,22 @@ function M.run()
     end
     local function seed(entry, identities, initial)
         local functions = must(Functions.Seed(entry, "session", identities))
-        return must(Versions.Seed(functions, initial, defaults))
+        local state=must(Versions.Seed(functions, initial, defaults))
+        local scan=must(Source.Inspect(entry.loaded_source))
+        local matched=must(Card.Match(scan.analysis,{content=entry.loaded_source}))
+        local _,ownership=Card.CaptureOwnership(matched,_editor_class,entry)
+        assert(ownership)
+        captures[entry]={kind="SpellHotReload.LoadVersions",version=1,snapshot=state,
+            classes=_editor_class,ownership=ownership}
+        return state
     end
-    local function compare(state, content) return must(Versions.Compare(state, content)) end
+    local function report(state,content)
+        if type(state)~="table" or not state.entry or not captures[state.entry] then
+            return Versions.CompareFileLocated(state,nil,nil,nil)
+        end
+        return Planning.Report(captures[state.entry],content,nil,state)
+    end
+    local function compare(state,content) return must(report(state,content)) end
     local function select_cards(report, keys) return must(Versions.Select(report, keys)) end
     local function commit(selection)
         -- Manual TEST-ONLY publication. No phase/atomicity/rollback guarantee.
@@ -75,7 +91,9 @@ function M.run()
         end
         for _, write in ipairs(selection.writes) do must(Anchor.Set(selection.entry, write.name, write.value)) end
         for _, publication in ipairs(selection.publications) do rawset(publication.target, publication.key, publication.value) end
-        return must(Versions.Next(selection))
+        local result=must(Versions.Next(selection))
+        captures[selection.entry].snapshot=result
+        return result
     end
     local source = table.concat({
         "local counter=4", "local flag=false", "local empty",
@@ -167,7 +185,7 @@ function M.run()
         eq(selected.publications[1].key, "init", "publication exact callback")
         eq(selected.publications[1].before, a.init, "expected old identity")
         eq(selected.content, all, "complete pending candidate retained")
-        eq(#selected.restarts, 0, "restart ownership still R4")
+        eq(selected.restarts,nil,"publication has no restart data")
         local proposed = must(Versions.Next(selected))
         eq(proposed.revision, 1, "aggregate proposed group")
         eq(proposed.functions.revision, 1, "function proposed group")
@@ -187,7 +205,7 @@ function M.run()
         eq(a.init, initial[1].callbacks.init, "preparation never publishes current")
         eq(b.init, initial[2].callbacks.init, "preparation never publishes other")
         eq(Anchor.Get(entry, "helper"), identities.helper, "preparation never writes cell")
-        refuse(function() return Versions.Compare(proposed, all) end, "stale", "pure Next not an installed baseline")
+        refuse(function() return report(proposed, all) end, "stale", "pure Next not an installed baseline")
         local helper_only = compare(state, source:gsub("counter%+n", "counter+n+1"))
         local shared = select_cards(helper_only, { keya })
         eq(#shared.publications, 0, "helper only no wrapper publication")
@@ -224,16 +242,14 @@ function M.run()
         refuse(function() return Versions.Select(diff, { [2]=keya }) end, "unsupported", "sparse roots")
         refuse(function() return Versions.Select({}, {}) end, "unsupported", "not a report")
         refuse(function() return Versions.Next({}) end, "unsupported", "not a selection")
-        refuse(function() return Versions.Compare({}, source) end, "unsupported", "not a snapshot")
-        refuse(function() return Versions.Compare(state, "bad function(") end, "compile", "full source syntax rejected")
-        refuse(function() return Versions.Compare(state, source .. "\nlocal added=1") end,
+        refuse(function() return report({}, source) end, "unsupported", "not a snapshot")
+        refuse(function() return report(state, "bad function(") end, "compile", "full source syntax rejected")
+        refuse(function() return report(state, source .. "\nlocal added=1") end,
             "unsupported", "fixed local set refused")
-        refuse(function() return Versions.Compare(state, source:gsub("'A'", "'Renamed'")) end,
-            "ambiguous", "constructor/name remapping not guessed")
-        refuse(function() return Versions.Compare(state, source:gsub("return pattern%(n%) end", "return pattern(n) end\n_tmp_sc.perform=true", 1)) end,
-            "ambiguous", "perform metadata drift")
-        refuse(function() return Versions.Compare(state, source:gsub("function _tmp_sc:init%(n%) return pattern%(n%) end\n", "", 1)) end,
-            "ambiguous", "required init deletion not combat")
+        local renamed=compare(state,source:gsub("'A'","'Renamed'"))
+        eq(renamed.file_location.by_key[keya].status,"located","unique rename has current correspondence proof")
+        local changed_layout=compare(state,source:gsub("return pattern%(n%) end", "return pattern(n) end\n_tmp_sc.perform=true",1))
+        check(#changed_layout.unmapped>0,"unpublished layout stays pending")
         refuse(function() return Versions.Seed(state.functions, {}, defaults) end,
             "ownership", "all first-load owners required")
         refuse(function() return Versions.Seed(state.functions, {initial[1],initial[1]}, defaults) end,
@@ -247,11 +263,11 @@ function M.run()
             "unsupported", "no reseed after partial function versions")
         local function replacement() end
         rawset(a, "render", replacement)
-        refuse(function() return Versions.Compare(state, source) end, "stale", "external default replacement")
+        refuse(function() return report(state, source) end, "stale", "external default replacement")
         rawset(a, "render", defaults.render)
         local genuine = initial[1].callbacks.init
         rawset(a, "init", replacement)
-        refuse(function() return Versions.Compare(state, source) end, "stale", "external defined callback replacement")
+        refuse(function() return report(state, source) end, "stale", "external defined callback replacement")
         refuse(function() return Versions.Seed(state.functions, initial, defaults) end,
             "stale", "genuine identities not substituted after external setter")
         rawset(a, "init", genuine)
@@ -320,7 +336,7 @@ function M.run()
             local detached = must(Compose.Create(literal.body,nil,literal.visible,{form="expression"}))
             local captured_slot = must(Compose.Upvalues(literal.fn))[1]
             debug.upvaluejoin(literal.fn,captured_slot.index,detached.fn,captured_slot.index)
-            refuse(function() return Versions.Compare(nil_false,nil_false_source) end,
+            refuse(function() return report(nil_false,nil_false_source) end,
                 "stale","external physical callback rejoin")
             must(Compose.Join(must(Compose.Plan(literal.fn,entry))))
             must(compare(nil_false,nil_false_source))
@@ -355,12 +371,16 @@ function M.run()
         end
         local moved = point_source:gsub("local late=false\n",""):gsub(
             "table.insert","local late=false\ntable.insert")
-        refuse(function() return Versions.Compare(point_state,moved) end,
-            saved_join and "stale" or "unsupported","definition binding/mismatched old snapshot never guessed")
+        if saved_join then
+            refuse(function() return report(point_state,moved) end,"stale","old installed revision cannot be reused")
+        else
+            refuse(function() return Versions.Select(compare(point_state,moved),{keya}) end,
+                "unsupported","changed definition binding cannot be selected")
+        end
         -- Recreate a fresh genuine first publication for binding drift alone.
         local moved_entry,moved_ids,moved_classes=capture(point_source)
         local moved_state=seed(moved_entry,moved_ids,owners(moved_classes))
-        refuse(function() return Versions.Compare(moved_state,moved) end,
+        refuse(function() return Versions.Select(compare(moved_state,moved),{keya}) end,
             "unsupported","callback moved before visible declaration")
         local bom_entry,bom_ids,bom_classes=capture("\239\187\191"..point_source)
         local bom_state=seed(bom_entry,bom_ids,owners(bom_classes))
@@ -481,8 +501,8 @@ function M.run()
             "unsupported","selection container metamethod refused")
         local raw_target=audit_owners[1].card
         setmetatable(raw_target,{__newindex=trap})
-        refuse(function() return Versions.Compare(audit_state,source) end,
-            "unsupported","published target acquired a metatable")
+        refuse(function() return report(audit_state,source) end,
+            "ownership","published target acquired a metatable")
         setmetatable(raw_target,nil)
         eq(metamethods,0,"refusals never invoke unknown table metamethods")
         local changed_defaults=shallow(defaults)
@@ -524,14 +544,14 @@ function M.run()
         list(batch.functions.pending,"other","multi-card selection preserves unrelated function")
         local broken=shallow(audit_state)
         broken.revision=-1
-        refuse(function() return Versions.Compare(broken,source) end,
-            "unsupported","invalid aggregate revision refused")
+        refuse(function() return report(broken,source) end,
+            "stale","invalid aggregate revision refused")
         broken=shallow(audit_state)
         broken.anchor=function() end
-        refuse(function() return Versions.Compare(broken,source) end,
-            "unsupported","different anchor snapshot refused")
+        refuse(function() return report(broken,source) end,
+            "stale","different anchor snapshot refused")
         audit_entry.missing=true
-        refuse(function() return Versions.Compare(audit_state,source) end,
+        refuse(function() return report(audit_state,source) end,
             "stale","missing anchor file cannot prepare")
         audit_entry.missing=false
         must(compare(audit_state,source))

@@ -5,7 +5,7 @@ function M.run(opts)
     opts=opts or {}
     local Target=opts.target or require("SpellHotReload.Adapters.Card.CardTarget")
     local Load=require("SpellHotReload.Load.AnchorLoad")
-    local Capture=require("SpellHotReload.Load.LoadVersions")
+    local Capture=require("SpellHotReload.Adapters.Card.Card")
     local Driver=require("SpellHotReload.Pipeline.Driver")
     local Card=require("SpellHotReload.Adapters.Card.Card")
     local passed,failed,failures=0,0,{}
@@ -71,7 +71,7 @@ function M.run(opts)
         local entry=must(Load.Capture(bytes,{name="FileTarget_Boss.lua",
             capability={getupvalue=true,setupvalue=true,upvaluejoin=true}}))
         entry.file="FileTarget_Boss.lua"
-        local capture=must(Capture.Capture(entry,"file-target:"..serial,_editor_class,defaults))
+        local capture=must(Capture.SeedVersions(entry,"file-target:"..serial,_editor_class,defaults))
         local driver=Driver.New();must(driver:RegisterDiscovery(Card))
         local live={capture=capture,snapshot=capture.snapshot,entry=entry,
             classes=_editor_class,session_id=capture.snapshot.session_id}

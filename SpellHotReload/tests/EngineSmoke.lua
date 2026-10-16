@@ -61,12 +61,11 @@ table.insert(_sc_table, {"__SpellHotReloadSmoke:Normal", "Inline Reload Smoke", 
     -- The production DoFile hook must capture both functions and the loaded source.
     lstg.DoFile(output_root .. "/" .. file_name)
     local live = require("SpellHotReload.UI.View").plugin
-    assert(live and live:GetRegistry():GetSource(file_name), "production load hook did not capture source")
+    assert(live and (live:GetLoad(file_name) and live:GetLoad(file_name).loaded_source), "production load hook did not capture source")
     local Plugin = require("SpellHotReload.Runtime.Plugin")
     local Watcher = require("SpellHotReload.Runtime.Watcher")
-    local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
-    local p = Plugin.New()
-    p._registry = live:GetRegistry()
+    local Restart = require("SpellHotReload.Runtime.CurrentRestart")
+    local p = live
     p._activated, p._supported, p._sandbox_ok = true, true, true
     p._root = output_root
     p._watcher = Watcher.New({ root = output_root, store = p:GetStore(), quiet_frames = 3 })
@@ -92,7 +91,7 @@ table.insert(_sc_table, {"__SpellHotReloadSmoke:Normal", "Inline Reload Smoke", 
             if phase == "start" and frames > 5 then
                 lstg.var.player_name = player_list[1][2]
                 lstg.var.rep_player = player_list[1][3]
-                Binding.Restart(class_key, card.name, card, 1, false)
+                Restart.Handoff(class_key, card.name, card, 1, false)
                 phase = "running"
             elseif phase == "running" then
                 local actor = __shr_smoke.boss
@@ -119,7 +118,7 @@ table.insert(_sc_table, {"__SpellHotReloadSmoke:Normal", "Inline Reload Smoke", 
                         dismiss_frame = frames
                         phase = "dismissed"
                     else
-                        local result = p:Apply()
+                        local result = p:ApplyFromUI()
                         assert(result:match("^applied"), result)
                         assert(_editor_class[class_key].cards[1] == card, "live card identity changed")
                         phase = "running"

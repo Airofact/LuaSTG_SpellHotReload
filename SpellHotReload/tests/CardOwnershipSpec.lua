@@ -1,3 +1,4 @@
+local Planning=require("SpellHotReload.tests.PlanningFixture")
 -- Card-owned raw ownership/publication policy. Synthetic inputs, no game chunks.
 -- Lua5.1 presence-only join permits zero-join metadata/raw cases, never sharing.
 local M = {}
@@ -6,7 +7,7 @@ function M.run(opts)
     opts = opts or {}
     local Card = require("SpellHotReload.Adapters.Card.Card")
     local Load = require("SpellHotReload.Load.AnchorLoad")
-    local Versions = require("SpellHotReload.Load.LoadVersions")
+    local Versions = require("SpellHotReload.Adapters.Card.Card")
     local Cards = require("SpellHotReload.Adapters.Card.CardVersions")
     local Guard = require("SpellHotReload.Apply.CommitCheck")
     local passed, failed, failures = 0, 0, {}
@@ -85,9 +86,9 @@ function M.run(opts)
         local entry=must(Load.Capture(source,{name="Owners_Boss.lua",
             capability={getupvalue=true,setupvalue=true,upvaluejoin=true}}))
         entry.file="Owners_Boss.lua"
-        local capture=must(Versions.Capture(entry,sid,_editor_class,defaults))
+        local capture=must(Versions.SeedVersions(entry,sid,_editor_class,defaults))
         local content=source:gsub("return 10 end","return 20 end")
-        local selection=must(Cards.Select(must(Cards.Compare(capture.snapshot,content)),{"card:1:K:2"}))
+        local selection=must(Cards.Select(must(Planning.Report(capture,content)),{"card:1:K:2"}))
         local live={capture=capture,snapshot=capture.snapshot,entry=entry,session_id=sid,
             classes=_editor_class,content=content}
         eq(#selection.joins,0,"dispatch fixture has zero joins")
@@ -224,7 +225,7 @@ function M.run(opts)
             called=called+1;eq(cls,live.classes,"capture registry delegation");eq(e,live.entry,"capture entry delegation")
             check(#m.units>0,"capture complete match delegation");return nil,marker
         end
-        v,err=Versions.Capture(live.entry,live.session_id,live.classes,cap.snapshot.defaults)
+        v,err=Versions.SeedVersions(live.entry,live.session_id,live.classes,cap.snapshot.defaults)
         eq(called,1,"LoadVersions consumes adapter capture");eq(v,nil,"capture policy stops seed");eq(err,marker,"capture error identity")
         Card.CaptureOwnership=originals.CaptureOwnership
         for _,method in ipairs({"CheckOwnership","CheckCallbackRead","CheckPublications"}) do

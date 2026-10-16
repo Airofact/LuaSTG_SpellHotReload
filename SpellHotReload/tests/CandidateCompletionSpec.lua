@@ -66,10 +66,11 @@ function M.run()
     local Load=require("SpellHotReload.Load.AnchorLoad")
     local Anchor=require("SpellHotReload.Load.Anchor")
     local Binding=require("SpellHotReload.Adapters.Card.PracticeBinding")
+    local Restart=require("SpellHotReload.Runtime.CurrentRestart")
     local Compose=require("SpellHotReload.Source.Compose")
     local FileApply=require("SpellHotReload.Apply.FileApply")
     local real_join,real_set=debug.upvaluejoin,debug.setupvalue
-    local old_restart,old_create,old_account,old_remaining=Binding.Restart,Compose.Create,FileApply.InspectFileRemainder,FileApply.Remaining
+    local old_restart,old_create,old_account,old_remaining=Restart.Handoff,Compose.Create,FileApply.InspectFileRemainder,FileApply.Remaining
     local plugins={}
     local callbacks={"before","init","frame","render","beforedel","del","after"}
     local defaults={};for _,name in ipairs(callbacks) do defaults[name]=function() end end
@@ -123,7 +124,7 @@ function M.run()
             f.creates=f.creates+1;if f.on_create then f.on_create() end
             return old_create(...)
         end
-        Binding.Restart=function()
+        Restart.Handoff=function()
             f.restarts=f.restarts+1;if f.restart_fault then error("restart fault") end
         end
         _sc_table[1]={"K","A",f.classes.K.cards[1],1,false};lstg.var.sc_index=1
@@ -283,7 +284,7 @@ function M.run()
         eq(f.p:HasRestartPending(),true,"restart still retryable without candidate")
         local reads,creates,discoveries,revision=f.reads,f.creates,f.discoveries,f.capture.snapshot.revision
         f.disk=EDIT;f.restart_fault=false
-        eq(f.p:RetryRestartFromUI(),"restarted","retry frozen restart")
+        eq(f.p:RetryRestartFromUI(),"restart requested","retry frozen restart")
         eq(f.reads,reads,"Retry no read");eq(f.creates,creates,"Retry no compile")
         eq(f.discoveries,discoveries,"Retry no Match");eq(f.capture.snapshot.revision,revision,"Retry no commit")
         -- No safe actions does not mean all bytes were published.
@@ -411,7 +412,7 @@ function M.run()
         eq(f.p._completion_checks[FILE],nil,"receipt fault no completion")
     end)
     debug.upvaluejoin,debug.setupvalue=real_join,real_set
-    Binding.Restart,Compose.Create,FileApply.InspectFileRemainder,FileApply.Remaining=old_restart,old_create,old_account,old_remaining
+    Restart.Handoff,Compose.Create,FileApply.InspectFileRemainder,FileApply.Remaining=old_restart,old_create,old_account,old_remaining
     for _,p in ipairs(plugins) do p:Release() end
     for _,name in ipairs(modules) do package.loaded[name]=loaded[name] end
     for _,name in ipairs(globals) do rawset(_G,name,saved[name]) end

@@ -7,13 +7,10 @@
 --- defaults = caller-owned standard callback identities, copied at first load.
 --- Card tables must be plain; raw slots only. Metadata/functions must be genuine
 --- first capture, not live reads after setter/Apply. Card.SeedVersions owns
---- production capture; LoadVersions is a compatibility entry. Retain/release snapshots.
+--- production capture. Retain/release snapshots.
 ---
---- Compare(snapshot, complete_content) validates all saved raw callback identities
---- and real capture slots/sharing (when upvalueid exists); prepares analysis
---- closures by EACH callback definition point, never constructor-time locals.
---- Compare / CompareDiscovery require fixed first-load layout. CompareLocated
---- consumes ONE checked CardTarget location with fresh binding/capture/live.
+--- CompareLocated consumes one checked current target; CompareFileLocated
+--- consumes complete file correspondence. Both require fresh capture ownership.
 --- Other changed-layout owners remain unmapped and pending, never guessed by key.
 --- Absent candidate classes yield source tombstones, NOT live deletions; unclaimed
 --- candidate cards stay unowned/pending_sources, NOT automatically seeded owners.
@@ -516,7 +513,7 @@ local function compare(state, content, snapshot, location, file_location)
     local class_reads={}
     if file_location then function_diff,ferr=Functions.CompareFileDiscovery(state.functions,snapshot)
     elseif snapshot ~= nil then function_diff, ferr = Functions.CompareDiscovery(state.functions, snapshot)
-    else function_diff, ferr = Functions.Compare(state.functions, content) end
+    end
     if not function_diff then return nil, ferr end
     local discovery, derr = discover(content, state, snapshot)
     if not discovery then return nil, derr end
@@ -548,10 +545,6 @@ local function compare(state, content, snapshot, location, file_location)
                 else for _,read in ipairs(safe) do class_reads[#class_reads+1]=read end end
             end
         end
-    end
-    if not location and not file_location and (not fixed_layout(state.layout, discovery.layout)
-        or not same(state.order, discovery.order)) then
-        return fail("ambiguous", "fixed first-load card layout changed; restart/remapping required", state)
     end
     local report = { kind = M.Kind .. ".Diff", version = M.Version, base = state,
         content = content, discovery = snapshot, functions = function_diff, by_key = {}, changed = {},
@@ -758,7 +751,7 @@ function M.Select(report, keys, function_keys)
         functions = functions, selected = {}, pending = {}, publications = {},
         joins = copy(functions.joins), writes = copy(functions.writes),
         read_set = copy(functions.read_set), capture_reads = copy(functions.capture_reads),
-        restarts = {} }
+        }
     if report.location then
         result.location = report.location
         result.pending_sources = copy(report.unowned)
@@ -1039,19 +1032,7 @@ function M.Coverage(report)
     return result
 end
 
-function M.Compare(state, content) return compare(state, content) end
----Complete FileMatch snapshot carrying this actual publication baseline in
----common. Class keys are NOT the per-card publication keys in this report.
----Invalid/incomplete snapshots refuse; no hidden Match or legacy fallback.
-function M.CompareDiscovery(state, snapshot)
-    if not plain(snapshot) or not plain(snapshot.common) then
-        return fail("stale", "discovery published baseline disagrees", state)
-    end
-    return compare(state, snapshot.common.content, snapshot)
-end
-
----Explicit new entry: never overload legacy Compare or infer a location.
----Fresh reads are supplied by trusted orchestration; they are not an I/O proof.
+---Fresh reads are supplied by trusted orchestration; this is not an I/O proof.
 function M.CompareLocated(state, location, binding, capture, live)
     if not valid(state) then return fail("unsupported", "a valid card snapshot is required", state) end
     local checked, err = Target.CheckDiscovery(location, binding, capture, live)

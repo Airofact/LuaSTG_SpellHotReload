@@ -1,7 +1,6 @@
 -- Normal-load replacement tests. No generated game source is executed.
 local Hook = require("SpellHotReload.Load.LoadHook")
 local Capture = require("SpellHotReload.Load.AnchorLoad")
-local Loader = require("SpellHotReload.GeneratedBossLoader")
 local watcher_name = "SpellHotReload.Runtime.Watcher"
 local old_watcher = package.loaded[watcher_name]
 if not old_watcher then package.loaded[watcher_name] = {} end
@@ -40,11 +39,10 @@ function M.run()
     local saved_globals = {}
     local keys = { "lstg", "setting", "_hook_runs", "_hook_exports", "_hook_args" }
     for _, key in ipairs(keys) do saved_globals[key] = rawget(_G, key) end
-    local old_probe, old_install, old_names = Loader.Probe, Loader.InstallDoFileHook, Loader.ListFunctionNames
     local old_capture, old_getupvalue = Capture.Capture, debug.getupvalue
     local old_new, old_root = Watcher.New, Plugin.ResolveRoot
     local old_binding, old_replay = Binding.CaptureCurrent, Binding.IsReplay
-    local old_scan, old_classes, old_plan = Scanner.Scan, Scanner.ClassKeys, Card.Plan
+    local old_scan, old_classes = Scanner.Scan, Scanner.ClassKeys
     local old_debug, old_view = package.loaded["lib.Ldebug"], package.loaded["SpellHotReload.UI.View"]
     local supported = type(debug.upvaluejoin) == "function"
 
@@ -53,9 +51,6 @@ function M.run()
         setting = nil
         -- Tokenize/BuildTrailer remain shared utilities. The former production
         -- hook, function-only enumeration and behavioral probe must be unused.
-        Loader.Probe = function() error("legacy probe called") end
-        Loader.InstallDoFileHook = function() error("legacy hook called") end
-        Loader.ListFunctionNames = function() error("function-only scan called") end
 
         local function engine_for(sources)
             local e = { original_calls=0, reads=0, logs={} }
@@ -108,12 +103,12 @@ function M.run()
         local empty, reason = p:GetAnchors():GetValue("First_Boss.lua", "empty")
         eq(empty, nil, "nil captured")
         eq(reason, nil, "nil is not a missing slot")
-        eq(p:GetRegistry():GetValue("First_Boss.lua", "counter"), 0, "compatibility snapshot")
+        eq(p:GetLoad("First_Boss.lua").map.counter, 0, "compatibility snapshot")
         _hook_exports.set(5)
-        eq(p:_LoadedValues("First_Boss.lua").counter, 5, "setter seen live")
+        eq(p:GetAnchors():GetValue("First_Boss.lua", "counter"), 5, "setter seen live")
         eq(entry.map.counter, 0, "load map remains stale")
         _hook_exports.rebind({a=2})
-        eq(p:_LoadedValues("First_Boss.lua").config.a, 2, "whole table replacement live")
+        eq(p:GetAnchors():GetValue("First_Boss.lua", "config").a, 2, "whole table replacement live")
         eq(entry.map.config.a, 1, "initial table snapshot unchanged")
         eq(p:GetAnchors():GetValue("First_Boss.lua", "helper"), _hook_exports.helper, "same closure identity")
         eq(p:_CheckLoad("First_Boss.lua"), supported, "per-file gate agrees with verdict")
@@ -155,7 +150,7 @@ function M.run()
         sources["Bom_Boss.lua"] = "\239\187\191local value = false"
         e.DoFile("Bom_Boss.lua")
         eq(p:GetLoad("Bom_Boss.lua").loaded_source:sub(1,3), "\239\187\191", "BOM kept in recorded bytes")
-        eq(p:_LoadedValues("Bom_Boss.lua").value, false, "BOM stripped for execution only")
+        eq(p:GetAnchors():GetValue("Bom_Boss.lua", "value"), false, "BOM stripped for execution only")
 
         sources["Duplicate_Boss.lua"] = "local value = 1\nlocal value = 2"
         e.DoFile("Duplicate_Boss.lua")
@@ -174,7 +169,7 @@ function M.run()
         has(ip:GetLoad("NoJoin_Boss.lua").reason, "upvaluejoin", "capability diagnostic retained")
         eq(ip:GetAnchors():Live("NoJoin_Boss.lua"), false, "incapable entry not Live")
         eq(ip:_CheckLoad("NoJoin_Boss.lua"), false, "incapable file cannot legacy Apply")
-        check(ip:GetRegistry():Get("NoJoin_Boss.lua") ~= nil, "legacy map exists but cannot bypass gate")
+        check(ip:GetLoad("NoJoin_Boss.lua").map ~= nil, "legacy map exists but cannot bypass gate")
 
         sources["NoSlots_Boss.lua"] = SOURCE
         debug.getupvalue = nil
@@ -254,7 +249,7 @@ function M.run()
         eq(p:GetAnchors():Anchor("First_Boss.lua"), first_anchor, "first anchor retained")
         eq(entry.map, first_map, "first map retained")
         eq(p:_LoadedSource("First_Boss.lua"), SOURCE, "first source retained")
-        eq(p:GetRegistry():GetValue("First_Boss.lua", "counter"), 0, "legacy map not overwritten by recapture")
+        eq(p:GetLoad("First_Boss.lua").map.counter, 0, "legacy map not overwritten by recapture")
         eq(p:_CheckLoad("First_Boss.lua"), false, "repeat invalidates reload")
         has(entry.reason, "executed again", "repeat diagnostic")
         check(#e.logs > 0, "refused recapture reported")
@@ -267,14 +262,13 @@ function M.run()
         Scanner.Scan = function() return {ok=true} end
         Scanner.ClassKeys = function() return {["Gate:Normal"]=true} end
         ip._watcher = {ReadFile=function() error("refused file read during Apply") end}
-        Card.Plan = function() error("refused file planned") end
         local c = ip:GetStore():BeginCandidate("NoJoin_Boss.lua", 1, "test")
         ip:GetStore():RecordFirstRead("NoJoin_Boss.lua", c.generation, SOURCE, 2)
         ip:GetStore():VerifyStable("NoJoin_Boss.lua", c.generation, SOURCE, 4, 2)
         has(ip:Apply(), "loaded file cannot reload", "production Apply denies known refusal")
         check(ip:GetStore():GetCandidate("NoJoin_Boss.lua") ~= nil, "denial does not swallow pending candidate")
         Binding.CaptureCurrent, Binding.IsReplay = old_binding, old_replay
-        Scanner.Scan, Scanner.ClassKeys, Card.Plan = old_scan, old_classes, old_plan
+        Scanner.Scan, Scanner.ClassKeys = old_scan, old_classes
 
         -- Load the real bootstrap with engine/UI stand-ins. No old hook/probe
         -- survives on this path, even during activation before the mod loads.
@@ -314,11 +308,10 @@ function M.run()
     end)
 
     for _, key in ipairs(keys) do rawset(_G, key, saved_globals[key]) end
-    Loader.Probe, Loader.InstallDoFileHook, Loader.ListFunctionNames = old_probe, old_install, old_names
     Capture.Capture, debug.getupvalue = old_capture, old_getupvalue
     Watcher.New, Plugin.ResolveRoot = old_new, old_root
     Binding.CaptureCurrent, Binding.IsReplay = old_binding, old_replay
-    Scanner.Scan, Scanner.ClassKeys, Card.Plan = old_scan, old_classes, old_plan
+    Scanner.Scan, Scanner.ClassKeys = old_scan, old_classes
     package.loaded["lib.Ldebug"], package.loaded["SpellHotReload.UI.View"] = old_debug, old_view
     if not ok then check(false, "uncaught: " .. tostring(failure)) end
     for _, label in ipairs(failures) do print("[LoadHookSpec] FAIL " .. label) end

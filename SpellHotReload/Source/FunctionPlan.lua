@@ -274,7 +274,7 @@ local function prepare(content, entry, selected, published, snapshot, scans)
     return plan
 end
 
--- Keep legacy arities: e.g. gsub's extra numeric return is not a snapshot.
+-- Content and discovery are explicit inputs; extra Lua returns cannot change scope.
 function M.Inspect(content) return inspect(content) end
 function M.Prepare(content, entry, selected, published)
     return prepare(content, entry, selected, published)

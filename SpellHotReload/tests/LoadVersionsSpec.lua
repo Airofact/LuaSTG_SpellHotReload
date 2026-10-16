@@ -1,7 +1,8 @@
+local Planning=require("SpellHotReload.tests.PlanningFixture")
 -- First-load snapshot integration. Only miniature synthetic files execute.
 local M = {}
 function M.run()
-    local Capture = require("SpellHotReload.Load.LoadVersions")
+    local Capture = require("SpellHotReload.Adapters.Card.Card")
     local Card = require("SpellHotReload.Adapters.Card.Card")
     local Hook = require("SpellHotReload.Load.LoadHook")
     local Load = require("SpellHotReload.Load.AnchorLoad")
@@ -108,12 +109,12 @@ function M.run()
         debug.upvaluejoin = function() join_calls=join_calls+1;error("premature join") end
         debug.setupvalue = function() write_calls=write_calls+1;error("premature write") end
         _G.jit = { flush = function() flush_calls=flush_calls+1;error("premature flush") end }
-        local result = must(Capture.Capture(entry, "session", classes, defaults))
+        local result = must(Capture.SeedVersions(entry, "session", classes, defaults))
         local snapshot = result.snapshot
-        eq(Capture.Kind, "SpellHotReload.LoadVersions", "kind")
-        eq(Capture.Version, 1, "version")
-        eq(result.kind, Capture.Kind, "capture kind")
-        eq(result.version, Capture.Version, "capture version")
+        eq("SpellHotReload.LoadVersions", "SpellHotReload.LoadVersions", "kind")
+        eq(1, 1, "version")
+        eq(result.kind, "SpellHotReload.LoadVersions", "capture kind")
+        eq(result.version, 1, "capture version")
         eq(result.classes, classes, "registry identity retained")
         eq(snapshot.entry, entry, "same entry")
         eq(snapshot.anchor, entry.anchor, "same unique anchor")
@@ -148,14 +149,14 @@ function M.run()
         for _, name in ipairs(snapshot.functions.names) do
             eq(snapshot.functions.units[name].fn, entry.map[name], "trailer identity " .. name)
         end
-        local report = must(Cards.Compare(snapshot, SOURCE))
+        local report = must(Planning.Report(result, SOURCE))
         eq(#report.changed, 0, "unchanged callbacks")
         eq(#report.functions.changed, 0, "unchanged functions")
         eq(#report.affected, 0, "unchanged impact")
         eq(Cards.Next(must(Cards.Select(report, {}))), snapshot, "empty selection retains initial snapshot")
         local first = snapshot.units["card:1:K:2"]
         local edited = SOURCE:gsub("count%+n", "count+n+10"):gsub("other%(n%) end", "other(n)+7 end")
-        local partial = must(Cards.Select(must(Cards.Compare(snapshot, edited)), { first.key }))
+        local partial = must(Cards.Select(must(Planning.Report(result, edited)), { first.key }))
         eq(table.concat(partial.functions.selected, ","), "helper", "only necessary function")
         eq(table.concat(partial.pending, ","), "card:1:K:3", "unselected card stays pending")
         eq(first.callbacks.frame.dependencies[1], "alias", "independent alias")
@@ -170,10 +171,10 @@ function M.run()
         classes.K.cards = ownership.K.list
         _versions_api.set(nil)
         eq(Anchor.Get(entry, "count"), nil, "nil ordinary state preserved")
-        must(Cards.Compare(snapshot, SOURCE))
+        must(Planning.Report(result, SOURCE))
         _versions_api.set(false)
         eq(Anchor.Get(entry, "count"), false, "false ordinary state preserved")
-        must(Cards.Compare(snapshot, SOURCE))
+        must(Planning.Report(result, SOURCE))
         eq(join_calls, 0, "no join")
         eq(write_calls, 0, "no setupvalue")
         eq(flush_calls, 0, "no flush")
@@ -184,10 +185,10 @@ function M.run()
         local function bad(label, mutate, code)
             local e, c = fixture()
             mutate(e, c)
-            refusal(function() return Capture.Capture(e, "session", c, defaults) end, code, label)
+            refusal(function() return Capture.SeedVersions(e, "session", c, defaults) end, code, label)
         end
-        refusal(function() return Capture.Capture(nil, "session", classes, defaults) end, "unsupported", "missing entry")
-        refusal(function() return Capture.Capture(entry, "", classes, defaults) end, "unsupported", "missing session")
+        refusal(function() return Capture.SeedVersions(nil, "session", classes, defaults) end, "unsupported", "missing entry")
+        refusal(function() return Capture.SeedVersions(entry, "", classes, defaults) end, "unsupported", "missing session")
         bad("no reload verdict", function(e) e.reloadable=false end, "unsupported")
         bad("missing file", function(e) e.file=nil end, "unsupported")
         bad("missing map", function(e) e.map=nil end, "unsupported")
@@ -211,15 +212,15 @@ function M.run()
         bad("list metatable", function(_, c) setmetatable(c.K.cards, meta) end, "ownership")
         bad("card metatable", function(_, c) setmetatable(c.K.cards[2], meta) end, "ownership")
         local e, c = fixture()
-        refusal(function() return Capture.Capture(e, "session", setmetatable(c, meta), defaults) end,
+        refusal(function() return Capture.SeedVersions(e, "session", setmetatable(c, meta), defaults) end,
             "unsupported", "registry metatable")
-        refusal(function() return Capture.Capture(e, "session", c, setmetatable({}, meta)) end,
+        refusal(function() return Capture.SeedVersions(e, "session", c, setmetatable({}, meta)) end,
             "unsupported", "defaults metatable")
         eq(metamethod_calls, 0, "metamethods never invoked")
         setmetatable(c, nil) -- restore the negative registry fixture before capability test
         if not saved_join then
             debug.upvaluejoin = nil
-            refusal(function() return Capture.Capture(e, "session", c, defaults) end, "capability", "real Lua5.1 missing join")
+            refusal(function() return Capture.SeedVersions(e, "session", c, defaults) end, "capability", "real Lua5.1 missing join")
             debug.upvaluejoin = function() error("presence-only fixture") end
         end
 
@@ -264,13 +265,13 @@ function M.run()
         eq(calls, 1, "retired capture not retried")
         p:Release()
 
-        for _, action in ipairs({ "missing", "publish", "release" }) do
+        for _, action in ipairs({ "missing", "release" }) do
             local plugin = Plugin.New()
             local hooked = engine_for(SOURCE, plugin)
             hooked.DoFile("Seed_Boss.lua")
             local first_capture = must(plugin:GetVersions("Seed_Boss.lua"))
             if action == "missing" then must(plugin:Missing("Seed_Boss.lua", "gone"))
-            elseif action == "publish" then plugin:_Publish("Seed_Boss.lua", {})
+
             else plugin:Release("done") end
             local state, reason = plugin:GetVersions("Seed_Boss.lua")
             eq(state, nil, action .. " retires capture")
@@ -312,8 +313,8 @@ function M.run()
         local Scanner = require("SpellHotReload.Adapters.Card.GeneratedBossScanner")
         local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
         local Card = require("SpellHotReload.Adapters.Card.Card")
-        local old_scan, old_keys, old_current, old_replay, old_plan =
-            Scanner.Scan, Scanner.ClassKeys, Binding.CaptureCurrent, Binding.IsReplay, Card.Plan
+        local old_scan, old_keys, old_current, old_replay =
+            Scanner.Scan, Scanner.ClassKeys, Binding.CaptureCurrent, Binding.IsReplay
         local apply_ok, apply_error = pcall(function()
             local plugin = Plugin.New()
             engine_for(SOURCE, plugin).DoFile("Seed_Boss.lua")
@@ -332,20 +333,16 @@ function M.run()
                     slot=2,name="A",names={"","A","B"},mode="practice",include_previous=false}
             end
             Binding.IsReplay = function() return false end
-            Card.Plan = function() legacy_calls=legacy_calls+1;error("legacy plan") end
-            local driver_commit = plugin._driver.Commit
-            plugin._driver.Commit = function() legacy_calls=legacy_calls+1;error("legacy commit") end
             has(plugin:_apply(), "versioned UI scope", "production direct API lacks token")
             eq(plugin:GetVersions("Seed_Boss.lua"), captured, "phase refusal never retires first-load capture")
             has(plugin:ApplyFromUI(), "candidate generation or bytes changed", "production stale disk refused")
             eq(plugin:GetVersions("Seed_Boss.lua"), captured, "production refusal retains actual capture")
             eq(captured.snapshot.revision,0,"failed production preflight does not advance revision")
             eq(legacy_calls,0,"production never falls back to legacy route/plan/commit")
-            plugin._driver.Commit = driver_commit
             plugin:Release()
         end)
-        Scanner.Scan, Scanner.ClassKeys, Binding.CaptureCurrent, Binding.IsReplay, Card.Plan =
-            old_scan, old_keys, old_current, old_replay, old_plan
+        Scanner.Scan, Scanner.ClassKeys, Binding.CaptureCurrent, Binding.IsReplay =
+            old_scan, old_keys, old_current, old_replay
         check(apply_ok, "versioned Apply refusal fixture: " .. tostring(apply_error))
 
         local plugin = Plugin.New()

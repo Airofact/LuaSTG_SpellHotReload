@@ -11,16 +11,15 @@
 --- published-unit diff/selection -> CardCommit transaction -> frozen restart.
 --- First-load entries never fall back to legacy planning/maps after refusal.
 --- Partial publication retains complete candidate bytes; no whole-file ACK.
---- No-entry legacy callers remain isolated for historical regression fixtures.
+--- Missing first-load entries are refused; no alternate publication path exists.
 --------------------------------------------------------------------------------
 
 local Watcher = require("SpellHotReload.Runtime.Watcher")
 local SnapshotStore = require("SpellHotReload.Runtime.SnapshotStore")
-local Scanner = require("SpellHotReload.Adapters.Card.GeneratedBossScanner")
 local Compose = require("SpellHotReload.Source.Compose")
 local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
+local CurrentRestart = require("SpellHotReload.Runtime.CurrentRestart")
 local ChangeLog = require("SpellHotReload.Runtime.ChangeLog")
-local UpvalueRegistry = require("SpellHotReload.Load.UpvalueRegistry")
 local Anchor = require("SpellHotReload.Load.Anchor")
 local AnchorRegistry = require("SpellHotReload.Load.AnchorRegistry")
 local Driver = require("SpellHotReload.Pipeline.Driver")
@@ -50,7 +49,6 @@ function Plugin.New()
 	local self = setmetatable({}, Plugin)
 	self._store = SnapshotStore.New()
 	self._log = ChangeLog.New()
-	self._registry = UpvalueRegistry.New()
 	self._anchors = AnchorRegistry.New()
 	self._loads = {} -- full first-load entries, including non-capturable files
 	session_serial = session_serial + 1
@@ -74,26 +72,21 @@ function Plugin.New()
 	self._last_result = nil
 	self._driver = Driver.New()
 	self._driver_error = nil
-	local registered, register_error = self._driver:Register("card", Card)
-	if not registered then
-		self._driver_error = register_error
-	end
 	local discovered, discovery_error = self._driver:RegisterDiscovery(Card)
 	if not discovered then self._driver_error = discovery_error end
 	self._publication_error = nil -- sticky post-commit bookkeeping refusal
 	self._restart_active = false
-	-- Committed frozen versioned target (or an isolated legacy Driver run).
+	-- Committed frozen workflow target.
 	self._pending_restart_run = nil
 	return self
 end
 
 function Plugin:GetStore() return self._store end
-function Plugin:GetRegistry() return self._registry end
 function Plugin:GetAnchors() return self._anchors end
 function Plugin:GetLoad(file) return self._loads[file] end
 ---Read-only first-load capture or its sticky unavailability reason. Query never
 ---reads live to manufacture history. New transactions install capture.snapshot;
----only isolated legacy publication retires this capture.
+---session invalidation retires this capture.
 function Plugin:GetVersions(file)
 	if self._released then return nil, "session ended" end
 	local record = self._versions[file]
@@ -160,45 +153,10 @@ function Plugin:Release(reason)
 	self._watcher, self._view = nil, nil
 	self._loads, self._versions, self._session_id = {}, {}, nil
 	self._anchors:Release()
-	self._registry:Release()
 	self._store:Clear()
 	self._log:Clear()
 	self._root, self._last_result = nil, nil
 	return true
-end
-
----Register the anchor a Boss file's first load produced.
----
----The DoFile hook runs the file exactly once and hands back both the legacy
----`name -> value` map and the anchor closure the dual trailer returned. The
----anchor is registered first-load-wins: AnchorRegistry:Set refuses a second
----anchor for a file it already holds, so a later Apply can never replace the
----cells a live closure is still reading. A file whose locals cannot be
----enumerated (no capability, a name the anchor did not capture) keeps its
----legacy map and simply stays non-reloadable.
----@param file string
----@param content string
----@param names string[]
----@param map table?
----@param anchor function?
----@return boolean
-function Plugin:CaptureAnchor(file, content, names, map, anchor)
-	if self._released then return false, "session ended" end
-	if type(anchor) ~= "function" then
-		return false
-	end
-	local slots, order = Anchor.Slots(anchor, names)
-	if slots == nil then
-		return false
-	end
-	local registered = self._anchors:Set(file, {
-		anchor = anchor, slots = slots, order = order,
-		loaded_source = content, map = map, names = names,
-	})
-	if registered then
-		self._anchors:SetSource(file, content)
-	end
-	return registered
 end
 
 ---Adopt the FULL AnchorLoad result; never reconstruct or discard its verdict.
@@ -228,8 +186,6 @@ function Plugin:AdoptLoad(file, entry)
 	end
 	self._loads[file] = entry
 	self:_CaptureVersions(file, entry)
-	if type(entry.map) == "table" then self._registry:SetAll(file, entry.map) end
-	self._registry:SetSource(file, entry.loaded_source)
 	if self._watcher and type(self._watcher.Track) == "function" then
 		self._watcher:Track(file)
 	end
@@ -247,7 +203,7 @@ end
 ---capture verdict/reason; reappearance alone cannot revive this anchor.
 function Plugin:Missing(file, reason)
 	if self._released then return false, "session ended" end
-	local entry = self._loads[file] or self._anchors:Entry(file)
+	local entry = self._loads[file]
 	if entry == nil then return false, "unknown loaded file: " .. tostring(file) end
 	if entry.missing then return true end
 	entry.missing = true
@@ -261,16 +217,15 @@ function Plugin:Missing(file, reason)
 	return true
 end
 
----Production captures never fall back to a legacy Apply after refusal. The
----no-entry branch is retained only for isolated legacy callers/spec fixtures.
+---Require the complete authoritative first-load entry before preparation.
 function Plugin:_CheckLoad(file)
 	if self._released then return false, "session ended" end
 	local entry = self._loads[file]
-	local held = entry or self._anchors:Entry(file)
+	local held = entry
 	if held and held.missing then
 		return false, held.missing_reason or "loaded file missing; restart game"
 	end
-	if entry == nil then return true end
+	if entry == nil then return false, "first-load entry unavailable; restart game" end
 	if entry.reloadable ~= true then
 		return false, entry.reason or "file is not reloadable"
 	end
@@ -280,42 +235,10 @@ function Plugin:_CheckLoad(file)
 	return true
 end
 
----The bytes a file was loaded from: the anchor registry first, then the legacy
----map store, so either registry can answer for a file the other never saw.
----@param file string
----@return string?
+---Exact first-load bytes, including entries whose reload capability was refused.
 function Plugin:_LoadedSource(file)
-	local source = self._anchors:GetSource(file)
-	if source ~= nil then return source end
-	return self._registry:GetSource(file)
-end
-
----The live `name -> value` view for a file: a read-through snapshot from the
----anchor when the anchor registry holds it, otherwise the legacy map. The
----snapshot is built at call time, so a setter or a reassignment inside the file
----is observed instead of the load-time map going stale.
----@param file string
----@return table?
-function Plugin:_LoadedValues(file)
-	if self._anchors:Has(file) then
-		local values = self._anchors:Get(file)
-		if values ~= nil then return values end
-	end
-	return self._registry:Get(file)
-end
-
----Publish the rebuilt named functions. The anchor cells are the shared units, so
----the new closures are written through them whenever the anchor registry holds
----the file; the legacy map is kept in step as the fallback view.
----@param file string
----@param functions table
-function Plugin:_Publish(file, functions)
-	if self._released then return false, "session ended" end
-	self:_RetireVersions(file, "legacy publication; restart game for versioned Apply")
-	self._registry:SetAll(file, functions)
-	if self._anchors:Has(file) then
-		self._anchors:SetAll(file, functions)
-	end
+    local entry = self._loads[file]
+    return entry and entry.loaded_source or nil
 end
 
 ---Fallback activation request from the `afterMod` hook. Activation normally
@@ -631,8 +554,8 @@ function Plugin:_FreshVersioned(file, candidate, capture, file_scope)
         binding=binding, released=self._released, poisoned=self._commit:Poisoned()}
 end
 
--- Generic reentry/lifecycle control stays here; Card owns the frozen target,
--- full class/list/slot/callback checks and the actual practice handoff.
+-- Workflow reentry/lifecycle stays here; CurrentRestart owns frozen targets,
+-- receipt association, full ownership checks and the concrete practice request.
 function Plugin:_RestartVersioned(run)
     if self._restart_active then return nil, "restart is already active" end
     if not self._commit then return nil, "frozen restart target or session changed; restart game" end
@@ -640,9 +563,7 @@ function Plugin:_RestartVersioned(run)
         publication_error=self._publication_error, session_id=self._session_id,
         entry=self._loads[run.file], classes=rawget(_G,"_editor_class")}
     self._restart_active = true
-    local context = {common={file=run.file, session_id=live.session_id,
-        registry_entry=live.entry, published_units=run.snapshot}, adapter={restart=live}}
-    local called, ok, err = pcall(Card.Restart,run,nil,context)
+    local called, ok, err = pcall(CurrentRestart.Request,run,live)
     self._restart_active = false
     if not called then error(ok,0) end
     if not ok then return nil, message(err) end
@@ -673,7 +594,7 @@ function Plugin:_ApplyVersioned(token, file, candidate, capture, discovery, init
     local target, live, location, selection = prepared.target, prepared.live, prepared.location, prepared.selection
     -- Scalars/references allocated BEFORE commit. Constructor/name metadata is
     -- NOT published: EXT_POS uses the genuine live name/slot, not candidate ones.
-    local run = Card.FreezeRestart(target,capture)
+    local run = CurrentRestart.Freeze(target,capture)
     local handle, controller = prepared.handle, self._commit
     -- Driver binds/revokes the exact-input one-call writer. The unchanged
     -- Card kernel still owns every recoverable operation and final Guard/Consume.
@@ -682,7 +603,11 @@ function Plugin:_ApplyVersioned(token, file, candidate, capture, discovery, init
             return controller:Commit(token,selection,capture,live,handle.refresh)
         end)
     if not committed then return "commit: " .. message(cerr) end
-    run.snapshot = receipt.snapshot
+    local bound, bind_error = CurrentRestart.BindReceipt(run,receipt,capture)
+    if not bound then
+        self._publication_error = "definitions committed; restart receipt refused: " .. message(bind_error)
+        return self._publication_error
+    end
     self._pending_restart_run = run
     local accounting = self:_FinishVersioned(file,candidate,capture,selection.base,receipt)
     if self._publication_error then return "definitions committed" .. accounting end
@@ -690,7 +615,8 @@ function Plugin:_ApplyVersioned(token, file, candidate, capture, discovery, init
     if not restarted then return "definitions committed; restart failed: " .. message(restart_error) .. accounting end
     self._pending_restart_run = nil
     return string.format("applied %s slot %d (%s): %s%s",
-        target.class_key,target.slot,location.match,receipt.changed and "definitions committed" or "no definition changes",accounting)
+        target.class_key,target.slot,location.match,receipt.changed and "definitions committed" or "no definition changes",
+        "; restart requested" .. accounting)
 end
 
 ---Publish one explicitly named file's captured Card/function definitions.
@@ -853,9 +779,12 @@ function Plugin:_apply(token)
                     if not discovery then return "discover: " .. message(derr) end
                     matches = Card.DefinesCurrent(discovery,current)
                 else
-                    -- No first-load entry: isolated legacy fixtures only. A
-                    -- production refusal above NEVER reaches this compatibility branch.
-                    matches = Scanner.ClassKeys(candidate.first_content)[current.class_key]
+                    local unmatched, discovery_error = self._driver:Discover(file,candidate.first_content,{
+                        session_id=self._session_id,candidate_generation=candidate.generation})
+                    if not unmatched then return "discover: " .. message(discovery_error) end
+                    if Card.DefinesCurrent(unmatched,current) then
+                        return "first-load entry unavailable; restart game"
+                    end
                 end
                 if matches then
                     if target_file then return "multiple candidate files define the current class" end
@@ -868,77 +797,7 @@ function Plugin:_apply(token)
     if not target_file then return "no stable candidate defines the current class" end
     local ok, why = self:_CheckLoad(target_file)
     if not ok then return "loaded file cannot reload: " .. message(why) end
-    if self._loads[target_file] then
-        return self:_ApplyVersioned(token,target_file,target_candidate,target_capture,target_discovery,current)
-    end
-    if token ~= nil then
-        return "first-load entry unavailable; restart game" -- production UI never upgrades a legacy map
-    end
-    local content, rerr = self._watcher:ReadFile(target_file)
-    if not content then return "read: " .. message(rerr) end
-    local cand = self._store:GetCandidate(target_file)
-    if not cand or not cand.stable or content ~= cand.first_content then return "candidate bytes changed since snapshot" end
-    local cur2, cerr = Binding.CaptureCurrent()
-    if not cur2 then return "re-capture: " .. message(cerr) end
-    if cur2.class_key ~= current.class_key or cur2.card ~= current.card or cur2.slot ~= current.slot then
-        return "current binding changed (stale abort)"
-    end
-    return self:_ApplyLegacy(target_file,content,current)
-end
-
----No first-load entries only. Never a failure fallback for versioned production.
-function Plugin:_ApplyLegacy(target_file,content,current)
-	-- Locate + Inject only. Generated wiring is never executed, no callback body
-	-- runs, and the live card is untouched until Driver:Commit.
-	local request, qerr = Card.Request({
-		class_key = current.class_key,
-		card = current.card,
-		slot = current.slot,
-		name = current.name,
-		names = current.names,
-		include_previous = current.include_previous,
-		binding = current,
-	})
-	if request == nil then return "card: " .. tostring(qerr) end
-	local run, perr = Card.Plan(request, {
-		file = target_file,
-			original = self:_LoadedSource(target_file),
-			content = content,
-			registry = self:_LoadedValues(target_file),
-	})
-	if run == nil then return "card: " .. tostring(perr) end
-
-	-- Commit is the single live mutation; the restartable card adapter restarts
-	-- the practice right afterwards unless that restart fails.
-	-- Legacy Commit can publish and enter Restart before returning. Retire the
-	-- revision-0 baseline before that boundary, including a failed/partial run.
-	self:_RetireVersions(target_file, "legacy Apply attempted; restart game for versioned Apply")
-	local report = self._driver:Commit(run)
-	if report.committed ~= 1 then
-		local reason = report.failed[1] ~= nil and report.failed[1].reason or "no entry committed"
-		return "commit: " .. tostring(reason)
-	end
-	-- Post-commit: republish the freshly compiled named functions so the next
-	-- reload resolves sibling locals from the new closures instead of the old
-	-- ones. The anchor cells are the shared units, so the new closures are
-	-- written through them as well.
-	self:_Publish(target_file, run.plan.functions)
-	self._store:SetAccepted(target_file, content, "published")
-	self._store:CancelCandidate(target_file)
-	log(self, "ok", string.format("apply: replaced callbacks for %s slot %d (%s)",
-		current.class_key, current.slot, tostring(run.handle.match)))
-
-	-- A failed restart keeps the committed definitions and the run, so Retry
-	-- Restart only retries the stage switch. The candidate may have renamed the
-	-- card; Card.Commit already recorded the new name for the handoff.
-	local restart = report.restarts[1]
-	if restart ~= nil and restart.ok ~= true then
-		self._pending_restart_run = run
-		return "definitions committed; restart failed: " .. tostring(restart.reason)
-	end
-	self._pending_restart_run = nil
-	return string.format("applied %s slot %d (%s): replaced card callbacks",
-		current.class_key, current.slot, tostring(run.handle.match))
+    return self:_ApplyVersioned(token,target_file,target_candidate,target_capture,target_discovery,current)
 end
 
 ---Retry only the stage restart (definitions are already committed).
@@ -950,28 +809,15 @@ function Plugin:RetryRestart(token)
 		log(self, "warn", "retry: nothing to retry")
 		return "nothing to retry"
 	end
-	if run.kind == "versioned-card-restart" then
-		if not self._commit then return "versioned UI scope unavailable" end
-		local scoped, err = self._commit:Check(token)
-		if not scoped then return "versioned UI scope: " .. message(err) end
-		local ok, why = self:_RestartVersioned(run)
-		local result = ok and "restarted" or ("restart failed: " .. message(why))
-		if ok then self._pending_restart_run = nil end
-		self._last_result = result
-		log(self,ok and "ok" or "error",result)
-		return result
-	end
-	local report = self._driver:Restart(run)
-	if report.ok > 0 and #report.failed == 0 then
-		self._pending_restart_run = nil
-		log(self, "ok", "restarted " .. tostring(run.request.class_key))
-		return "restarted"
-	end
-	local reason = report.failed[1] ~= nil and report.failed[1].reason or "restart retry did not run"
-	local msg = "restart failed: " .. tostring(reason)
-	self._last_result = msg
-	log(self, "error", msg)
-	return msg
+    if not self._commit then return "versioned UI scope unavailable" end
+    local scoped, err = self._commit:Check(token)
+    if not scoped then return "versioned UI scope: " .. message(err) end
+    local ok, why = self:_RestartVersioned(run)
+    local result = ok and "restart requested" or ("restart failed: " .. message(why))
+    if ok then self._pending_restart_run = nil end
+    self._last_result = result
+    log(self,ok and "ok" or "error",result)
+    return result
 end
 
 ---@param file_name string

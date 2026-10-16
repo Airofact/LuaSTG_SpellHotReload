@@ -19,7 +19,7 @@ function M.run()
         local adapters={}
         for i,id in ipairs({"local","host","value"}) do
             local key=id..":unit"
-            local adapter={Id=id,ContractVersion=2}
+            local adapter={Id=id,ContractVersion=3}
             adapter.Match=function(analysis,common)
                 return {units={{key=key,carrier=id,source_ranges={{first=i,last=i}},
                     context={tag=key}}},claims={{kind="definition",key=key,unit_key=key}},
@@ -41,8 +41,6 @@ function M.run()
         end
         local discovery=assert(driver:Discover("F.lua","G=123",{session_id="prepare:session",
             candidate_generation=4,base_revision=7,published_units={}}))
-        driver.Plan=function() mutations=mutations+1;error("legacy plan forbidden") end
-        driver.adapters.For=function() mutations=mutations+1;error("legacy For forbidden") end
         for _,adapter in pairs(adapters) do
             adapter.Match=function() mutations=mutations+1;error("Match replay forbidden") end
         end
@@ -87,7 +85,7 @@ function M.run()
         local empty=assert(driver:PrepareDiscovery(d,{}))
         eq(#empty.entries,0,"empty explicit selection")
         -- Prepared records lack legacy 'planned' statuses: no implicit commit.
-        eq(driver:Commit(p).committed,0,"prepared artifact cannot authorize legacy publication")
+        eq(driver.Commit,nil,"preparation has no implicit publication API")
         for _,keys in ipairs({{"host:unit","host:unit"},{"absent"},{false},{[2]="host:unit"}}) do
             refused(driver,d,keys,nil,"invalid keys")
         end

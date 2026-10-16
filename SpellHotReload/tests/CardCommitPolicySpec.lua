@@ -1,3 +1,4 @@
+local Planning=require("SpellHotReload.tests.PlanningFixture")
 -- Card-owned commit input/version policy. Synthetic first loads only.
 -- Lua5.1 presence-only join is sufficient for zero-join raw publications here;
 -- it is never a proof of physical sharing or target engine behavior.
@@ -10,7 +11,7 @@ function M.run(opts)
     local Target = require("SpellHotReload.Adapters.Card.CardTarget")
     local Guard = require("SpellHotReload.Apply.CommitCheck")
     local Load = require("SpellHotReload.Load.AnchorLoad")
-    local Capture = require("SpellHotReload.Load.LoadVersions")
+    local Capture = require("SpellHotReload.Adapters.Card.Card")
     local passed, failed, failures = 0, 0, {}
     local function test(v,label)
         if v then passed=passed+1 else failed=failed+1;failures[#failures+1]=label end
@@ -59,8 +60,8 @@ function M.run(opts)
         local entry=must(Load.Capture(source,{name="Policy_Boss.lua",
             capability={getupvalue=true,setupvalue=true,upvaluejoin=true}}))
         entry.file="Policy_Boss.lua"
-        local capture=must(Capture.Capture(entry,sid,_editor_class,defaults))
-        local selection=must(Cards.Select(must(Cards.Compare(capture.snapshot,content)),{"card:1:K:1"}))
+        local capture=must(Capture.SeedVersions(entry,sid,_editor_class,defaults))
+        local selection=must(Cards.Select(must(Planning.Report(capture,content)),{"card:1:K:1"}))
         local live={capture=capture,snapshot=capture.snapshot,entry=entry,session_id=sid,
             classes=_editor_class,content=content}
         assert(#selection.joins==0 and #selection.writes==0 and #selection.publications==1)
@@ -99,7 +100,7 @@ function M.run(opts)
         eq(proposed.units["card:1:K:2"].definition_version,base.units["card:1:K:2"].definition_version,"unselected definition unchanged")
         unchanged(s,c,l,base,fn,"pure policy")
         eq(mutations,0,"policy never mutates")
-        local empty=must(Cards.Select(must(Cards.Compare(base,source)),{}))
+        local empty=must(Cards.Select(must(Planning.Report(c,source)),{}))
         eq(Card.ProposeVersion(empty),base,"empty proposal exact base")
         local marker={phase="inject",code="unsupported",message="version policy refused"}
         Cards.Next=function(selection) eq(selection,s,"version service exact input");return nil,marker end
@@ -127,8 +128,12 @@ function M.run(opts)
             s,c,l=fixture();case[1](s,c,l)
             v,e=Card.CheckCommitInput(s,c,l);refusal(v,e,case[2],"input case "..i)
         end
+        s,c,l=fixture();s.file_location=nil
+        v,e=Card.CheckCommitInput(s,c,l);refusal(v,e,"unsupported","missing correspondence scope")
+        s,c,l=fixture();s.location={}
+        v,e=Card.CheckCommitInput(s,c,l);refusal(v,e,"unsupported","conflicting correspondence scopes")
         s,c,l=fixture();local location,binding={key="root-key"},{mode="practice"}
-        s.location,l.binding=location,binding
+        s.location,l.binding,s.file_location=location,binding,nil
         Target.CheckDiscovery=function(loc,current,capture,live)
             eq(loc,location,"located root exact location");eq(current,binding,"located root latest binding")
             eq(capture,c,"located root exact capture");eq(live,l,"located root fresh live")

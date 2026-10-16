@@ -1,3 +1,4 @@
+local Planning=require("SpellHotReload.tests.PlanningFixture")
 -- Synthetic first-load ownership only; never game/generated source.
 -- Presence-only join fixture on Lua5.1 permits metadata, not shared-cell proof.
 local M={}
@@ -6,7 +7,7 @@ function M.run(opts)
     opts=opts or {}
     local Target=opts.target or require("SpellHotReload.Adapters.Card.CardTarget")
     local Load=require("SpellHotReload.Load.AnchorLoad")
-    local Versions=require("SpellHotReload.Load.LoadVersions")
+    local Versions=require("SpellHotReload.Adapters.Card.Card")
     local Cards=require("SpellHotReload.Adapters.Card.CardVersions")
     local Tx=require("SpellHotReload.Apply.CardCommit")
     local passed,failed,failures=0,0,{}
@@ -69,7 +70,7 @@ function M.run(opts)
             {name="Target_Boss.lua",capability={getupvalue=true,setupvalue=true,upvaluejoin=true}}))
         entry.file="Target_Boss.lua"
         local sid="CardTargetSpec:"..serial
-        local capture=must(Versions.Capture(entry,sid,_editor_class,defaults))
+        local capture=must(Versions.SeedVersions(entry,sid,_editor_class,defaults))
         local live={capture=capture,snapshot=capture.snapshot,entry=entry,classes=_editor_class,session_id=sid}
         return binding(_editor_class,"K",debug_mode and 2 or 3,debug_mode and "debug" or "practice"),capture,live
     end
@@ -226,14 +227,10 @@ function M.run(opts)
             b,c,l=fixture();target=must(Target.Resolve(b,c,l));target[field]="wrong"
             reject(function() return Target.Check(target,b,c,l) end,"stale","target "..field)
         end
-        -- Consumers still enforce candidate fixed layout; no unsafe remap here.
-        b,c,l=fixture()
-        local diff,err=Cards.Compare(c.snapshot,source:gsub("'Same'","'Renamed'"))
-        eq(diff,nil,"candidate rename remains refused");eq(err.code,"ambiguous","fixed layout refusal")
         -- Integration: select exact captured root, commit, then retire old target.
         b,c,l=fixture();target=must(Target.Resolve(b,c,l))
         local content=source:gsub("return 22 end","return 222 end")
-        local report=must(Cards.Compare(c.snapshot,content))
+        local report=must(Planning.Report(c,content))
         local selection=must(Cards.Select(report,{target.key}))
         eq(Target.Check(target,b,c,l),true,"precommit current recheck")
         l.content=content

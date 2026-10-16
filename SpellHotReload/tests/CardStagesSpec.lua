@@ -7,11 +7,12 @@ function M.run()
     local Card = require("SpellHotReload.Adapters.Card.Card")
     local Driver = require("SpellHotReload.Pipeline.Driver")
     local Load = require("SpellHotReload.Load.AnchorLoad")
-    local Versions = require("SpellHotReload.Load.LoadVersions")
+    local Versions = require("SpellHotReload.Adapters.Card.Card")
     local Cards = require("SpellHotReload.Adapters.Card.CardVersions")
     local Target = require("SpellHotReload.Adapters.Card.CardTarget")
     local Callbacks = require("SpellHotReload.Adapters.Card.CardCallbacks")
     local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
+    local Restart=require("SpellHotReload.Runtime.CurrentRestart")
     local Anchor = require("SpellHotReload.Load.Anchor")
     local passed, failed, failures = 0, 0, {}
     local function check(v,label)
@@ -35,7 +36,7 @@ function M.run()
     local globals={};for _,key in ipairs(keys) do globals[key]=rawget(_G,key) end
     local join,set=debug.upvaluejoin,debug.setupvalue
     local locate,inject=Card.Locate,Card.Inject
-    local publish,restart=Callbacks.Publish,Binding.Restart
+    local publish,restart=Callbacks.Publish,Restart.Handoff
     local resolve,compare=Target.Resolve,Cards.CompareLocated
     local modules={}
     local module_keys={"SpellHotReload.Runtime.Plugin","SpellHotReload.Runtime.Watcher"}
@@ -79,7 +80,7 @@ function M.run()
         local entry=must(Load.Capture(source(0,10),{name="Stages_Boss.lua",
             capability={getupvalue=true,setupvalue=true,upvaluejoin=true}}))
         entry.file="Stages_Boss.lua"
-        local capture=must(Versions.Capture(entry,"stages:"..serial,_editor_class,defaults))
+        local capture=must(Versions.SeedVersions(entry,"stages:"..serial,_editor_class,defaults))
         local base=capture.snapshot
         local bytes=source(7,15)
         local driver=Driver.New();assert(driver:RegisterDiscovery(Card))
@@ -101,7 +102,7 @@ function M.run()
         local function mutation() mutations=mutations+1;error("premature mutation") end
         debug.upvaluejoin,debug.setupvalue=mutation,mutation
         rawset(_G,"jit",{flush=mutation})
-        Callbacks.Publish,Binding.Restart=mutation,mutation
+        Callbacks.Publish,Restart.Handoff=mutation,mutation
     end
     local ok,problem=pcall(function()
         local f=fixture()
@@ -159,7 +160,8 @@ function M.run()
         eq(Anchor.Get(f.entry,"helper"),helper,"no premature function cell write")
         eq(Anchor.Get(f.entry,"state"),4,"ordinary state retained")
         eq(_stages_runs,1,"candidate initialization never replayed")
-        for _,method in ipairs({"Commit","Restart"}) do
+        eq(Card.Restart,nil,"adapter restart hook removed")
+        for _,method in ipairs({"Commit"}) do
             local phase=method:lower()
             for _,mode in ipairs({"context","handle","selection"}) do
                 local h=mode=="handle" and handle or {request={card=f.initial.card}}
@@ -286,7 +288,7 @@ function M.run()
     end)
     Card.Locate,Card.Inject=locate,inject
     Target.Resolve,Cards.CompareLocated=resolve,compare
-    Callbacks.Publish,Binding.Restart=publish,restart
+    Callbacks.Publish,Restart.Handoff=publish,restart
     debug.upvaluejoin,debug.setupvalue=join,set
     for _,key in ipairs(module_keys) do package.loaded[key]=modules[key] end
     for _,key in ipairs(keys) do rawset(_G,key,globals[key]) end

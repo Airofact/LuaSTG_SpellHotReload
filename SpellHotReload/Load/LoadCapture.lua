@@ -3,7 +3,7 @@
 ---
 --- Generalized load-time capture service for the generic reload model.
 ---
---- The Boss-file hook (GeneratedBossLoader.InstallDoFileHook) appends a
+--- The first-load capture path (LoadHook -> AnchorLoad) appends a
 --- `return { [name] = name, ... }` trailer to `*_Boss.lua` so the file's
 --- top-level `local function`s can be harvested. This module lifts that trick
 --- into a pure, testable service:

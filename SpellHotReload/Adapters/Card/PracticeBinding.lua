@@ -1,13 +1,5 @@
---------------------------------------------------------------------------------
---- SpellHotReload.Adapters.Card.PracticeBinding
----
---- Resolve the currently selected card (Spell Practice or SC Debugger) and start
---- a fresh practice. Inspect/Patch remain available for named-function upvalue
---- patches; CardCallbacks handles callback replacement. Restart writes the
---- existing EXT_POS handoff, which always enters the normal Spell Practice stage
---- group even when the current card was reached through SC Debugger.
---------------------------------------------------------------------------------
-
+-- Read the current practice/SC Debug binding and inspect named init functions.
+-- Publication and practice switching are owned by their runtime workflows.
 local PracticeBinding = {}
 
 ---@class SpellHotReload.CurrentBinding
@@ -166,63 +158,6 @@ function PracticeBinding.InspectInitFunctions(card)
 		i = i + 1
 	end
 	return result
-end
-
----Patch the card's `init` upvalues with new functions matched by upvalue name.
----Returns the list of patched upvalue names (empty when nothing matched).
----@param card table
----@param functions table<string, function>
----@return string[]
-function PracticeBinding.Patch(card, functions)
-	local patched = {}
-	if type(card) ~= "table" or type(card.init) ~= "function" or type(functions) ~= "table" then
-		return patched
-	end
-	for _, up in ipairs(PracticeBinding.InspectInitFunctions(card)) do
-		local new_fn = functions[up.name]
-		if type(new_fn) == "function" then
-			local ok = pcall(debug.setupvalue, card.init, up.index, new_fn)
-			if ok then
-				patched[#patched + 1] = up.name
-			end
-		end
-	end
-	if #patched > 0 and jit ~= nil and jit.flush ~= nil then
-		pcall(jit.flush)
-	end
-	return patched
-end
-
----Start a fresh Spell Practice for the (patched) card.
----@param class_key string
----@param name string
----@param card table
----@param slot integer
----@param include_previous boolean
-function PracticeBinding.Restart(class_key, name, card, slot, include_previous)
-	_sc_table["EXT_POS"] = { class_key, name, card, slot, include_previous }
-	lstg.var.sc_index = "EXT_POS"
-	lstg.var.sc_pr_data = {
-		class_name = class_key,
-		scene_index = slot,
-		include_previous = include_previous,
-	}
-	lstg.var.sc_pr = {
-		class_name = class_key,
-		index = slot,
-		perform = include_previous,
-	}
-	stage.group.PracticeStart("Spell Practice@Spell Practice")
-	PracticeBinding.FlyOut()
-end
-
----Close the pause menu if it is currently open.
-function PracticeBinding.FlyOut()
-	if ext and ext.pause_menu then
-		if not ext.pause_menu:IsKilled() then
-			ext.pause_menu:FlyOut()
-		end
-	end
 end
 
 return PracticeBinding

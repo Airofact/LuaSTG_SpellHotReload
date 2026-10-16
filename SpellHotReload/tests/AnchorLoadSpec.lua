@@ -8,7 +8,7 @@
 ---
 --- What is asserted here is the capture contract:
 ---
----   * the dual trailer keeps the map bytes GeneratedBossLoader produced and
+---   * the dual trailer keeps the map bytes LoadCapture produces and
 ---     appends Anchor's trailer, so `results[1]` cannot drift and
 ---     `results[2]` is the anchor;
 ---   * the file body runs once - a policy refusal, a trailer that cannot be
@@ -33,7 +33,7 @@
 local Anchor = require("SpellHotReload.Load.Anchor")
 local AnchorLoad = require("SpellHotReload.Load.AnchorLoad")
 local Compose = require("SpellHotReload.Source.Compose")
-local Loader = require("SpellHotReload.GeneratedBossLoader")
+local Loader = require("SpellHotReload.Load.LoadCapture")
 local IR = require("SpellHotReload.Source.TopLevelIR")
 local Binding = require("SpellHotReload.Source.Binding")
 
@@ -144,7 +144,7 @@ function M.run()
         local dual, reason = AnchorLoad.Trailer(names)
         check(dual ~= nil, "trailer: three names build (" .. tostring(reason) .. ")")
         if dual ~= nil then
-            local map_src = Loader.BuildTrailer(names)
+            local map_src = Loader.Trailer(names)
             local anchor_src = assert(Anchor.Trailer(names))
             local map_body = assert(map_src:match("^return%s+(.*)$"))
             local anchor_body = assert(anchor_src:match("^return%s+(.*)$"))
@@ -232,7 +232,7 @@ function M.run()
         -- The harvested map must equal the legacy trailer's map for the same
         -- source, so nothing about the existing consumers changes.
         local source = "local a = 1\nlocal f = function() return a end\n"
-        local legacy = assert(compile(source .. "\n" .. Loader.BuildTrailer({ "a", "f" }),
+        local legacy = assert(compile(source .. "\n" .. Loader.Trailer({ "a", "f" }),
             "@spec:legacy"))()
         local dual = assert(AnchorLoad.Capture(source, { capability = caps() }))
         eq(count_keys(dual.map), count_keys(legacy), "map: the same key count")

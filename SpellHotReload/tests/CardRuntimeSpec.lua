@@ -1,4 +1,4 @@
--- Adapter-owned runtime rules; all objects here are synthetic. Existing
+-- Card planning plus runtime-owned restart rules; synthetic objects. Existing
 -- VersionedApply/Monitor suites cover genuine first-load production transactions.
 -- No Plugin receiver/cache, candidate execution, join, cell write or publication.
 local M={}
@@ -7,12 +7,14 @@ function M.run()
     local Target=require("SpellHotReload.Adapters.Card.CardTarget")
     local Cards=require("SpellHotReload.Adapters.Card.CardVersions")
     local Binding=require("SpellHotReload.Adapters.Card.PracticeBinding")
+    local Restart=require("SpellHotReload.Runtime.CurrentRestart")
     local passed,failed,failures=0,0,{}
     local function check(v,label)
         if v then passed=passed+1 else failed=failed+1;failures[#failures+1]=label end
     end
     local function eq(a,b,label) check(rawequal(a,b),label) end
     local function has(value,part,label)
+        if type(value)=="table" then value=rawget(value,"message") end
         check(type(value)=="string" and value:find(part,1,true)~=nil,label)
     end
     local function reject(fn,part,label)
@@ -21,7 +23,7 @@ function M.run()
     local function copy(v) local r={};for k,x in next,v do r[k]=x end;return r end
     local services={Resolve=Target.Resolve,Check=Target.Check,LocateDiscovery=Target.LocateDiscovery,
         CheckDiscovery=Target.CheckDiscovery,CompareLocated=Cards.CompareLocated,
-        Select=Cards.Select,Describe=Cards.Describe,Restart=Binding.Restart,IsReplay=Binding.IsReplay}
+        Select=Cards.Select,Describe=Cards.Describe,Restart=Restart.Handoff,IsReplay=Binding.IsReplay}
     local old_setup,old_join=debug.setupvalue,debug.upvaluejoin
     local old_jit=rawget(_G,"jit")
     local trace={}
@@ -132,7 +134,7 @@ function M.run()
         Target.CheckDiscovery=old_check
         refusal(v,e,"inspection: target changed","inspection final target failure")
 
-        local run=Card.FreezeRestart(target,capture)
+        local run=Restart.Freeze(target,capture)
         eq(run.kind,"versioned-card-restart","run tagged for controller retry")
         for _,field in ipairs({"file","session_id","entry","classes","class_key","class","list","card","slot","name","include_previous","key"}) do
             eq(run[field],target[field],"run frozen "..field)
@@ -140,18 +142,18 @@ function M.run()
         eq(run.anchor,anchor,"anchor fixed");eq(run.raw_name,"Live","raw live name fixed")
         eq(run.capture,capture,"capture fixed")
         eq(run.snapshot,nil,"uncommitted run has no installed receipt")
-        run.snapshot=snapshot -- synthetic committed/no-op receipt; no live writes
+        assert(Restart.BindReceipt(run,{snapshot=snapshot},capture)) -- synthetic no-op receipt
         local restart_live={session_id=target.session_id,entry=entry,classes=classes}
         local restarts=0
         Binding.IsReplay=function() return false end
-        Binding.Restart=function(k,n,c,s,previous)
+        Restart.Handoff=function(k,n,c,s,previous)
             restarts=restarts+1
             eq(k,"K","restart frozen class");eq(n,"Live","restart frozen name")
             eq(c,card,"restart frozen card");eq(s,2,"restart frozen slot")
             eq(previous,true,"restart frozen previous flag")
         end
         trace={}
-        eq(Card.RestartVersioned(run,restart_live),true,"adapter performs committed restart")
+        eq(Restart.Request(run,restart_live),true,"runtime performs committed request")
         eq(table.concat(trace,","),"","restart has no source service/refresh path")
         eq(restarts,1,"one handoff")
         for _,fault in ipairs({"released","poisoned","publication_error","session","entry","classes"}) do
@@ -160,7 +162,7 @@ function M.run()
             elseif fault=="entry" then view.entry={}
             elseif fault=="classes" then view.classes={}
             else view[fault]=true end
-            v,e=Card.RestartVersioned(run,view)
+            v,e=Restart.Request(run,view)
             refusal(v,e,"frozen restart target",fault)
         end
         local mutations={
@@ -174,23 +176,24 @@ function M.run()
             {"sibling",function() list[1]={} end,function() list[1]=placeholder end,"slot ownership"},
             {"extra",function() list.foreign={} end,function() list.foreign=nil end,"slot ownership"},
             {"length",function() list[3]={} end,function() list[3]=nil end,"class/list ownership"},
-            {"metatable",function() setmetatable(list,{}) end,function() setmetatable(list,nil) end,"class/list ownership"},
+            {"metatable",function() setmetatable(list,{}) end,function() setmetatable(list,nil) end,"committed frozen"},
             {"callback",function() card.init=function() end end,
                 function() card.init=snapshot.units[key].callbacks.init.fn end,"committed callback"},
         }
         for _,mutation in ipairs(mutations) do
-            mutation[2]();v,e=Card.RestartVersioned(run,restart_live);mutation[3]()
+            mutation[2]();v,e=Restart.Request(run,restart_live);mutation[3]()
             refusal(v,e,mutation[4],mutation[1])
         end
         eq(restarts,1,"all stale handoffs refused before game call")
         Binding.IsReplay=function() return true end
-        reject(function() return Card.RestartVersioned(run,restart_live) end,"replay","replay")
+        reject(function() return Restart.Request(run,restart_live) end,"replay","replay")
         Binding.IsReplay=function() return false end
         entry.missing=true;entry.reloadable=false
-        eq(Card.RestartVersioned(run,restart_live),true,"Missing preserves committed retry")
+        eq(Restart.Request(run,restart_live),true,"Missing preserves committed retry")
         entry.missing=nil;entry.reloadable=true
-        Binding.Restart=function() error(setmetatable({}, {__tostring=function() error("unsafe") end})) end
-        reject(function() return Card.RestartVersioned(run,restart_live) end,"operation refused","hostile restart error")
+        run=Restart.Freeze(target,capture);assert(Restart.BindReceipt(run,{snapshot=snapshot},capture))
+        Restart.Handoff=function() error(setmetatable({}, {__tostring=function() error("unsafe") end})) end
+        reject(function() return Restart.Request(run,restart_live) end,"operation refused","hostile restart error")
 
         local record={binding=Card.FreezeBinding(initial),classes=classes,class=class,list=list}
         eq(Card.InspectionBindingMatches(record,initial,classes),true,"past binding valid")
@@ -213,7 +216,7 @@ function M.run()
     Target.Resolve,Target.Check,Target.LocateDiscovery,Target.CheckDiscovery=
         services.Resolve,services.Check,services.LocateDiscovery,services.CheckDiscovery
     Cards.CompareLocated,Cards.Select,Cards.Describe=services.CompareLocated,services.Select,services.Describe
-    Binding.Restart,Binding.IsReplay=services.Restart,services.IsReplay
+    Restart.Handoff,Binding.IsReplay=services.Restart,services.IsReplay
     debug.setupvalue,debug.upvaluejoin=old_setup,old_join
     rawset(_G,"jit",old_jit)
     if not ok then failed=failed+1;failures[#failures+1]="unexpected: "..tostring(problem) end
@@ -226,9 +229,13 @@ function M.run()
     package.loaded[names[3]],package.loaded[names[4]]=nil,nil
     local saved_classes=rawget(_G,"_editor_class")
     rawset(_G,"_editor_class",classes)
-    local methods={"FreezeBinding","PrepareVersioned","FreezeRestart","Commit","Restart","RestartVersioned","InspectPrepared","InspectionBindingMatches"}
+    local methods={"FreezeBinding","PrepareVersioned","Freeze","BindReceipt","Commit","Request","InspectPrepared","InspectionBindingMatches"}
+    local function service(method)
+        if method=="Freeze" or method=="BindReceipt" or method=="Request" then return Restart end
+        return Card
+    end
     local originals,counts={},{}
-    for _,n in ipairs(methods) do originals[n],counts[n]=Card[n],0 end
+    for _,n in ipairs(methods) do originals[n],counts[n]=service(n)[n],0 end
     local replay,capture_current=Binding.IsReplay,Binding.CaptureCurrent
     local wired,werr=pcall(function()
         local Plugin=require("SpellHotReload.Runtime.Plugin")
@@ -257,7 +264,7 @@ function M.run()
         p._FreshVersioned=function() fresh_count=fresh_count+1;return live end
         for _,n in ipairs(methods) do
             local method=n
-            Card[method]=function(...)
+            service(method)[method]=function(...)
                 counts[method]=counts[method]+1
                 if method=="PrepareVersioned" then
                     local c,d,b,proof,refresh=...
@@ -276,11 +283,11 @@ function M.run()
                     local value,c,refresh=...
                     eq(value,prepared,"controller prepared selection");eq(c,capture,"controller inspect capture")
                     eq(refresh(),live,"controller inspection final refresh");return model,live
-                elseif method=="RestartVersioned" then
+                elseif method=="Request" then
                     local run,view=...
                     eq(run.card,card,"controller frozen card");eq(view.entry,entry,"controller restart entry")
                     eq(view.session_id,target.session_id,"controller restart session")
-                    eq(p._restart_active,true,"controller busy gate spans adapter handoff")
+                    eq(p._restart_active,true,"controller busy gate spans workflow handoff")
                     return true
                 end
                 return originals[method](...)
@@ -300,22 +307,22 @@ function M.run()
         eq(display.selected[1],key,"cheap inspection delegates binding validity")
         check(fresh_count>=3,"controller invokes supplied fresh views")
         for _,method in ipairs(methods) do check(counts[method]>0,"actual controller invokes "..method) end
-        Card.RestartVersioned=function() error("adapter validation fixture") end
-        local run=originals.FreezeRestart(target,capture);run.snapshot=snapshot
+        Restart.Request=function() error("workflow validation fixture") end
+        local run=originals.Freeze(target,capture);assert(originals.BindReceipt(run,{snapshot=snapshot},capture))
         local called,err=pcall(p._RestartVersioned,p,run)
-        eq(called,false,"unexpected adapter throw propagated")
-        has(err,"adapter validation fixture","unexpected adapter error preserved")
+        eq(called,false,"unexpected workflow throw propagated")
+        has(err,"workflow validation fixture","unexpected workflow error preserved")
         eq(p._restart_active,false,"controller clears busy gate on throw")
-        Card.RestartVersioned=function()
+        Restart.Request=function()
             local v,e=p:_RestartVersioned(run)
-            eq(v,nil,"reentrant adapter retry refused");has(e,"already active","reentrant retry reason")
+            eq(v,nil,"reentrant workflow retry refused");has(e,"already active","reentrant retry reason")
             return nil,"retry fixture"
         end
         local v,e=p:_RestartVersioned(run)
-        eq(v,nil,"failed adapter handoff surfaced");eq(e,"retry fixture","failed adapter reason kept")
+        eq(v,nil,"failed workflow handoff surfaced");eq(e,"retry fixture","failed workflow reason kept")
         eq(p._restart_active,false,"controller clears busy gate on refusal")
     end)
-    for _,n in ipairs(methods) do Card[n]=originals[n] end
+    for _,n in ipairs(methods) do service(n)[n]=originals[n] end
     Binding.IsReplay,Binding.CaptureCurrent=replay,capture_current
     rawset(_G,"_editor_class",saved_classes)
     for _,n in ipairs(names) do package.loaded[n]=saved_modules[n] end

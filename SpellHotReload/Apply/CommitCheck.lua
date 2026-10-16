@@ -13,7 +13,7 @@
 --- installation and production Plugin/Driver wiring are separate R4 work.
 --- Located selections additionally recheck their CardTarget source/current-root
 --- proof with live.binding freshly read by trusted orchestration, including after
---- cache invalidation. Legacy fixed-layout selections need no binding.
+--- cache invalidation. File selections require complete file correspondence.
 --- Inputs are read-only by contract, not a hostile-plan sandbox. upvalueid is
 --- optional: absent it, physical external rejoin cannot be proved, not probed.
 local Card = require("SpellHotReload.Adapters.Card.Card")

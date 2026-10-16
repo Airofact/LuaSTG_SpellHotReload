@@ -76,8 +76,7 @@ end
 local function apply_loaded_source(live, Plugin)
     local bytes = assert(live_registry_source(state.file_name),
         "capture hook has no source for " .. tostring(state.file_name))
-    local p = Plugin.New()
-    p._registry = live:GetRegistry()
+    local p = live
     p._activated, p._supported, p._sandbox_ok = true, true, true
     p._root = "mod/" .. tostring(setting.mod)
     p._watcher = { ReadFile = function() return bytes end }
@@ -85,7 +84,7 @@ local function apply_loaded_source(live, Plugin)
     assert(p._store:RecordFirstRead(state.file_name, candidate.generation, bytes, 2), "first read rejected")
     local stable = p._store:VerifyStable(state.file_name, candidate.generation, bytes, 4, 2)
     assert(stable ~= nil and stable.stable == true, "candidate did not stabilize")
-    return p:Apply()
+    return p:ApplyFromUI()
 end
 
 ---Wait until the SC Debugger boss is on a slot we can actually select.
@@ -179,7 +178,7 @@ local function install()
     local Card = require("SpellHotReload.Adapters.Card.CardCallbacks")
     local Plugin = require("SpellHotReload.Runtime.Plugin")
     local live = assert(View.plugin, "plugin view not initialized")
-    live_registry_source = function(file_name) return live:GetRegistry():GetSource(file_name) end
+    live_registry_source = function(file_name) return (live:GetLoad(file_name) and live:GetLoad(file_name).loaded_source) end
     local view = {}
     function view:getWindowName() return "SpellHotReload SC debug smoke" end
     function view:getMenuGroupName() return "Tool" end

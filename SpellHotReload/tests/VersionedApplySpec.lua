@@ -16,6 +16,7 @@ function M.run()
     local Load=require("SpellHotReload.Load.AnchorLoad")
     local Anchor=require("SpellHotReload.Load.Anchor")
     local Binding=require("SpellHotReload.Adapters.Card.PracticeBinding")
+    local Restart=require("SpellHotReload.Runtime.CurrentRestart")
     local Compose=require("SpellHotReload.Source.Compose")
     local Card=require("SpellHotReload.Adapters.Card.Card")
     local passed,failed,failures=0,0,{}
@@ -26,7 +27,7 @@ function M.run()
     local function has(s,p,label) check(type(s)=="string" and s:find(p,1,true)~=nil,label.." ("..tostring(s)..")") end
     local function must(v,err) assert(v,type(err)=="table" and err.message or err);return v end
     local get,set,join=debug.getupvalue,debug.setupvalue,debug.upvaluejoin
-    local old_restart,old_plan,old_create=Binding.Restart,Card.Plan,Compose.Create
+    local old_restart,old_create=Restart.Handoff,Compose.Create
     local plugins,current={},nil
     local callbacks={"before","init","frame","render","beforedel","del","after"}
     local defaults={}
@@ -77,7 +78,7 @@ function M.run()
         _sc_table={}
         ext={replay={IsReplay=function() return current and current.replay==true end}}
         lstg={var={},Log=function() end,FileManager={EnumFiles=function() return {{FILE,false}} end}}
-        local f={constructions=0,restarts=0,reads=0,discoveries=0,creates=0,legacy=0,classes=_editor_class}
+        local f={constructions=0,restarts=0,reads=0,discoveries=0,creates=0,classes=_editor_class}
         current=f
         boss={card={_default_card=defaults,New=function(name)
             f.constructions=f.constructions+1
@@ -110,10 +111,7 @@ function M.run()
             if f.on_discover then f.on_discover(f) end
             return discover(self,...)
         end
-        local function legacy() f.legacy=f.legacy+1;error("legacy publication forbidden") end
-        driver.Commit,driver.Restart,f.p._Publish,f.p._registry.SetAll,f.p._anchors.SetAll=legacy,legacy,legacy,legacy,legacy
-        Card.Plan=legacy
-        Binding.Restart=function(class_key,name,card,slot,include_previous)
+        Restart.Handoff=function(class_key,name,card,slot,include_previous)
             f.restarts=f.restarts+1
             f.restart_args={class_key,name,card,slot,include_previous}
             if f.on_restart then f.on_restart(f) end
@@ -135,7 +133,6 @@ function M.run()
         end
         eq(f.p._store:HasPartialPublication(FILE),false,label.." no partial record")
         eq(f.restarts,0,label.." no restart")
-        eq(f.legacy,0,label.." no fallback")
     end
     local ok,problem=pcall(function()
         local f=fixture()
@@ -168,7 +165,6 @@ function M.run()
             has(f.p:ApplyFromUI(),"patch capability unavailable","Lua5.1 production refusal")
             f.p._sandbox_ok=true -- bypass only outer boolean to test sticky entry refusal
             has(f.p:ApplyFromUI(),"loaded file cannot reload","Lua5.1 entry cannot fall back")
-            eq(f.legacy,0,"missing join zero legacy fallback")
             eq(f.restarts,0,"missing join zero restart")
             print("VersionedApplySpec: real shared commits not run (Lua5.1 missing join)")
         else
@@ -209,7 +205,6 @@ function M.run()
             eq(f.p._store:GetPartialPublication(FILE).revision,2,"second partial record")
             eq(Anchor.Get(f.entry,"idle"),base.functions.units.idle.fn,"idle stays unselected after both cards")
             eq(_va_runs,1,"two Apply operations do not replay wiring")
-            eq(f.legacy,0,"new production never invokes legacy publication")
             local revision=f.capture.snapshot.revision
             has(f.p:ApplyFromUI(),"no definition changes","same selected source no-op")
             eq(f.capture.snapshot.revision,revision,"no-op does not fabricate revision")
@@ -297,15 +292,22 @@ function M.run()
             check(f.p._store:GetCandidate(FILE)~=nil,"tombstone candidate retained")
 
             f=fixture()
+            local other="0_Unloaded_Boss.lua"
+            local bytes=EDIT:gsub("'K'","'Unloaded'"):gsub("'L'","'UnloadedSide'")
+            local unrelated=f.p._store:BeginCandidate(other,1,"test")
+            f.p._store:RecordFirstRead(other,unrelated.generation,bytes,2)
+            f.p._store:VerifyStable(other,unrelated.generation,bytes,4,2)
+            has(f.p:ApplyFromUI(),"applied","unloaded unrelated candidate does not block current")
+            check(f.p._store:GetCandidate(other)~=nil,"unloaded unrelated candidate retained")
+
+            f=fixture()
             f.p._loads[FILE]=nil -- a legacy map cannot be upgraded by production UI
             has(f.p:ApplyFromUI(),"first-load entry unavailable","missing genuine load never enters UI legacy path")
-            eq(f.legacy,0,"old map UI cannot use legacy publication")
             eq(f.restarts,0,"old map UI never restarts")
 
             f=fixture();base=f.capture.snapshot
             f.p._versions[FILE].capture=nil;f.p._versions[FILE].reason="synthetic seed refusal"
             has(f.p:ApplyFromUI(),"first-load versions unavailable","sticky unavailable capture refuses")
-            eq(f.legacy,0,"no baseline refusal fallback")
             eq(f.restarts,0,"refused capture never restarts")
 
             f=fixture()
@@ -326,7 +328,7 @@ function M.run()
             eq(f.creates,creates,"direct refused retry does not compile")
             eq(f.discoveries,discovers,"direct refused retry does not Match")
             enter(f,3)
-            eq(f.p:RetryRestartFromUI(),"restarted","retry frozen root even after current root changes/Missing")
+            eq(f.p:RetryRestartFromUI(),"restart requested","retry frozen root even after current root changes/Missing")
             eq(f.restart_args[3],f.classes.K.cards[2],"retry frozen card, not new current")
             eq(f.restart_args[4],2,"retry frozen slot")
             eq(f.reads,reads,"retry no disk reads")
@@ -334,7 +336,6 @@ function M.run()
             eq(f.discoveries,discovers,"retry no discovery")
             eq(f.capture.snapshot.revision,1,"retry no republish")
             eq(f.p:HasRestartPending(),false,"successful retry releases pending run")
-            eq(f.legacy,0,"retry not legacy Driver.Restart")
 
             for _,fault in ipairs({"owner","sibling","replay","released"}) do
                 f=fixture()
@@ -346,7 +347,7 @@ function M.run()
                 elseif fault=="replay" then f.replay=true
                 else f.p:Release() end
                 f.on_restart=nil
-                check(f.p:RetryRestartFromUI()~="restarted","frozen "..fault.." retry refused")
+                check(f.p:RetryRestartFromUI()~="restart requested","frozen "..fault.." retry refused")
                 eq(f.restarts,1,"frozen "..fault.." no second restart")
                 eq(f.reads,reads,"frozen "..fault.." retry no IO")
             end
@@ -356,7 +357,7 @@ function M.run()
             has(f.p:ApplyFromUI(),"restart failed","include_previous frozen before commit")
             _sc_table[1][5]=false
             f.on_restart=nil
-            eq(f.p:RetryRestartFromUI(),"restarted","retry ignores changed current restart flag")
+            eq(f.p:RetryRestartFromUI(),"restart requested","retry ignores changed current restart flag")
             eq(f.restart_args[5],true,"retry preserves original include_previous flag")
 
             f=fixture()
@@ -399,12 +400,11 @@ function M.run()
             eq(f.p._store:GetAccepted(FILE).content,SOURCE,"bookkeeping fault never ACKs")
             eq(f.restarts,0,"bookkeeping failure requires restart instead of automatic stage switch")
             has(f.p:ApplyFromUI(),"bookkeeping failed","sticky bookkeeping refusal disables future Apply")
-            check(f.p:RetryRestartFromUI()~="restarted","sticky bookkeeping refusal disables retry")
-            eq(f.legacy,0,"postcommit refusal does not fall back")
+            check(f.p:RetryRestartFromUI()~="restart requested","sticky bookkeeping refusal disables retry")
         end
     end)
     debug.getupvalue,debug.setupvalue,debug.upvaluejoin=get,set,join
-    Binding.Restart,Card.Plan,Compose.Create=old_restart,old_plan,old_create
+    Restart.Handoff,Compose.Create=old_restart,old_create
     for _,p in ipairs(plugins) do p:Release() end
     for _,name in ipairs(modules) do package.loaded[name]=loaded[name] end
     for _,name in ipairs(globals) do rawset(_G,name,saved[name]) end

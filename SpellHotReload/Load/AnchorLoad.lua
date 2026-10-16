@@ -1,45 +1,8 @@
---------------------------------------------------------------------------------
---- SpellHotReload.Load.AnchorLoad
----
---- The R2 load-path capture output: run one generated file exactly once and get
---- both the legacy `name -> value` map and the file's anchor out of that single
---- execution.
----
---- Anchor.lua already models "one file, one anchor" and LoadCapture.lua already
---- generalizes the legacy map capture, but each of them runs the file for
---- itself. The production load path cannot pay two executions: the file body
---- registers stages, builds tables and starts music, and running it twice is
---- exactly the mistake the hook's trailer exists to avoid. This module owns the
---- joint output the hook needs:
----
----   Trailer   the dual trailer. It keeps the legacy `return { [name] = name }`
----             map as the chunk's *first* result - byte-derived from
----             LoadCapture.Trailer - and appends Anchor's anchor
----             closure as the *second*, so `results[1]` stays exactly what the
----             current hook stores and `results[2]` is the new model;
----   Capture   analyse with the shared TopLevelIR/Binding snapshot, apply the
----             Anchor policy, run once, and report the map, the anchor, the real
----             slots, the policy and whether the file may be hot-reloaded;
----   Get/Set   read and write through the anchor cell, so an external setter, a
----             function reassignment or a whole-table replacement is always
----             seen by every closure sharing the cell;
----   Values    a fresh map read through the anchor right now, for consumers that
----             want the map shape without owning a second source of truth.
----
---- `entry.map` is the load-time snapshot the legacy path already stored; it is
---- never live and must not be treated as the model state. `Values`/`Get`/`Set`
---- are the live accessors, and `entry.anchor` is what a later Apply must never
---- replace.
----
---- The policy keeps a file loading when it is not reloadable. A top-level
---- return, a duplicate top-level local, an unparsed statement, too many slots or
---- a runtime without `debug.upvaluejoin` still runs the file exactly once; the
---- map is still harvested - the legacy consumers must not regress, including on
---- vanilla Lua 5.1 - and only the reload capability is withheld with a clear
---- reason. Nothing here touches an engine global, joins a closure, writes a
---- cell or publishes anything.
---------------------------------------------------------------------------------
-
+-- Execute one generated file once and return both immutable first-load evidence
+-- and its shared-cell anchor. entry.map records original values synchronously;
+-- Card.SeedVersions uses those original function identities for revision zero.
+-- Later publication never writes this map or treats it as a live registry.
+-- Preserve normal arguments/results and capability refusals without replay.
 local Anchor = require("SpellHotReload.Load.Anchor")
 local Compose = require("SpellHotReload.Source.Compose")
 local Capture = require("SpellHotReload.Load.LoadCapture")
@@ -136,7 +99,7 @@ local function load_once(source, options)
     return packed
 end
 
----Analyze and load `content` once, harvesting the legacy value map and the file
+---Analyze and load `content` once, harvesting initial value evidence and the file
 ---anchor from the same execution.
 ---
 ---The map survives every refusal the policy or the runtime can produce; only

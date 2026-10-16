@@ -1,9 +1,10 @@
+local Planning=require("SpellHotReload.tests.PlanningFixture")
 -- R4 preflight only. Tiny synthetic first loads; never runs the game.
 local M = {}
 function M.run()
     local Check = require("SpellHotReload.Apply.CommitCheck")
     local Load = require("SpellHotReload.Load.AnchorLoad")
-    local Capture = require("SpellHotReload.Load.LoadVersions")
+    local Capture = require("SpellHotReload.Adapters.Card.Card")
     local Cards = require("SpellHotReload.Adapters.Card.CardVersions")
     local Anchor = require("SpellHotReload.Load.Anchor")
     local passed, failed, failures = 0, 0, {}
@@ -56,8 +57,8 @@ function M.run()
         end},move={New=function() return {is_combat=false} end}}
         local entry=must(Load.Capture(source,{capability=caps,name="Commit_Boss.lua"}))
         entry.file="Commit_Boss.lua"
-        local capture=must(Capture.Capture(entry,"session",_editor_class,defaults))
-        local report=must(Cards.Compare(capture.snapshot,candidate))
+        local capture=must(Capture.SeedVersions(entry,"session",_editor_class,defaults))
+        local report=must(Planning.Report(capture,candidate))
         local selection=must(Cards.Select(report,{"card:1:K:2"}))
         local live={capture=capture,snapshot=capture.snapshot,entry=entry,
             session_id="session",classes=_editor_class,content=candidate}
@@ -198,7 +199,7 @@ function M.run()
         debug.upvalueid=nil
         eq(Check.Check(s,c,l),true,"id optional; name/value checks still apply")
         s,c,l=fixture()
-        local unchanged=must(Cards.Compare(c.snapshot,source))
+        local unchanged=must(Planning.Report(c,source))
         local empty=must(Cards.Select(unchanged,{}))
         l.content=source
         eq(Check.Check(empty,c,l),true,"empty no-op still checked")

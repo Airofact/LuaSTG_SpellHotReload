@@ -275,15 +275,15 @@ _missing_runs = _missing_runs + 1]]
         eq(allowed, false, "Missing refuses reload even when legacy map exists")
         has(deny, "loaded file missing", "explicit Missing gate reason")
         eq(p:_LoadedSource("A_Boss.lua"), source, "loaded source retained")
-        eq(p:GetRegistry():GetSource("A_Boss.lua"), source, "legacy source retained")
+        eq(p:GetLoad("A_Boss.lua").loaded_source, source, "legacy source retained")
         eq(p:GetStore():GetAccepted("A_Boss.lua").content, source, "baseline retained")
         eq(p:GetStore():GetCandidate("A_Boss.lua"), nil, "Missing cancels only candidate")
         eq(p._pending_restart_run, committed, "committed restart plan retained")
         eq(consumer(), live_state, "live outside consumer intact")
-        eq(p:_LoadedValues("A_Boss.lua").state, live_state, "Missing anchor read-through intact")
+        eq(p:GetAnchors():GetValue("A_Boss.lua", "state"), live_state, "Missing anchor read-through intact")
         local replacement = {}
         setter(replacement)
-        eq(p:_LoadedValues("A_Boss.lua").state, replacement, "setter still shares live cells")
+        eq(p:GetAnchors():GetValue("A_Boss.lua", "state"), replacement, "setter still shares live cells")
         local log_count, missing_reason = p:GetLog():Count(), entry.missing_reason
         check(p:Missing("A_Boss.lua", "repeat notification"), "Plugin Missing idempotent")
         eq(p:GetLog():Count(), log_count, "no repeat Missing log")
@@ -297,9 +297,6 @@ _missing_runs = _missing_runs + 1]]
         eq(refused.reason, "top-level return", "noncapturable refusal preserved")
         eq(refused.missing, true, "noncapturable Missing flag held")
         check(not p:_CheckLoad("NoAnchor_Boss.lua"), "noncapturable Missing gate denies")
-        check(p:CaptureAnchor("Legacy_Boss.lua", source, entry.names, entry.map, entry.anchor), "legacy capture fixture")
-        check(p:Missing("Legacy_Boss.lua"), "legacy held anchor marks Missing")
-        check(not p:_CheckLoad("Legacy_Boss.lua"), "missing legacy fixture cannot take no-entry bypass")
         -- A deletion confirmed before a first normal load must not disappear
         -- from the Plugin gate simply because no entry existed at notification.
         event("Late_Boss.lua", action.removed)
@@ -331,16 +328,15 @@ _missing_runs = _missing_runs + 1]]
         local Scanner = require("SpellHotReload.Adapters.Card.GeneratedBossScanner")
         local Card = require("SpellHotReload.Adapters.Card.Card")
         local old_current, old_replay = Binding.CaptureCurrent, Binding.IsReplay
-        local old_scan, old_keys, old_plan = Scanner.Scan, Scanner.ClassKeys, Card.Plan
+        local old_scan, old_keys = Scanner.Scan, Scanner.ClassKeys
         restore[#restore + 1] = function()
             Binding.CaptureCurrent, Binding.IsReplay = old_current, old_replay
-            Scanner.Scan, Scanner.ClassKeys, Card.Plan = old_scan, old_keys, old_plan
+            Scanner.Scan, Scanner.ClassKeys = old_scan, old_keys
         end
         Binding.CaptureCurrent = function() return {class_key="Test:Normal",card={},slot=1} end
         Binding.IsReplay = function() return false end
         Scanner.Scan = function() return {ok=true} end
         Scanner.ClassKeys = function() return {["Test:Normal"]=true} end
-        Card.Plan = function() error("Missing file planned") end
         w.ReadFile = function() error("Missing file reread in Apply") end
         p._sandbox_ok = true -- the Missing gate is orthogonal to runtime capability
         has(p:Apply(), "loaded file cannot reload: loaded file missing", "production Apply Missing gate")

@@ -1,3 +1,4 @@
+local Planning=require("SpellHotReload.tests.PlanningFixture")
 -- Version services consume the SAME complete discovery, never re-Match it.
 -- Only miniature synthetic first-load files execute; never game-generated code.
 local M = {}
@@ -7,7 +8,7 @@ function M.run()
     local Cards = require("SpellHotReload.Adapters.Card.CardVersions")
     local Source = require("SpellHotReload.Source.FunctionPlan")
     local Load = require("SpellHotReload.Load.AnchorLoad")
-    local Capture = require("SpellHotReload.Load.LoadVersions")
+    local Capture = require("SpellHotReload.Adapters.Card.Card")
     local Anchor = require("SpellHotReload.Load.Anchor")
     local Compose = require("SpellHotReload.Source.Compose")
     local IR = require("SpellHotReload.Source.TopLevelIR")
@@ -59,7 +60,7 @@ VERSION_DISCOVERY_EFFECT()
             capability={getupvalue=true,setupvalue=true,upvaluejoin=true}}))
         entry.file="Discovery_Boss.lua"
         if not old_join then debug.upvaluejoin=function() error("presence-only fixture") end end
-        local capture=must(Capture.Capture(entry,"session",_editor_class,defaults))
+        local capture=must(Capture.SeedVersions(entry,"session",_editor_class,defaults))
         local state=capture.snapshot
         local keya,keyb,keyc="card:1:K:1","card:1:K:2","card:1:L:1"
         local a,b,c=state.units[keya].card,state.units[keyb].card,state.units[keyc].card
@@ -75,7 +76,7 @@ VERSION_DISCOVERY_EFFECT()
                 base_revision=base.revision,published_units=base,candidate_generation=3})).snapshot
         end
         local snapshot=discover(candidate,state)
-        local legacy=must(Cards.Compare(state,candidate))
+        local legacy=must(Planning.Report(capture,candidate))
         local analyzes,matches,binding_calls,joins,writes,flushes=0,0,0,0,0,0
         IR.Analyze=function(content,...)
             if content==candidate then analyzes=analyzes+1 end
@@ -91,10 +92,10 @@ VERSION_DISCOVERY_EFFECT()
         eq(scan.bindings,snapshot.bindings,"shared binding identity")
         eq(analyzes,0,"Inspect does not re-analyze candidate")
         eq(binding_calls,0,"Inspect does not rebuild bindings")
-        local diff=must(Cards.CompareDiscovery(state,snapshot))
+        local diff=must(Planning.Report(capture,nil,snapshot))
         eq(analyzes,0,"all version stages reuse candidate analysis")
         eq(matches,0,"version discovery never re-Matches")
-        eq(binding_calls,1,"only immutable loaded baseline is re-analyzed")
+        eq(binding_calls,2,"function and file evidence each inspect the immutable loaded baseline")
         eq(diff.discovery,snapshot,"full discovery retained by card report")
         eq(diff.functions.discovery,snapshot,"function report shares discovery")
         eq(diff.functions.prepared.content,candidate,"complete candidate bytes")
@@ -118,8 +119,6 @@ VERSION_DISCOVERY_EFFECT()
         eq(#snapshot.entries,2,"all classes retained")
         eq(#selected.publications,1,"one explicit callback publication")
         local proposed=must(Cards.Next(selected))
-        local renamed_legacy,legacy_error=Cards.Compare(state,candidate:gsub('New%("same"','New("renamed"',1))
-        refuses(renamed_legacy,legacy_error,"ambiguous","legacy gsub multiple returns")
         eq(state.revision,0,"no version installed during preparation")
         eq(proposed.revision,1,"proposed aggregate revision")
         eq(proposed.units[keyb].callbacks.init.fn,b.init,"unselected old identity")
@@ -130,40 +129,37 @@ VERSION_DISCOVERY_EFFECT()
         for _,field in ipairs({"file","session_id","registry_entry","loaded_source",
             "base_revision","published_units"}) do
             local bad=copy(snapshot);bad.common=copy(snapshot.common);bad.common[field]=false
-            local v,e=Cards.CompareDiscovery(state,bad)
+            local v,e=Planning.Report(capture,nil,bad)
             refuses(v,e,"stale","scope "..field)
         end
         local bad=copy(snapshot);bad.common=copy(snapshot.common);bad.common.content=candidate.." "
-        local v,e=Cards.CompareDiscovery(state,bad);refuses(v,e,"unsupported","wrong bytes")
+        local v,e=Planning.Report(capture,nil,bad);refuses(v,e,"unsupported","wrong bytes")
         v,e=Source.InspectDiscovery(bad);refuses(v,e,"unsupported","Inspect bytes")
         bad=copy(snapshot);bad.analysis=copy(snapshot.analysis);bad.analysis.source_offset=3
         bad.common=copy(snapshot.common);bad.common.analysis=bad.analysis
-        v,e=Cards.CompareDiscovery(state,bad);refuses(v,e,"unsupported","wrong BOM offset")
+        v,e=Planning.Report(capture,nil,bad);refuses(v,e,"unsupported","wrong BOM offset")
         bad=copy(snapshot);bad.adapter_contexts={}
-        v,e=Cards.CompareDiscovery(state,bad);refuses(v,e,"unsupported","missing registered Card")
+        v,e=Planning.Report(capture,nil,bad);refuses(v,e,"unsupported","missing registered Card")
         bad=copy(snapshot);bad.entries={snapshot.entries[1]}
-        v,e=Cards.CompareDiscovery(state,bad);refuses(v,e,"unsupported","filtered discovery")
+        v,e=Planning.Report(capture,nil,bad);refuses(v,e,"ownership","filtered discovery index disagrees")
         bad=copy(snapshot);bad.by_key={}
-        v,e=Cards.CompareDiscovery(state,bad);refuses(v,e,"ownership","wrong entry index")
+        v,e=Planning.Report(capture,nil,bad);refuses(v,e,"ownership","wrong entry index")
         local touched=0
         local hostile=setmetatable({},{__index=function() touched=touched+1 end})
-        v,e=Cards.CompareDiscovery(state,hostile);refuses(v,e,"stale","snapshot metatable")
+        v,e=Planning.Report(capture,nil,hostile);refuses(v,e,"stale","snapshot metatable")
         v,e=Source.InspectDiscovery(hostile);refuses(v,e,"unsupported","source metatable")
         eq(touched,0,"metatables never invoked")
         v,e=Cards.Select(diff,{"card:K"});refuses(v,e,"unsupported","class key not publication key")
         IR.Analyze,Binding.Analyze,Card.Match=old_analyze,old_binding,old_match
         local bom="\239\187\191"..candidate
         local bom_snapshot=discover(bom,state)
-        local bom_diff=must(Cards.CompareDiscovery(state,bom_snapshot))
-        local bom_legacy=must(Cards.Compare(state,bom))
+        local bom_diff=must(Planning.Report(capture,nil,bom_snapshot))
+        local bom_legacy=must(Planning.Report(capture,bom))
         list(bom_diff.changed,table.concat(bom_legacy.changed,","),"BOM changed equivalence")
         eq(bom_diff.by_key[keya].callbacks.init.signature,bom_legacy.by_key[keya].callbacks.init.signature,
             "BOM callback equivalence")
-        local renamed=candidate:gsub('New%("same"','New("renamed"',1)
-        v,e=Cards.CompareDiscovery(state,discover(renamed,state))
-        refuses(v,e,"ambiguous","fixed layout rename still refused")
         local former=a.init;a.init=function() end
-        v,e=Cards.CompareDiscovery(state,snapshot);refuses(v,e,"stale","external callback replacement")
+        v,e=Planning.Report(capture,nil,snapshot);refuses(v,e,"stale","external callback replacement")
         a.init=former
         debug.upvaluejoin,debug.setupvalue,_G.jit=old_join,old_set,old_jit
         if old_join then
@@ -173,15 +169,16 @@ VERSION_DISCOVERY_EFFECT()
             end
             for _,write in ipairs(selected.writes) do must(Anchor.Set(entry,write.name,write.value)) end
             for _,pub in ipairs(selected.publications) do rawset(pub.target,pub.key,pub.value) end
+            capture.snapshot=proposed
             local next_snapshot=discover(candidate,proposed)
-            local again=must(Cards.CompareDiscovery(proposed,next_snapshot))
+            local again=must(Planning.Report(capture,nil,next_snapshot))
             list(again.changed,keyb,"partial publication leaves wrapper pending")
             list(again.functions.changed,"other","partial publication leaves helper pending")
             local second=must(Cards.Select(again,{keyb}))
             eq(#second.writes,0,"published helper not re-written")
             eq(#second.publications,1,"next wrapper alone publishes")
             eq(again.discovery,next_snapshot,"next actual baseline discovery retained")
-            v,e=Cards.CompareDiscovery(proposed,snapshot)
+            v,e=Planning.Report(capture,nil,snapshot)
             refuses(v,e,"stale","old baseline snapshot refused")
         else
             print("VersionDiscoverySpec: real joins/partial publication not run (Lua5.1)")

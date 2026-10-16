@@ -1,3 +1,4 @@
+local Planning=require("SpellHotReload.tests.PlanningFixture")
 -- Complete remainder diagnostics, NOT candidate removal or game acceptance.
 -- Only miniature FIRST-load fixtures execute. Candidates never initialize or
 -- register. LuaJIT uses the real CardCommit kernel for publication evidence;
@@ -202,7 +203,7 @@ function M.run()
         eq(model.complete,false,"unowned callback remains unknown remainder")
         check(has(model,"unknown"),"orphan literal not claimed")
         eq(g.constructs,4,"orphan candidate never constructed")
-        local value,err=Cards.Compare(base,(SOURCE:gsub("local empty","local empty=0")))
+        local value,err=Planning.Report(f.capture,(SOURCE:gsub("local empty","local empty=0")))
         eq(value,nil,"declaration-kind change refused before coverage")
         eq(err.code,"unsupported","fixed declaration-kind refusal")
         value,err=FileApply.Remaining({})
@@ -274,7 +275,7 @@ function M.run()
             -- A proposed Next baseline cannot pass a fresh live comparison.
             f=fixture();selection=must(Cards.SelectFile(f.report(edited)))
             local proposed=must(Cards.Next(selection))
-            value,err=Cards.Compare(proposed,edited)
+            value,err=Planning.Report(f.capture,edited,nil,proposed)
             eq(value,nil,"uninstalled Next never genuine publications")
             eq(err.code,"stale","uninstalled Next refusal")
             -- Real rollback preserves the old ledger and pending remainder.
@@ -293,7 +294,7 @@ function M.run()
             eq(f.remaining(edited).complete,false,"failed transaction never completes definitions")
             eq(f.effects,1,"failed candidate never initialized")
             local before=f.capture.snapshot
-            value,err=Cards.Compare(before,edited .. "\nlocal extra=0")
+            value,err=Planning.Report(f.capture,edited .. "\nlocal extra=0")
             eq(value,nil,"preparation declaration failure produces no coverage")
             eq(f.capture.snapshot,before,"preparation failure keeps actual baseline")
         else

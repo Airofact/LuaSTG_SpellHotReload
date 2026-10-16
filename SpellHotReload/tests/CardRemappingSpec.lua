@@ -8,7 +8,7 @@ function M.run(opts)
     local Card=require("SpellHotReload.Adapters.Card.Card")
     local Callbacks=require("SpellHotReload.Adapters.Card.CardCallbacks")
     local Load=require("SpellHotReload.Load.AnchorLoad")
-    local Capture=require("SpellHotReload.Load.LoadVersions")
+    local Capture=require("SpellHotReload.Adapters.Card.Card")
     local Cards=require("SpellHotReload.Adapters.Card.CardVersions")
     local passed,failed,failures=0,0,{}
     local function eq(a,b,label)
@@ -52,7 +52,7 @@ function M.run(opts)
         local entry=must(Load.Capture(bytes,{name="Remapping_Boss.lua",
             capability={getupvalue=true,setupvalue=true,upvaluejoin=true}}))
         entry.file="Remapping_Boss.lua"
-        local capture=must(Capture.Capture(entry,"remapping:"..serial,_editor_class,defaults))
+        local capture=must(Capture.SeedVersions(entry,"remapping:"..serial,_editor_class,defaults))
         local list=_editor_class.K.cards
         local names={};for i,card in ipairs(list) do names[i]=card.name or "" end
         local binding={class_key="K",slot=slot,card=list[slot],name=list[slot].name,
@@ -170,8 +170,8 @@ function M.run(opts)
         location=must(Target.LocateDiscovery(t,renamed,b,c,l))
         eq(location.candidate_name,"Renamed","candidate name kept separate")
         eq(t.name,"B","live name not published")
-        v,e=Cards.CompareDiscovery(c.snapshot,renamed)
-        eq(v,nil,"fixed version layout still refuses");eq(e.code,"ambiguous","no accidental production remap")
+        local report=must(Cards.CompareLocated(c.snapshot,location,b,c,l))
+        eq(report.location,location,"comparison consumes the explicit remap proof")
         -- No parser, compiler, mutator or old selection path runs during Locate.
         local read,match=Callbacks.Read,Card.Match
         local chunk=assert(loadfile(assert(opts.module_path,"module_path required")))

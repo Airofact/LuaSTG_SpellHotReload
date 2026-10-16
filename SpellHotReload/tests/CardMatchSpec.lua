@@ -1,24 +1,4 @@
---------------------------------------------------------------------------------
---- SpellHotReload tests/CardMatchSpec.lua
----
---- Discovery spec for the card adapter. Card is the first carrier to implement
---- ContractVersion 2: one generated Boss file publishes one practice-independent
---- unit per card-list class (`_editor_class["K"].cards = { ... }`), and
---- Card.Bind turns a discovered unit plus the live session binding into the
---- request the legacy Locate/Inject pair already consumes.
----
---- Covers: contract + discovery registration, the Match unit/claim/context
---- shape, the no-execution guarantee, dual-shape (legacy/generic) Locate/Inject,
---- an end-to-end discovery -> Bind -> Card.Plan -> Driver:Commit cycle with the
---- same engine stand-ins CardSpec uses, the real generated file (read-only,
---- skipped when the runtime mod is absent), and the fail-whole-file policy for
---- a card class that cannot be parsed.
----
---- Runs under plain Lua 5.1 and LuaJIT with the game directory as cwd
---- (see tests/Run.lua); the real generated file block is skipped when the
---- runtime mod is absent (e.g. the workspace-root pre-check runner).
---------------------------------------------------------------------------------
-
+-- Card discovery shape, claims, non-execution and whole-file refusal.
 local Adapter = require("SpellHotReload.Pipeline.Adapter")
 local NodeRegistry = require("SpellHotReload.Pipeline.NodeRegistry")
 local FileMatch = require("SpellHotReload.Pipeline.FileMatch")
@@ -26,7 +6,6 @@ local Card = require("SpellHotReload.Adapters.Card.Card")
 local CardCallbacks = require("SpellHotReload.Adapters.Card.CardCallbacks")
 local Driver = require("SpellHotReload.Pipeline.Driver")
 local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
-local Loader = require("SpellHotReload.GeneratedBossLoader")
 local IR = require("SpellHotReload.Source.TopLevelIR")
 
 local M = {}
@@ -91,12 +70,6 @@ function M.run()
             restarts = restarts + 1
         end } }
 
-        local function load_source(source)
-            _editor_class, _sc_table = {}, {}
-            local names = Loader.ListFunctionNames(source)
-            return assert((loadstring or load)(source .. "\n" .. Loader.BuildTrailer(names)))()
-        end
-
         -- Two card-list classes (one with three slots incl. a dialog and an
         -- inline-built combat card, one single combat card) plus a non-card
         -- class and a comment that only looks like a card list.
@@ -143,28 +116,13 @@ function M.run()
             }, "\n")
         end
 
-        local function run_init(actor, card)
-            card.init(actor)
-            if actor.task ~= nil then
-                assert(coroutine.resume(actor.task))
-                assert(coroutine.resume(actor.task))
-            end
-        end
-
-        local function live_names(content, class_key)
-            local layout = assert(CardCallbacks.Read(content, class_key))
-            local names = {}
-            for i, entry in ipairs(layout) do names[i] = entry.name or "" end
-            return names
-        end
-
         local old, new = fixture(1), fixture(20)
 
         ------------------------------------------------------------------------
         -- contract + discovery registration
         ------------------------------------------------------------------------
         eq(Card.Id, "card", "card: carries the discovery Id")
-        eq(Card.ContractVersion, 2, "card: declares ContractVersion 2")
+        eq(Card.ContractVersion, 3, "card: declares ContractVersion 2")
         eq(Adapter.ValidateDiscovery(Card), true, "card: satisfies the discovery contract")
         local registry = NodeRegistry.New()
         eq(registry:RegisterDiscovery(Card), true, "card: registers for discovery")
@@ -251,78 +209,6 @@ function M.run()
         end
         eq(claims["constructor|Boss:Hard:1"], "card:Boss:Hard", "claim: second class constructor")
         eq(claims["callback|Boss:Hard:1:frame"], "card:Boss:Hard", "claim: second class callback")
-
-        ------------------------------------------------------------------------
-        -- Bind + dual-shape Locate/Inject
-        ------------------------------------------------------------------------
-        local captured = load_source(old)
-        local live = _editor_class["Boss:Normal"].cards[3]
-        local binding = {
-            class_key = "Boss:Normal", name = "Inline", card = live, slot = 3,
-            include_previous = false, mode = "practice", names = live_names(old, "Boss:Normal"),
-        }
-        local unit = normal.unit
-        local request = assert(Card.Bind(unit, { binding = binding }))
-        eq(request.class_key, "Boss:Normal", "bind: class key")
-        eq(request.card, live, "bind: the live card object")
-        eq(request.slot, 3, "bind: the live slot")
-        eq(request.include_previous, false, "bind: restart mode")
-        eq(request.binding, binding, "bind: keeps the live binding for Select")
-        local no_binding, bind_reason = Card.Bind(unit, {})
-        eq(no_binding, nil, "bind: a unit without a live binding is rejected")
-        contains(bind_reason, "no live card binding", "bind: the rejection explains why")
-        eq(Card.Bind(normal.context, { binding = binding }), nil,
-            "bind: a bare context is not a unit")
-
-        local legacy = assert(Card.Locate(request, { original = old, content = new }))
-        local expected = assert(CardCallbacks.Select(old, new, "Boss:Normal", 3))
-        eq(legacy.descriptor.constructor, expected.constructor, "locate: legacy env matches Select")
-        local generic = {
-            common = { file = "Test_Boss.lua", content = new, loaded_source = old,
-                registry = captured, binding = binding },
-            adapter = { file = untouched.adapter_contexts.card, unit = unit.context },
-        }
-        local handle = assert(Card.Locate(unit, generic))
-        eq(handle.descriptor.constructor, legacy.descriptor.constructor,
-            "locate: generic context matches the legacy env")
-        eq(handle.descriptor.callbacks.init, legacy.descriptor.callbacks.init,
-            "locate: generic context rebuilds the same init source")
-        local plan = assert(Card.Inject(handle, unit, generic))
-        eq(type(plan.callbacks.init), "function", "inject: builds the new init closure")
-        eq(plan.restart, nil, "inject: never records a live restart")
-        eq(live.init ~= plan.callbacks.init, true, "inject: the live card keeps its old closure")
-
-        local orphan, orphan_reason = Card.Locate(unit, {
-            common = { file = "Test_Boss.lua", content = new, loaded_source = old },
-        })
-        eq(orphan, nil, "locate: a unit needs the live binding")
-        contains(orphan_reason, "no live card binding", "locate: the rejection explains why")
-
-        ------------------------------------------------------------------------
-        -- end to end: discovery -> Bind -> Card.Plan -> Driver:Commit
-        ------------------------------------------------------------------------
-        restarts = 0
-        local captured_new = load_source(old)
-        local live_new = _editor_class["Boss:Normal"].cards[3]
-        local snapshot = assert(discover(new))
-        local bound = assert(Card.Bind(snapshot.by_key["card:Boss:Normal"].unit, { binding = {
-            class_key = "Boss:Normal", name = "Inline", card = live_new, slot = 3,
-            include_previous = false, names = live_names(old, "Boss:Normal"),
-        } }))
-        local run = assert(Card.Plan(bound, {
-            file = "Test_Boss.lua", original = old, content = new, registry = captured_new,
-        }))
-        local report = Driver.New():Commit(run)
-        eq(report.committed, 1, "e2e: discovery path commits one card")
-        eq(restarts, 1, "e2e: commit starts the fresh practice")
-        eq(_editor_class["Boss:Normal"].cards[3], live_new, "e2e: the live identity is preserved")
-        local actor = {}
-        run_init(actor, live_new)
-        live_new.before(actor)
-        live_new.render(actor)
-        eq(actor.value, 26, "e2e: the reloaded body applies")
-        eq(actor.before_value, 11, "e2e: callbacks keep the shared local state")
-        eq(actor.render_value, 11, "e2e: the render callback sees the same local")
 
         ------------------------------------------------------------------------
         -- fail-whole-file policy

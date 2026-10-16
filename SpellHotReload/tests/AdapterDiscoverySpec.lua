@@ -8,7 +8,7 @@ function M.run()
     end
     local function valid()
         return {
-            ContractVersion = 2, Id = "card",
+            ContractVersion = 3, Id = "card",
             Match = hook, Locate = hook, Inject = hook, Commit = hook,
         }
     end
@@ -27,7 +27,7 @@ function M.run()
     local candidate = valid()
     candidate.ContractVersion = nil
     expect(candidate, false, "missing version")
-    for _, version in ipairs({ false, 1, 3, "2" }) do
+    for _, version in ipairs({ false, 1, 2, 4, "3" }) do
         candidate = valid()
         candidate.ContractVersion = version
         expect(candidate, false, "unsupported version")
@@ -50,25 +50,13 @@ function M.run()
         candidate[name] = true
         expect(candidate, false, "non-function " .. name)
     end
-    candidate = valid()
-    candidate.Restartable = false
-    expect(candidate, true, "restart disabled")
-    candidate.Restartable = true
-    expect(candidate, false, "missing Restart")
-    candidate.Restart = hook
-    expect(candidate, true, "restart enabled")
-    candidate.Restartable = "true"
-    expect(candidate, false, "invalid Restartable")
-    candidate.Restartable = false
-    candidate.Restart = false
-    expect(candidate, false, "invalid optional Restart")
+    assert(table.concat(Adapter.Hooks,",")=="Match,Locate,Inject,Commit")
+    passed=passed+1
 
     local mt = { __index = function() error("must not invoke __index") end }
     expect(setmetatable(valid(), mt), true, "explicit fields only")
     expect(setmetatable({}, mt), false, "no inherited contract")
     local legacy = { Locate = hook, Inject = hook, Commit = hook }
-    assert(Adapter.Validate(legacy))
-    assert(Adapter.Validate(Adapter.Fallback))
     expect(legacy, false, "legacy is not silently upgraded")
     print(string.format("[SpellHotReload discovery] %d passed, 0 failed", passed))
     return { passed = passed, failed = 0 }

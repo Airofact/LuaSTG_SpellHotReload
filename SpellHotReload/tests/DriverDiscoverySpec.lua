@@ -22,7 +22,7 @@ function M.run(options)
     local calls, analysis_calls, shared, shared_common = {}, 0
     local function adapter(id, specs, claim_key)
         return {
-            ContractVersion=2, Id=id,
+            ContractVersion=3, Id=id,
             Match=function(analysis, common)
                 calls[#calls+1] = id
                 if shared then
@@ -49,7 +49,6 @@ function M.run(options)
     eq(driver:RegisterDiscovery(z), true, "register z")
     eq(driver:RegisterDiscovery(a), true, "register a")
     eq(driver:RegisterDiscovery(a), false, "duplicate Id refused")
-    eq(#driver.adapters:Carriers(), 0, "discovery does not register legacy carrier")
     local live_ref, supplied = {}, {session_id="S", candidate_generation=3, base_revision=7}
     supplied.registry_entry = live_ref
     local old_analyze = IR.Analyze
@@ -121,7 +120,6 @@ function M.run(options)
     local legacy = {Locate=function() error("legacy Locate forbidden") end,
         Inject=function() error("legacy Inject forbidden") end,
         Commit=function() error("legacy Commit forbidden") end}
-    assert(empty_driver:Register("global",legacy))
     eq(#assert(empty_driver:Discover("legacy.lua","G=1")).index.list,0,"legacy adapters excluded")
     eq(empty_driver:RegisterDiscovery(legacy),false,"legacy cannot enter discovery")
     shared,shared_common = nil,nil

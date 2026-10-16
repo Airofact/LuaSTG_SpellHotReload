@@ -13,7 +13,7 @@ function M.run()
     end
     local function make(id)
         return {
-            ContractVersion = 2, Id = id,
+            ContractVersion = 3, Id = id,
             Match = hook, Locate = hook, Inject = hook, Commit = hook,
         }
     end
@@ -27,8 +27,6 @@ function M.run()
 
     eq(#registry:Discoveries(), 0, "initially empty")
     local legacy = { Locate = hook, Inject = hook, Commit = hook }
-    eq(registry:Register("card", legacy), true, "legacy registration")
-    eq(#registry:Discoveries(), 0, "legacy does not opt into discovery")
     reject(legacy, "ContractVersion", "legacy discovery rejected")
     reject(nil, "table", "nil discovery rejected")
 
@@ -47,9 +45,6 @@ function M.run()
     invalid.Match = nil
     reject(invalid, "Match", "invalid contract rejected")
     eq(#registry:Discoveries(), 2, "failed registration leaves map unchanged")
-    eq(registry:For({ carrier = "card" }), legacy, "legacy routing preserved")
-    eq(registry:For({ carrier = "host" }), Adapter.Fallback, "fallback preserved")
-    eq(table.concat(registry:Carriers(), ","), "card", "carrier list unchanged")
 
     adapters[1] = nil
     adapters[3] = legacy
@@ -58,10 +53,7 @@ function M.run()
 
     local other = Registry.New()
     eq(#other:Discoveries(), 0, "instances are independent")
-    eq(other:Register("host", a), true, "v2 may use legacy explicitly")
-    eq(#other:Discoveries(), 0, "legacy v2 registration does not opt in")
     eq(other:RegisterDiscovery(a), true, "separate discovery opt in")
-    eq(other:For({ carrier = "host" }), a, "both routes coexist")
     local guarded = setmetatable(make("guarded"), { __index = hook })
     eq(other:RegisterDiscovery(guarded), true, "registration avoids __index")
     eq(other:Discoveries()[2], guarded, "enumeration avoids hooks")
