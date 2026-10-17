@@ -4,7 +4,7 @@
 --- Lexical declaration set and definition-point visibility for one shared
 --- TopLevelIR analysis snapshot.
 ---
---- The module states only what the shared token stream can prove about
+--- The module reads declarations and reference expressions from shared syntax for
 --- *top-level* Lua scope:
 ---
 ---   declarations   the names a file binds as top-level locals, in source
@@ -21,167 +21,43 @@
 ---                  a rebinding is possible.
 ---
 --- It deliberately does NOT claim a complete Lua binding proof. TopLevelIR's
---- `_link` token-name deps are a heuristic over these same tokens and are never
+--- `_link` identifier-expression deps are a heuristic over these same tokens and are never
 --- upgraded into safety: `bindings.complete` is always false, and a statement
 --- TopLevelIR could not parse marks the snapshot `opaque`.
 ---
 --- Nothing here executes the analyzed source.
 --------------------------------------------------------------------------------
 
+local Tree = require("SpellHotReload.Source.SyntaxTree")
 local M = {}
 
 local function plain(value)
     return type(value) == "table" and getmetatable(value) == nil
 end
 
-local function is_word(token)
-    return token ~= nil and token.kind == "word"
-end
-
----Token indices in `first..last` that *introduce* a binding instead of reading
----one: names of a `local` statement, parameters of a `function` literal, and
----the control variables of a `for` loop. A scope lookup must skip them.
----@param tokens table[]
----@param first integer
----@param last integer
----@return table<integer, boolean>
-local function declaration_sites(tokens, first, last)
-    local sites = {}
-    local i = first
-    while i <= last do
-        local token = tokens[i]
-        if is_word(token) and token.value == "local" then
-            local j = i + 1
-            if is_word(tokens[j]) and tokens[j].value == "function" then
-                if is_word(tokens[j + 1]) then sites[j + 1] = true end
-            else
-                local expecting = true
-                while j <= last do
-                    local next_token = tokens[j]
-                    if next_token.value == "=" then break end
-                    if next_token.value == "," then
-                        expecting = true
-                    elseif expecting and is_word(next_token) then
-                        sites[j] = true
-                        expecting = false
-                    end
-                    j = j + 1
-                end
-            end
-        elseif is_word(token) and token.value == "function" then
-            local j = i + 1
-            while j <= last and not (tokens[j] ~= nil and tokens[j].value == "(") do
-                j = j + 1
-            end
-            if j <= last then
-                local nest = 0
-                j = j + 1
-                while j <= last do
-                    local next_token = tokens[j]
-                    if next_token.value == "(" then
-                        nest = nest + 1
-                    elseif next_token.value == ")" then
-                        if nest == 0 then break end
-                        nest = nest - 1
-                    elseif nest == 0 and is_word(next_token) then
-                        sites[j] = true
-                    end
-                    j = j + 1
-                end
-            end
-        elseif is_word(token) and token.value == "for" then
-            local j = i + 1
-            while j <= last do
-                local next_token = tokens[j]
-                if next_token.value == "=" then break end
-                if is_word(next_token) and next_token.value == "in" then break end
-                if is_word(next_token) then sites[j] = true end
-                j = j + 1
-            end
-        end
-        i = i + 1
-    end
-    return sites
-end
-
----Declaration sites introduced by a whole top-level `local` statement, in
----source order. Returns nil when the statement is not a top-level `local`.
----@param tokens table[]
----@param first integer
----@param last integer
----@return table[]?  -- { { token = integer, name = string, slot = integer?, self_visible = boolean? } }
-local function top_level_declarations(tokens, first, last)
-    local head = tokens[first]
-    if not is_word(head) or head.value ~= "local" or head.depth ~= 0 then
-        return nil
-    end
-    if is_word(tokens[first + 1]) and tokens[first + 1].value == "function" then
-        local name_token = tokens[first + 2]
-        if not is_word(name_token) then return {} end
-        return { { token = first + 2, name = name_token.value, self_visible = true } }
-    end
-    local names, expecting, slot = {}, true, 0
-    local i = first + 1
-    while i <= last do
-        local token = tokens[i]
-        if token.value == "=" then break end
-        if token.value == "," then
-            expecting = true
-        elseif expecting and is_word(token) then
-            slot = slot + 1
-            names[#names + 1] = { token = i, name = token.value, slot = slot }
-            expecting = false
-        end
-        i = i + 1
+-- Declaration and reference sites are parser nodes, not token-neighbour guesses.
+local function top_level_declarations(ast)
+    if ast.kind~="local" and ast.kind~="local_function" then return nil end
+    local names={}
+    for slot,binding in ipairs(ast.names) do
+        names[#names+1]={token=binding.first,name=binding.name,
+            slot=ast.kind=="local" and slot or nil,self_visible=ast.kind=="local_function"}
     end
     return names
 end
-
----Split the identifier occurrences of one statement into occurrences that must
----read the visible top-level local (`certain`, block depth 0) and occurrences a
----nested binding may intercept (`uncertain`, nested block).
----A statement containing `repeat` demotes every hit to `uncertain`, because the
----`until` expression is evaluated in the body's scope and may see a body local.
----@return table[] certain
----@return table[] uncertain
-local function scan_references(tokens, first, last, scope, self_declares, sites)
-    local certain, uncertain = {}, {}
-    local brace, repeat_scope = 0, false
-    for i = first, last do
-        if is_word(tokens[i]) and tokens[i].value == "repeat" then
-            repeat_scope = true
-            break
+local function scan_references(tokens,ast,scope,self_declares)
+    local certain,uncertain={},{}
+    local repeat_scope=false
+    Tree.Walk(ast,function(n) if n.kind=="repeat" then repeat_scope=true end end)
+    for _,ref in ipairs(Tree.Names(ast)) do
+        local value=ref.name
+        if scope[value] or (self_declares and self_declares[value]) then
+            local token=tokens[ref.first];local hit={name=value,token=ref.first,depth=token.depth}
+            if token.depth==0 and not repeat_scope then certain[#certain+1]=hit
+            else uncertain[#uncertain+1]=hit end
         end
     end
-    for i = first, last do
-        local token = tokens[i]
-        local value = token.value
-        if value == "{" then
-            brace = brace + 1
-        elseif value == "}" then
-            brace = brace - 1
-        elseif is_word(token) and not sites[i] then
-            local prev = tokens[i - 1]
-            local next_token = tokens[i + 1]
-            local field = prev ~= nil and (prev.value == "." or prev.value == ":"
-                or (is_word(prev) and prev.value == "goto"))
-            local key = brace > 0 and next_token ~= nil and next_token.value == "="
-                and not (tokens[i + 2] ~= nil and tokens[i + 2].value == "=")
-            if not field and not key then
-                local bound = scope[value] ~= nil
-                    or (self_declares ~= nil and self_declares[value] ~= nil)
-                if bound then
-                    local hit = { name = value, token = i, depth = token.depth }
-                    if token.depth == 0 and not repeat_scope then
-                        certain[#certain + 1] = hit
-                    else
-                        uncertain[#uncertain + 1] = hit
-                    end
-                end
-            end
-        end
-    end
-    return certain, uncertain
+    return certain,uncertain
 end
 
 ---Build the declaration/visibility model for one TopLevelIR analysis snapshot.
@@ -232,14 +108,12 @@ function M.Analyze(analysis)
             nested = false, self_visible = false, unparsed = false,
         }
         for name, declaration in next, scope do record.visible[name] = declaration end
-        for i = first, last do
-            if tokens[i].depth > 0 then
-                record.nested = true
-                break
-            end
-        end
+        if not plain(statement.syntax) then return nil,"statement syntax is required" end
+        Tree.Walk(statement.syntax,function(n)
+            if n.kind=="function" or n.kind=="block" then record.nested=true end
+        end)
 
-        local scanned = top_level_declarations(tokens, first, last)
+        local scanned = top_level_declarations(statement.syntax)
         local bucket = local_nodes[first]
         if scanned ~= nil then
             if bucket ~= nil and #scanned == #bucket then
@@ -262,7 +136,7 @@ function M.Analyze(analysis)
                     scope[declaration.name] = declaration
                 end
             else
-                -- TopLevelIR and the lexical scan disagree; do not guess.
+                -- TopLevelIR and the syntax declaration disagree; do not guess.
                 record.unparsed = true
                 opaque = true
             end
@@ -271,10 +145,9 @@ function M.Analyze(analysis)
             opaque = true
         end
 
-        local sites = declaration_sites(tokens, first, last)
         local self_declares = record.self_visible and record.declares or nil
         record.certain, record.uncertain =
-            scan_references(tokens, first, last, record.visible, self_declares, sites)
+            scan_references(tokens, statement.syntax, record.visible, self_declares)
         bindings.statements[index] = record
     end
 

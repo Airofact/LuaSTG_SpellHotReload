@@ -5,6 +5,7 @@
 --- checked but never executed. No join, setupvalue, publication or restart.
 --- Public plans are read-only by contract; R4 must recheck every read before
 --- joining all closures, writing cells and publishing callbacks atomically.
+local Tree = require("SpellHotReload.Source.SyntaxTree")
 local IR = require("SpellHotReload.Source.TopLevelIR")
 local Binding = require("SpellHotReload.Source.Binding")
 local Anchor = require("SpellHotReload.Load.Anchor")
@@ -48,42 +49,17 @@ end
 
 -- A literal must occupy the entire statement. Never run a statement wrapper
 -- containing a trailing call/assignment, even when the full file is valid Lua.
-local function literal(analysis, statement, record)
-    local tokens = analysis.tokens
-    local first, last = statement.tok.first, statement.tok.last
-    while last >= first and tokens[last].value == ";" do last = last - 1 end
-    local function val(i) return tokens[i] and tokens[i].value end
-    local name, start, form, self_visible
-    if val(first) == "local" and val(first + 1) == "function"
-        and val(first + 3) == "(" then
-        name, start, form, self_visible = val(first + 2), first, "statement", true
-    elseif val(first) == "local" and val(first + 2) == "="
-        and val(first + 3) == "function" and val(first + 4) == "(" then
-        name, start, form = val(first + 1), first + 3, "expression"
-    elseif val(first + 1) == "=" and val(first + 2) == "function"
-        and val(first + 3) == "(" and record.visible[val(first)] then
-        name, start, form = val(first), first + 2, "expression"
-    elseif val(first) == "function" and val(first + 2) == "("
-        and record.visible[val(first + 1)] then
-        name, start, form = val(first + 1), first, "expression"
-    end
-    if name == nil or val(last) ~= "end" or tokens[last].depth ~= 1 then return nil end
-    -- The first depth-1 end closes this outer literal. Any later code means
-    -- this is not the single literal we are allowed to obtain by execution.
-    local outer_end
-    for i = start + 1, last do
-        if val(i) == "end" and tokens[i].depth == 1 then outer_end = i break end
-    end
-    if outer_end ~= last then return nil end
-    local source = analysis.source
-    local stop = tokens[last].pos + #tokens[last].value - 1
-    local body = source:sub(tokens[start].pos, stop)
-    if val(first) == "function" then
-        body = "function" .. source:sub(tokens[first + 2].pos, stop)
-    end
-    return { name = name, body = body, form = form, self_visible = self_visible == true,
-        visible = visible(record), source_range = {
-            first = statement.source_range.first, last = statement.source_range.last } }
+local function literal(analysis,statement,record)
+    local ast=statement.syntax
+    local target,fn,method,self_visible=Tree.Function(ast)
+    if not target or (target.kind~="name" and target.kind~="binding") or method then return nil end
+    if ast.kind~="local" and ast.kind~="local_function" and not record.visible[target.name] then return nil end
+    local form=ast.kind=="local_function" and "statement" or "expression"
+    local body=form=="statement" and analysis.source:sub(analysis.tokens[ast.first].pos,
+        analysis.tokens[fn.last].pos+#analysis.tokens[fn.last].value-1) or Tree.FunctionSource(fn,analysis,false)
+    return {name=target.name,body=body,form=form,self_visible=self_visible,
+        visible=visible(record),syntax=fn,
+        signature=form=="statement" and Tree.Signature(ast,analysis.tokens) or Tree.FunctionSignature(fn,analysis.tokens),source_range={first=statement.source_range.first,last=statement.source_range.last}}
 end
 
 local function analyze(content, snapshot)
@@ -141,11 +117,8 @@ local function analyze(content, snapshot)
                 -- name it mentions, rather than associate a conditional
                 -- runtime replacement with the preceding literal's source.
                 if node.carrier == "effect" and node.kind == "block" then
-                    for i = node.tok.first, node.tok.last do
-                        local token = analysis.tokens[i]
-                        if token.kind == "word" and record.visible[token.value] then
-                            result.blocked[token.value] = true
-                        end
+                    for _,ref in ipairs(Tree.Names(statement.syntax)) do
+                        if record.visible[ref.name] then result.blocked[ref.name]=true end
                     end
                 end
                 local target = (node.carrier == "local" and node.kind ~= "declare"
@@ -256,7 +229,7 @@ local function prepare(content, entry, selected, published, snapshot, scans)
     for _, definition in ipairs(definitions) do
         local name = definition.name
         local created, create_error = Compose.Create(definition.body, name, definition.visible,
-            { form = definition.form, name = "FunctionPlan:" .. tostring(file) .. ":" .. name })
+            { form = definition.form, syntax = definition.syntax, name = "FunctionPlan:" .. tostring(file) .. ":" .. name })
         if created == nil then return failure("compile", create_error, file, name) end
         local join_plan, join_error = Compose.Plan(created, entry)
         if join_plan == nil then return failure("unsupported", join_error, file, name) end

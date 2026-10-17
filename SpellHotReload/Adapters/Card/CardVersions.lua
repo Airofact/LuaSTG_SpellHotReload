@@ -46,7 +46,7 @@ local Functions = require("SpellHotReload.Source.FunctionVersions")
 local Source = require("SpellHotReload.Source.FunctionPlan")
 local Card = require("SpellHotReload.Adapters.Card.Card")
 local Compose = require("SpellHotReload.Source.Compose")
-local Lexer = require("SpellHotReload.Source.Lexer")
+local Tree = require("SpellHotReload.Source.SyntaxTree")
 local Target = require("SpellHotReload.Adapters.Card.CardTarget")
 local M = { Kind = "SpellHotReload.CardVersions", Version = 1 }
 local CALLBACKS = { "before", "init", "frame", "render", "beforedel", "del", "after" }
@@ -80,14 +80,6 @@ local function fail(code, message, state, key)
 end
 local function key_of(class_key, slot)
     return "card:" .. #class_key .. ":" .. class_key .. ":" .. slot
-end
-local function signature(body)
-    if body == nil then return "default" end
-    local tokens = { "literal" }
-    for _, t in ipairs(Lexer.Tokenize(body)) do
-        tokens[#tokens + 1] = t.kind .. ":" .. #t.value .. ":" .. t.value
-    end
-    return table.concat(tokens, "|")
 end
 local function discover(content, state, snapshot)
     local scan, err
@@ -163,7 +155,7 @@ end
 local function prepare(discovery, descriptor, name, entry, defaults, state, key)
     local body = descriptor.callbacks[name]
     if not body then
-        return { body = nil, signature = signature(nil), fn = defaults[name],
+        return { body = nil, signature = "default", fn = defaults[name],
             dependencies = {}, visible = {}, join_plan = nil }
     end
     local point = descriptor.callback_points and descriptor.callback_points[name]
@@ -178,13 +170,13 @@ local function prepare(discovery, descriptor, name, entry, defaults, state, key)
     for local_name in next, record.visible do visible[#visible + 1] = local_name end
     table.sort(visible)
     local created, cerr = Compose.Create(body, nil, visible,
-        { form = "expression", name = "CardVersions:" .. key .. ":" .. name })
+        { form = "expression", syntax = descriptor.callback_syntax[name], name = "CardVersions:" .. key .. ":" .. name })
     if not created then return fail("compile", cerr, state, key) end
     local plan, perr = Compose.Plan(created, entry)
     if not plan then return fail("unsupported", perr, state, key) end
     local dependencies = copy(created.used)
     table.sort(dependencies)
-    return { body = body, signature = signature(body), fn = created.fn,
+    return { body = body, signature = descriptor.callback_signatures[name], fn = created.fn, syntax=descriptor.callback_syntax[name],
         dependencies = dependencies, visible = visible, join_plan = plan }
 end
 local function captures(record, entry, state, key)
@@ -320,96 +312,55 @@ end
 -- are excluded from the unknown-effect check; NEVER mask a whole class range.
 -- Nonliteral calls/field writes and changed class implementations remain a
 -- file-wide refusal when their effect on globals/bindings cannot be bounded.
-local function safe_wiring(tokens,first,last)
-    local function v(i) return tokens[i] and tokens[i].value end
-    while v(last)==";" do last=last-1 end
-    local function seq(at,values)
-        for i,value in ipairs(values) do if v(at+i-1)~=value then return false end end
+-- Adapter policy over syntax nodes. Grammar has already been parsed once.
+local function safe_wiring(ast)
+    local function scalar(n,numeric)
+        if not n then return false end
+        if n.kind=="unary" and n.operator=="-" then
+            return n.operand.kind=="literal" and n.operand.literal_kind=="number"
+        end
+        if n.kind~="literal" then return false end
+        return n.literal_kind=="number" or (not numeric and
+            (n.literal_kind=="string" or n.literal_kind=="boolean" or n.literal_kind=="nil"))
+    end
+    local function constructor(n)
+        local kind=Tree.Constructor(n)
+        if kind~="card" and kind~="move" then return false end
+        for argument,arg in ipairs(n.args) do
+            if kind=="card" and argument==6 and arg.kind=="table" then
+                if #arg.fields~=3 then return false end
+                for _,field in ipairs(arg.fields) do
+                    if not field.array or not scalar(field.value,true) then return false end
+                end
+            elseif not scalar(arg) then return false end
+        end
         return true
     end
-    local function scalar(i,numeric)
-        local start=i
-        while i<=last and v(i)~="," and v(i)~=")" and v(i)~="}" do i=i+1 end
-        if i==start then return nil end
-        local token=tokens[start]
-        if not numeric and i==start+1 and (token.kind=="string"
-            or v(start)=="true" or v(start)=="false" or v(start)=="nil") then return i end
-        -- Lexer represents numeric digits as symbol tokens. Prove one
-        -- contiguous numeric literal, not an expression assembled by deleting
-        -- whitespace (e.g. `1 - 2` or `0 x10`). No evaluation.
-        local parts={}
-        for j=start,i-1 do
-            if j>start and tokens[j].pos~=tokens[j-1].pos+#tokens[j-1].value then return nil end
-            parts[#parts+1]=v(j)
-        end
-        local literal=table.concat(parts)
-        if literal:sub(1,1)=="-" then literal=literal:sub(2) end
-        if literal=="" or not literal:match("^[%d%.]") or not tonumber(literal) then return nil end
-        return i
+    local function item(n) return Tree.IsName(n,"_tmp_sc") or constructor(n) end
+    local target,rhs=Tree.SingleAssignment(ast)
+    if Tree.IsName(target,"_tmp_sc") then return constructor(rhs) end
+    if target and target.kind=="member" and Tree.IsName(target.base,"_tmp_sc") and target.name=="perform" then
+        return rhs.kind=="literal" and rhs.literal_kind=="boolean"
     end
-    local function constructor(at)
-        if not seq(at,{"boss","."}) or (v(at+2)~="card" and v(at+2)~="move")
-            or not seq(at+3,{".","New","("}) then return nil end
-        local i,argument=at+6,1
-        -- Literal scalars and the editor's sixth card argument {n,n,n} only.
-        -- No calls, lookups, keyed/nested tables or evaluation of any argument.
-        while i<=last and v(i)~=")" do
-            if v(i)=="{" and v(at+2)=="card" and argument==6 then
-                i=i+1
-                for element=1,3 do
-                    i=scalar(i,true)
-                    if not i then return nil end
-                    if element<3 then
-                        if v(i)~="," then return nil end
-                        i=i+1
-                    elseif v(i)~="}" then return nil end
-                end
-                i=i+1
-            else i=scalar(i);if not i then return nil end end
-            argument=argument+1
-            if v(i)=="," then
-                i=i+1
-                if v(i)==")" then return nil end
-            elseif v(i)~=")" then return nil end
-        end
-        return v(i)==")" and i+1 or nil
+    if Tree.CardList(target) and rhs.kind=="table" then
+        for _,field in ipairs(rhs.fields) do if not field.array or not item(field.value) then return false end end
+        return true
     end
-    local function list(at)
-        if not seq(at,{"_editor_class","["}) or not tokens[at+2]
-            or tokens[at+2].kind~="string" or not seq(at+3,{"]",".","cards"}) then return nil end
-        return at+6
+    local call=ast.kind=="call_statement" and ast.expression
+    if not call or Tree.Path(call.callee)~="table.insert" or #call.args~=2 then return false end
+    if Tree.CardList(call.args[1]) then return item(call.args[2]) end
+    local record=call.args[2]
+    if not Tree.IsName(call.args[1],"_sc_table") or record.kind~="table" or #record.fields~=5 then return false end
+    local values={}
+    for _,field in ipairs(record.fields) do
+        if not field.array then return false end
+        values[#values+1]=field.value
     end
-    if seq(first,{"_tmp_sc","="}) then return constructor(first+2)==last+1 end
-    if seq(first,{"_tmp_sc",".","perform","="}) then
-        return first+4==last and (v(last)=="true" or v(last)=="false")
-    end
-    local at=list(first)
-    if at and seq(at,{"=","{"}) and v(last)=="}" then
-        local i=at+2
-        while i<last do
-            if v(i)=="_tmp_sc" then i=i+1 else i=constructor(i) end
-            if not i then return false end
-            if v(i)=="," then i=i+1 elseif i~=last then return false end
-        end
-        return i==last
-    end
-    if seq(first,{"table",".","insert","("}) then
-        if seq(first+4,{"_sc_table",",","{"}) and tokens[first+7]
-            and tokens[first+7].kind=="string" and v(first+8)=="," and tokens[first+9]
-            and tokens[first+9].kind=="string" and seq(first+10,{",","_tmp_sc",",","#"}) then
-            local stop=list(first+14)
-            return stop and v(stop)=="," and (v(stop+1)=="false" or v(stop+1)=="true")
-                and seq(stop+2,{"}",")"}) and stop+3==last or false
-        end
-        at=list(first+4)
-        if not at or v(at)~="," or v(last)~=")" then return false end
-        local stop=v(at+1)=="_tmp_sc" and at+2 or constructor(at+1)
-        return stop==last
-    end
-    return false
+    return Tree.String(values[1])~=nil and Tree.String(values[2])~=nil
+        and Tree.IsName(values[3],"_tmp_sc")
+        and values[4].kind=="unary" and values[4].operator=="#" and Tree.CardList(values[4].operand)~=nil
+        and values[5].kind=="literal" and values[5].literal_kind=="boolean"
 end
--- Adapter-owned evidence only: recognized Card wiring/callback statements and
--- reads of generated Card bindings. Other statements are NOT compared here.
 local function card_file_facts(state,source,pending_classes)
     local excluded,wiring,binding_reads,structures={},{},{},{}
     for _,definitions in next,source.definitions do
@@ -419,82 +370,60 @@ local function card_file_facts(state,source,pending_classes)
         if not state.functions.units[declaration.name] then excluded[declaration.statement]=true end
     end
     for index,statement in ipairs(source.analysis.statements) do
-        local tokens=source.analysis.tokens
-        local first,last=statement.tok.first,statement.tok.last
-        while tokens[last] and tokens[last].value==";" do last=last-1 end
-        local function val(i) return tokens[i] and tokens[i].value end
-        local callback
-        if val(first)=="function" and val(first+1)=="_tmp_sc" and val(first+2)==":" then
-            callback=allowed[val(first+3)] and val(first+4)=="("
-        elseif val(first)=="_tmp_sc" and val(first+1)=="." then
-            callback=allowed[val(first+2)] and val(first+3)=="="
-                and val(first+4)=="function" and val(first+5)=="("
-        end
-        if callback then
-            local stop
-            for i=first,last do
-                if val(i)=="end" and tokens[i].depth==1 then stop=i;break end
-            end
-            callback=stop==last
-        end
-        local wire=safe_wiring(tokens,first,last)
-        if wire then
-            local values={}
-            for i=first,last do values[#values+1]=tokens[i].kind..":"..tokens[i].value end
-            wiring[#wiring+1]=table.concat(values,"|")
-        end
-        structures[index]=wire or val(first)=="_BOSS_ESCAPE" or nil
+        local ast=statement.syntax
+        local name=Tree.Callback(ast)
+        local callback=name and allowed[name]
+        local wire=safe_wiring(ast)
+        if wire then wiring[#wiring+1]=Tree.Signature(ast,source.analysis.tokens) end
+        structures[index]=wire or (ast.kind=="call_statement" and Tree.IsName(ast.expression.callee,"_BOSS_ESCAPE")) or nil
         if callback or wire then excluded[index]=true end
         if not excluded[index] then
-            local assign
-            for i=first,last do if val(i)=="=" then assign=i;break end end
-            for i=(assign and assign+1 or first),last do
-                local token=tokens[i]
-                if token.depth==0 and token.kind=="word" then
-                    if token.value=="_tmp_sc" or token.value=="_sc_table" then binding_reads[index]=true end
-                    if token.value=="_editor_class" then
-                        local label=tokens[i+2]
-                        local decode=val(i+1)=="[" and label and label.kind=="string"
-                            and val(i+3)=="]" and (loadstring or load)("return "..label.value)
-                        local name=decode and decode()
-                        if not name or pending_classes[name] then binding_reads[index]=true end
+            -- Only expressions evaluated at top level can be affected before publication.
+            local function reads(n,parent)
+                if n.kind=="function" then return end
+                if n.kind=="name" then
+                    if n.name=="_tmp_sc" or n.name=="_sc_table" then binding_reads[index]=true end
+                    if n.name=="_editor_class" then
+                        local key=parent and parent.kind=="index" and parent.base==n and Tree.String(parent.key)
+                        if not key or pending_classes[key] then binding_reads[index]=true end
                     end
                 end
+                for _,child in ipairs(n.children) do reads(child,n) end
             end
+            if ast.kind=="assign" or ast.kind=="local" then
+                for _,value in ipairs(ast.values) do reads(value) end
+            else reads(ast) end
         end
     end
     return {scan=source,excluded=excluded,wiring=table.concat(wiring,"\n"),
         binding_reads=binding_reads,structures=structures}
 end
--- Newly compiled code may not assume pending class creation/registration ran.
--- Literal class lookups require the actual live registry target; dynamic class
--- lookup is conservatively blocked for changed definitions in this file scope.
-local function class_binding(body,classes,state,key,pending_classes,wiring_changed)
-    local tokens=Lexer.Tokenize(body)
-    local reads={}
-    for i,token in ipairs(tokens) do
-        if wiring_changed and token.kind=="word"
-            and (token.value=="_tmp_sc" or token.value=="_sc_table") then
-            return fail("unsupported","candidate generated-card binding depends on unpublished wiring: "..token.value,state,key)
+-- Generated binding checks inspect expression nodes; live registry identity still owns permission.
+local function class_binding(root,classes,state,key,pending_classes,wiring_changed)
+    if not root then return {} end
+    local reads,refusal={}
+    local function visit(n,parent)
+        if refusal then return end
+        if n.kind=="name" then
+            if wiring_changed and (n.name=="_tmp_sc" or n.name=="_sc_table") then
+                refusal="candidate generated-card binding depends on unpublished wiring: "..n.name;return
+            end
+            if n.name=="_editor_class" then
+                local name=parent and parent.kind=="index" and parent.base==n and Tree.String(parent.key)
+                if not name then refusal="dynamic class registry binding cannot be proved";return end
+                if not plain(rawget(classes,name)) then
+                    refusal="candidate class binding is unavailable; registration remains pending";return
+                end
+                if pending_classes[name] then
+                    refusal="candidate class binding depends on unpublished layout: "..name;return
+                end
+                reads[#reads+1]={registry=classes,key=name,value=rawget(classes,name)}
+            end
         end
-        if token.kind=="word" and token.value=="_editor_class" then
-            local open,label,close=tokens[i+1],tokens[i+2],tokens[i+3]
-            if not open or open.value~="[" or not label or label.kind~="string"
-                or not close or close.value~="]" then
-                return fail("unsupported","dynamic class registry binding cannot be proved",state,key)
-            end
-            -- Evaluate a lexer-proved STRING literal only, not source/body/RHS.
-            local decode=(loadstring or load)("return "..label.value)
-            local name=decode and decode()
-            if type(name)~="string" or not plain(rawget(classes,name)) then
-                return fail("unsupported","candidate class binding is unavailable; registration remains pending",state,key)
-            end
-            if pending_classes[name] then
-                return fail("unsupported","candidate class binding depends on unpublished layout: "..name,state,key)
-            end
-            reads[#reads+1]={registry=classes,key=name,value=rawget(classes,name)}
-        end
+        for _,child in ipairs(n.children) do visit(child,n) end
     end
+    visit(root)
+    if refusal then return fail("unsupported",refusal,state,key) end
     return reads
 end
 ---Full candidate report; compares each actually published callback signature.
@@ -539,7 +468,7 @@ local function compare(state, content, snapshot, location, file_location)
         for _,name in ipairs(state.functions.names) do
             local item=function_diff.by_name[name]
             if item.changed and not item.blocked then
-                local safe,err=class_binding(item.item.definition.body,file_location.classes,state,"local:"..name,
+                local safe,err=class_binding(item.item.definition.syntax,file_location.classes,state,"local:"..name,
                     pending_classes,wiring_changed)
                 if not safe then item.blocked=err;item.action="binding-blocked"
                 else for _,read in ipairs(safe) do class_reads[#class_reads+1]=read end end
@@ -627,7 +556,7 @@ local function compare(state, content, snapshot, location, file_location)
             end
             candidate.changed = candidate.signature ~= previous.signature
             if file_location and candidate.changed then
-                local safe,err=class_binding(candidate.body or "",file_location.classes,state,key,
+                local safe,err=class_binding(candidate.syntax,file_location.classes,state,key,
                     pending_classes,wiring_changed)
                 if not safe then item.blocked=item.blocked or err
                 else for _,read in ipairs(safe) do class_reads[#class_reads+1]=read end end
@@ -946,8 +875,7 @@ function M.Coverage(report)
     local old_claims, new_claims = {}, {}
     local function claim(scan, claims, point, key)
         for index, statement in ipairs(scan.analysis.statements) do
-            local tokens, last = scan.analysis.tokens, statement.tok.last
-            while tokens[last] and tokens[last].value == ";" do last=last-1 end
+            local tokens, last = scan.analysis.tokens, statement.syntax.content_last
             local token = tokens[last]
             if statement.source_range.first == point.first and token
                 and token.pos + #token.value - 1 + scan.analysis.source_offset == point.last then
@@ -963,8 +891,7 @@ function M.Coverage(report)
     local function function_claim(scan, claims, definition, key)
         local statement = scan.analysis.statements[definition.statement]
         if not statement then return fail("unsupported", "definition statement unavailable", state, key) end
-        local last, tokens = statement.tok.last, scan.analysis.tokens
-        while tokens[last] and tokens[last].value == ";" do last=last-1 end
+        local last, tokens = statement.syntax.content_last, scan.analysis.tokens
         return claim(scan, claims, {first=statement.source_range.first,
             last=tokens[last].pos + #tokens[last].value - 1 + scan.analysis.source_offset}, key)
     end

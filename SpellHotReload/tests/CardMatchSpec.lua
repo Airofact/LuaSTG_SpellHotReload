@@ -213,11 +213,11 @@ function M.run()
         ------------------------------------------------------------------------
         -- fail-whole-file policy
         ------------------------------------------------------------------------
-        local function reject(content, label, expected)
+        local function reject(content, label, expected, phase)
             local snapshot_or_nil, failure = discover(content)
             eq(snapshot_or_nil, nil, label .. ": no partial snapshot")
             eq(failure.code, expected, label .. ": code")
-            eq(failure.phase, "match", label .. ": phase")
+            eq(failure.phase, phase or "match", label .. ": phase")
             assert(type(failure.message) == "string" and failure.message ~= "", label)
             return failure
         end
@@ -234,7 +234,7 @@ function M.run()
             '_editor_class["Boss:Syntax"] = Class(boss)',
             '_editor_class["Boss:Syntax"].cards = {}',
             'this is not lua',
-        }, "\n"), "a syntax error fails the file", "unsupported")
+        }, "\n"), "a syntax error fails the file", "unsupported", "analyze")
         reject(table.concat({
             '_editor_class["A"] = Class(boss)',
             '_editor_class["A"].cards = {}',

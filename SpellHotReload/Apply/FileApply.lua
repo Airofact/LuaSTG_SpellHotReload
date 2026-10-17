@@ -2,6 +2,8 @@
 --- No candidate execution, publication, ACK, registration or restart here.
 --- CardVersions supplies only its owned statement/binding evidence; this file
 --- owns other top-level changes, Include exclusion and whole-file completion.
+local Alignment=require("SpellHotReload.Source.StatementAlignment")
+local Tree=require("SpellHotReload.Source.SyntaxTree")
 local M={}
 local function message(err)
     return type(err)=="table" and err.message or tostring(err)
@@ -17,15 +19,10 @@ local function ignored_include(scan,index)
     local record=scan.bindings.statements[index]
     if not statement or not record or not record.visible or record.unparsed
         or record.visible.Include then return false end
-    local tokens=scan.analysis.tokens
-    local first,last=statement.tok.first,statement.tok.last
-    local function v(i) return tokens[i] and tokens[i].value end
-    while v(last)==";" do last=last-1 end
-    if not tokens[first] or tokens[first].kind~="word"
-        or tokens[first].depth~=0 or v(first)~="Include" then return false end
-    if last==first+1 then return tokens[last].kind=="string" end
-    return last==first+3 and v(first+1)=="("
-        and tokens[first+2].kind=="string" and v(last)==")"
+    local ast=statement.syntax
+    local call=ast.kind=="call_statement" and ast.expression
+    return call and Tree.IsName(call.callee,"Include") and #call.args==1
+        and call.args[1].kind=="literal" and call.args[1].literal_kind=="string" or false
 end
 
 ---Whole-file preflight. Adapter exclusions do NOT mean those bytes were
@@ -45,10 +42,9 @@ function M.CheckTopLevel(report)
         for index,statement in ipairs(scan.analysis.statements) do
             if not side.excluded[index] and not ignored_include(scan,index) then
                 local pieces,visible={},{}
-                local tokens,last=scan.analysis.tokens,statement.tok.last
-                while tokens[last] and tokens[last].value==";" do last=last-1 end
+                local tokens,last=scan.analysis.tokens,statement.syntax.content_last
                 for i=statement.tok.first,last do
-                    pieces[#pieces+1]=tokens[i].kind..":"..tokens[i].value
+                    pieces[#pieces+1]=tokens[i].kind..":"..#tokens[i].value..":"..tokens[i].value
                 end
                 for name in next,scan.bindings.statements[index].visible do visible[#visible+1]=name end
                 table.sort(visible)
@@ -63,15 +59,17 @@ function M.CheckTopLevel(report)
     if not before then return nil,berr end
     local after,aerr=residual(facts.after)
     if not after then return nil,aerr end
-    for i=1,math.max(#before,#after) do
-        if not before[i] or not after[i] or before[i].signature~=after[i].signature then
-            local point=after[i] or before[i]
-            return fail("unsupported",string.format("unbounded top-level change at bytes %d-%d; restart required",
-                point.first,point.last),state)
-        end
-        if facts.before.wiring~=facts.after.wiring and (before[i].binding_read or after[i].binding_read) then
+    local aligned=Alignment.Compare(before,after)
+    if not aligned.equal then
+        local change=aligned.changes[1]
+        local point=change.after[1] or change.before[1]
+        return fail("unsupported",string.format("unbounded top-level change at bytes %d-%d; restart required",
+            point.first,point.last),state)
+    end
+    for _,pair in ipairs(aligned.matches) do
+        if facts.before.wiring~=facts.after.wiring and (pair.before.binding_read or pair.after.binding_read) then
             return fail("unsupported",string.format("unbounded pending wiring binding at bytes %d-%d; restart required",
-                after[i].first,after[i].last),state)
+                pair.after.first,pair.after.last),state)
         end
     end
     return true
@@ -124,9 +122,8 @@ function M.Remaining(report)
             end
             next_token = last + 1
             if not claims[index] and not ignored_include(scan,index) then
-                while tokens[last] and tokens[last].value == ";" do last=last-1 end
                 local pieces = {}
-                for i=first,last do
+                for i=first,statement.syntax.content_last do
                     local token=tokens[i]
                     pieces[#pieces+1]=token.kind .. ":" .. #token.value .. ":" .. token.value
                 end
@@ -156,16 +153,21 @@ function M.Remaining(report)
     if not before then return nil, berr end
     local after, aerr = residual(evidence.after.scan,evidence.after.claims,evidence.after.structures)
     if not after then return nil, aerr end
-    for i=1,math.max(#before,#after) do
-        local a, b = before[i], after[i]
-        if not a or not b or a.signature ~= b.signature then
-            local row = b or a
-            local reason = row.kind == "initializer" and "state initializer retained; restart game to adopt"
-                or (row.kind == "structure" and "constructor/name/list/registration retained; restart game to adopt"
+    local aligned=Alignment.Compare(before,after)
+    for _,change in ipairs(aligned.changes) do
+        -- Pairing changed rows by index would invent correspondence. Each side
+        -- keeps its own byte evidence; adapters own semantic updates/deletions.
+        for _,b in ipairs(change.after) do
+            local reason=b.kind=="initializer" and "state initializer retained; restart game to adopt"
+                or (b.kind=="structure" and "constructor/name/list/registration retained; restart game to adopt"
                     or "top-level change not published or not confirmed; restart game to adopt")
-            pending(row.kind, row.key, reason, b, a)
+            pending(b.kind,b.key,reason,b,nil)
+        end
+        for _,a in ipairs(change.before) do
+            pending(a.kind,a.key,"previous top-level statement not confirmed in candidate; restart game to adopt",nil,a)
         end
     end
+    result.alignment={ambiguous=aligned.ambiguous,reordered=aligned.reordered}
     result.complete = #result.pending == 0
     return result
 end

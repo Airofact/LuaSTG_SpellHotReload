@@ -258,17 +258,21 @@ function M.run()
         eq(#assert(Plan.Prepare(semicolon_source,semicolon_entry,{"f"},current(semicolon_entry,{"f"}))).writes,
             1,"safe semicolon tail")
 
-        -- Semicolon tails / same-line multiple statements cannot become a
-        -- wrapper that executes arbitrary code while obtaining the closure.
-        for _, suffix in ipairs({ "; error('tail executed')", "; helper = function() end",
-            "; local x=1", " error('tail executed')" }) do
-            local tailed = "local function f() return 1 end" .. suffix
-            local base = "local function f() return 1 end"
-            local e = capture(base)
-            local value, err = Plan.Prepare(tailed, e, {"f"}, current(e, {"f"}))
-            eq(value, nil, "unsafe tail refused " .. suffix)
-            check(type(err) == "table", "unsafe tail error")
+        -- Grammar boundaries allow a safe literal to be obtained without
+        -- executing or accepting its neighboring top-level effects.
+        local original_helper=rawget(_G,"helper")
+        for _,suffix in ipairs({"; error('tail executed')","; helper=function() end"," error('tail executed')"}) do
+            local base="local function f() return 1 end"
+            local e=capture(base)
+            local value=assert(Plan.Prepare(base..suffix,e,{"f"},current(e,{"f"})))
+            eq(value.functions[1].created.fn(),1,"only selected closure obtained")
+            eq(rawget(_G,"helper"),original_helper,"neighbor assignment never executed")
+            eq(#value.writes,1,"one selected definition, not neighbor publication")
         end
+        local base="local function f() return 1 end"
+        local e=capture(base)
+        reject(base.."; local x=1",e,{"f"},current(e,{"f"}),"unsupported","new declaration still refused")
+        reject(base.."; f=function() end",e,{"f"},current(e,{"f"}),"unsupported","multiple selected writes still refused")
 
         -- Supported direct forms all have real, definition-point captures.
         for _, form in ipairs({

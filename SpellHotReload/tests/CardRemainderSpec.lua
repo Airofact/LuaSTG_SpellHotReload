@@ -103,6 +103,26 @@ function M.run()
         return f
     end
     local ok,problem=pcall(function()
+        -- Statement separators affect the full token partition but not residual
+        -- content. Verify both directions through real first-load/file evidence.
+        for _,edit in ipairs({{"REMAINDER_EFFECT%(%)","REMAINDER_EFFECT();"},
+            {"local state=4","local state=4;"}}) do
+            local formatted,count=SOURCE:gsub(edit[1],edit[2])
+            eq(count,1,"one formatting edit")
+            for _,pair in ipairs({{SOURCE,formatted},{formatted,SOURCE}}) do
+                local probe=fixture(pair[1])
+                local snapshot=probe.capture.snapshot
+                local effects,constructs=probe.effects,probe.constructs
+                for attempt=1,2 do
+                    local remaining=probe.remaining(pair[2])
+                    eq(remaining.complete,true,"separator-only candidate complete")
+                    eq(#remaining.pending,0,"separator-only candidate has no pending")
+                    eq(probe.capture.snapshot,snapshot,"formatting does not advance publications")
+                    eq(probe.effects,effects,"formatting does not replay top-level call")
+                    eq(probe.constructs,constructs,"formatting does not reconstruct cards")
+                end
+            end
+        end
         local f=fixture()
         local base=f.capture.snapshot
         eq(Cards.Remaining,nil,"Card versions no longer own full-file accounting")
@@ -119,6 +139,13 @@ function M.run()
         local evidence=must(Cards.Coverage(own_report))
         eq(evidence.complete,nil,"adapter evidence never declares file complete")
         check(evidence.before and evidence.after,"adapter exports proven statement coverage")
+        local inserted=must(FileApply.Remaining(f.report(SOURCE:gsub("REMAINDER_EFFECT%(%)", "NEW_UNKNOWN()\nREMAINDER_EFFECT()",1),"current")))
+        local new_unknown=0
+        for _,row in ipairs(inserted.pending) do
+            if row.kind=="unknown" then new_unknown=new_unknown+1 end
+        end
+        eq(new_unknown,1,"one inserted unknown statement has no positional cascade")
+        eq(inserted.complete,false,"source insertion never swallowed")
         local model=f.remaining(SOURCE)
         eq(model.complete,true,"unchanged complete source")
         eq(#model.pending,0,"all tokens covered")

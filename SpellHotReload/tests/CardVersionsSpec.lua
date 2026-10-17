@@ -243,7 +243,7 @@ function M.run()
         refuse(function() return Versions.Select({}, {}) end, "unsupported", "not a report")
         refuse(function() return Versions.Next({}) end, "unsupported", "not a selection")
         refuse(function() return report({}, source) end, "unsupported", "not a snapshot")
-        refuse(function() return report(state, "bad function(") end, "compile", "full source syntax rejected")
+        refuse(function() return report(state, "bad function(") end, "unsupported", "full source syntax rejected before Match")
         refuse(function() return report(state, source .. "\nlocal added=1") end,
             "unsupported", "fixed local set refused")
         local renamed=compare(state,source:gsub("'A'","'Renamed'"))

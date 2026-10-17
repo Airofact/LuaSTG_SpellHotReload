@@ -137,14 +137,19 @@ function M.run()
     eq(#model.declarations, 0, "field function is not a local declaration")
     eq(#model.statements[1].certain, 0, "no proven read in a function statement")
 
-    -- a statement TopLevelIR cannot parse makes the snapshot opaque
-    model = bind("local ??? = 1\nlocal ok = 2")
-    eq(model.opaque, true, "unparsed statement is flagged")
-    eq(table.concat(model.names, ","), "ok", "only the parsed declaration is claimed")
-    eq(model.statements[1].unparsed, true, "statement flagged unparsed")
-    model = bind("local")
-    eq(model.opaque, true, "degenerate local statement is opaque")
-    eq(#model.declarations, 0, "no invented declaration")
+    -- Malformed source has no partial declaration/visibility snapshot.
+    for _,source in ipairs({"local ??? = 1\nlocal ok = 2","local"}) do
+        local nodes,reason,invalid=IR.Analyze(source)
+        eq(nodes,nil,"invalid source has no partial nodes")
+        eq(invalid,nil,"invalid source has no partial bindings")
+        eq(type(reason),"string","invalid source carries analysis reason")
+    end
+    -- Keep Binding's own conservative disagreement handling independently.
+    local _,_,tampered=IR.Analyze("local a=1")
+    tampered.nodes[1].carrier="effect";tampered.nodes[1].kind="unknown"
+    model=assert(Binding.Analyze(tampered))
+    eq(model.opaque,true,"classification disagreement is opaque")
+    eq(model.statements[1].unparsed,true,"disagreement not promoted to proof")
     model = bind("local a = 1\nUnknown()\nSIDE_EFFECT()")
     eq(model.opaque, false, "an unadapted call is still lexically analyzable")
 

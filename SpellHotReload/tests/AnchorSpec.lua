@@ -519,8 +519,14 @@ function M.run()
     do
         local bad, reason, stage = Anchor.Capture("local x = (1\n")
         eq(bad, nil, "compile: a bad file fails")
-        contains(reason, "compile failed", "compile: the stage reason")
-        eq(stage, "compile", "compile: the stage is reported")
+        contains(reason, "Lua syntax:", "syntax: analysis reason")
+        eq(stage, "analyze", "syntax: refused before compilation")
+        local parameters={}
+        for i=1,201 do parameters[i]="p"..i end
+        bad,reason,stage=Anchor.Capture("function LIMIT("..table.concat(parameters,",")..") end")
+        eq(bad,nil,"compiler limit has no result")
+        contains(reason,"compile failed","compiler restriction still enforced")
+        eq(stage,"compile","compiler limit remains compile failure")
         bad, reason, stage = Anchor.Capture("error('boom')\n")
         eq(bad, nil, "run: a failing file fails")
         contains(reason, "run failed", "run: the stage reason")

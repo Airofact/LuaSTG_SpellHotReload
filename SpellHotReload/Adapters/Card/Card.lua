@@ -3,7 +3,7 @@
 local CardCallbacks = require("SpellHotReload.Adapters.Card.CardCallbacks")
 local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
 
-local compile = loadstring or load
+local Tree = require("SpellHotReload.Source.SyntaxTree")
 
 local Card = {}
 
@@ -29,45 +29,6 @@ end
 --- discovery: unit / context alignment
 --------------------------------------------------------------------------------
 
----Decode a string token into its literal value. The lexer already validated the
----literal, so this compiles a `return <literal>` chunk of that token only.
----@param token table?
----@return string?
-local function string_token(token)
-    if token == nil or token.kind ~= "string" then return nil end
-    local chunk = compile("return " .. token.value)
-    if not chunk then return nil end
-    return chunk()
-end
-
----Match `_editor_class["<key>"].cards = {` at token index `at`.
----@return string? class_key
-local function cards_anchor(tokens, at)
-    if tokens[at] == nil or tokens[at].value ~= "_editor_class" then return nil end
-    if tokens[at + 1] == nil or tokens[at + 1].value ~= "[" then return nil end
-    local key = string_token(tokens[at + 2])
-    if key == nil then return nil end
-    if tokens[at + 3] == nil or tokens[at + 3].value ~= "]" then return nil end
-    if tokens[at + 4] == nil or tokens[at + 4].value ~= "." then return nil end
-    if tokens[at + 5] == nil or tokens[at + 5].value ~= "cards" then return nil end
-    if tokens[at + 6] == nil or tokens[at + 6].value ~= "=" then return nil end
-    if tokens[at + 7] == nil or tokens[at + 7].value ~= "{" then return nil end
-    return key
-end
-
----Match `_editor_class["<key>"] = Class(` at token index `at`.
----@return boolean
-local function class_anchor(tokens, at, key)
-    if tokens[at] == nil or tokens[at].value ~= "_editor_class" then return false end
-    if tokens[at + 1] == nil or tokens[at + 1].value ~= "[" then return false end
-    if string_token(tokens[at + 2]) ~= key then return false end
-    if tokens[at + 3] == nil or tokens[at + 3].value ~= "]" then return false end
-    if tokens[at + 4] == nil or tokens[at + 4].value ~= "=" then return false end
-    if tokens[at + 5] == nil or tokens[at + 5].value ~= "Class" then return false end
-    if tokens[at + 6] == nil or tokens[at + 6].value ~= "(" then return false end
-    return true
-end
-
 ---Sorted keys of a `{ name = ... }` map, for a stable unit context.
 ---@param map table?
 ---@return string[]
@@ -84,7 +45,7 @@ end
 ---
 ---A class owns a unit when it publishes the `_editor_class["K"].cards = {` list
 ---anchor CardCallbacks.Read consumes. Classes without a card list (bullet and
----enemy classes) are not card units. The scan reads the shared lexer tokens, so
+---enemy classes) are not card units. The query reads the shared syntax nodes, so
 ---`_editor_class` text inside a comment or a string never becomes a class.
 ---The window of a class runs from its creation statement (when present) to the
 ---statement before the next class window; every class publishes one valid,
@@ -101,7 +62,8 @@ function Card.CardLists(analysis)
     local tokens, statements = analysis.tokens, analysis.statements
     local anchors, order = {}, {}
     for position, statement in ipairs(statements) do
-        local key = cards_anchor(tokens, statement.tok.first)
+        local target,value=Tree.SingleAssignment(statement.syntax)
+        local key=value and value.kind=="table" and Tree.CardList(target) or nil
         if key ~= nil then
             if key == "" then
                 return nil, "card list class key is empty", "unsupported"
@@ -120,7 +82,9 @@ function Card.CardLists(analysis)
     -- window never swallows the next class's `... = Class(...)` line.
     for _, entry in ipairs(order) do
         local previous = statements[entry.first - 1]
-        if previous ~= nil and class_anchor(tokens, previous.tok.first, entry.class_key) then
+        local target,value
+        if previous then target,value=Tree.SingleAssignment(previous.syntax) end
+        if target and Tree.ClassKey(target)==entry.class_key and value.kind=="call" and Tree.IsName(value.callee,"Class") then
             entry.first = entry.first - 1
         end
     end

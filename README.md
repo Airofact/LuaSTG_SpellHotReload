@@ -267,3 +267,52 @@ LuaJIT 验证真实共享 cell 发布；Lua 5.1 验证可运行的只读/拒绝�
 已改用生产完整 entry 和 `ApplyFromUI`，本批尚未在引擎运行。
 它们会写入 `userdata/spell_hot_reload_smoke/` 并可能切换测试场景或退出进程；
 实际执行需先核对具体启动、输入、输出与日志保护范围。
+
+### Source statement boundaries and diagnostics
+
+`Source/Lexer.lua` owns complete number, string and compound-symbol tokens.
+Numeric spelling is validated once, without evaluation; unary minus remains a
+separate operator. All consumers share these token categories and byte offsets.
+Card policy accepts number tokens directly and still refuses arithmetic or calls.
+
+`Source/LuaSyntax.lua` consumes those tokens directly with Lua 5.1 grammar,
+so top-level statement boundaries do not depend on line breaks. It performs
+no token coalescing, numeral rescanning, value evaluation or runtime type inference. It retains a syntax tree of nested blocks and expressions without compiling or executing the file. Lexer errors
+and unsupported syntax produce no partial analysis. Compiler limits and actual
+closure/capture checks still run in preparation; syntax boundaries are not a
+complete binding or runtime identity proof. LuaJIT-only labels/goto, cdata and
+hex-float numerals are currently unsupported; nesting over 160 analysis levels
+is refused with a diagnostic.
+
+`Source/StatementAlignment.lua` provides ordered exact-signature evidence for
+file policy and remainder diagnostics. Unique signatures anchor unchanged
+regions; repeated unanchored regions stay ambiguous. An insertion does not make
+all following unchanged statements pending. Changed rows keep independent old
+and candidate byte locations. Reordered effects are not accepted as equivalent.
+Unknown top-level edits still refuse file Apply, and source alignment grants no
+runtime ownership, publication or deletion permission. Old-only adapter records
+and semantic deletion reconciliation remain a later stage.
+
+`LuaSyntaxSpec.lua` and `StatementAlignmentSpec.lua` exercise grammar boundaries,
+invalid-source refusal, ordered changes, duplicates and large sparse inputs.
+These are offline regression tests; current engine integration is still pending.
+
+
+The shared syntax tree records declarations, assignment targets/values, calls and
+arguments, members/indices, function parameters/bodies, table fields and control
+blocks. Source.SyntaxTree supplies structural queries and byte extraction, not
+another parser or runtime permission. TopLevelIR, Binding, FunctionPlan, Card
+discovery/registrations, file wiring/Include policy and closure nested-reference
+checks consume these nodes. Their token-position grammar matchers are removed.
+Lexer decodes string literals once without compiling them; raw spelling remains
+available for conservative signatures. Name comparisons are adapter policy,
+while signatures and source slices retain exact token/source evidence. Binding
+confidence, ownership, final guards and actual upvalue checks remain separate.
+
+Only Lua 5.1 string escapes common to both tested runtimes are decoded; runtime-
+specific or unknown escapes are refused explicitly. GeneratedBossScanner's class
+key hint also consumes index-expression nodes; header/SC Debug text checks are
+format hints and confer no structural or publication authority.
+
+Function and callback version signatures reuse shared node/token ranges, including
+method receiver normalization; they do not tokenize extracted bodies again.

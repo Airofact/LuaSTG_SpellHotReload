@@ -9,6 +9,8 @@
 ---   * collects `_editor_class[...]` class keys for the UI's match hint
 --------------------------------------------------------------------------------
 
+local IR=require("SpellHotReload.Source.TopLevelIR")
+local Tree=require("SpellHotReload.Source.SyntaxTree")
 local Scanner = {}
 
 ---@param content string
@@ -49,20 +51,22 @@ function Scanner.Scan(content, file_name)
 	return result
 end
 
----Collect the set of `_editor_class[...]` string keys referenced in generated
----source. A cheap pattern scan used only for the UI's "matches current class"
----hint; it is NOT an identity mechanism.
----@param content string
----@return table<string, boolean>
-function Scanner.ClassKeys(content)
-	local keys = {}
-	if type(content) ~= "string" then
-		return keys
-	end
-	for key in content:gmatch('_editor_class%s*%[%s*[\'"]([^\'"]+)[\'"]%s*%]') do
-		keys[key] = true
-	end
-	return keys
+---Collect class keys from index-expression nodes for the UI hint.
+---A supplied snapshot must belong to these exact bytes; no token-pattern fallback.
+function Scanner.ClassKeys(content,analysis)
+    local keys={}
+    if type(content)~="string" then return keys end
+    local source=content
+    if source:sub(1,3)=="\239\187\191" then source=source:sub(4) end
+    if analysis then
+        if analysis.source~=source or analysis.source_offset~=#content-#source or not analysis.syntax then return keys end
+    else
+        local nodes,reason;nodes,reason,analysis=IR.Analyze(content)
+        if not nodes then return keys end
+    end
+    Tree.Walk(analysis.syntax,function(n)
+        local key=Tree.ClassKey(n);if key then keys[key]=true end
+    end)
+    return keys
 end
-
 return Scanner

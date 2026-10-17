@@ -47,6 +47,40 @@ function M.run()
             eq(s:sub(t.pos, t.pos + #t.value - 1), t.value, "byte slice")
         end
     end
+    -- Complete lexical tokens, shared unchanged by syntax and policy consumers.
+    for _,spelling in ipairs({"0","12","1.5","12.",".25e-2","1e+2","0x1e","0XFF"}) do
+        local ts,reason=Lexer.Tokenize(spelling)
+        eq(reason,nil,"valid numeral "..spelling)
+        eq(#ts,1,"one numeral token "..spelling)
+        eq(ts[1].kind,"number","number category "..spelling)
+        eq(ts[1].value,spelling,"original number spelling "..spelling)
+        eq(ts[1].pos,1,"number byte position")
+    end
+    for _,op in ipairs({"...","..","==","~=","<=",">="}) do
+        local ts=Lexer.Tokenize(op)
+        eq(#ts,1,"one symbol "..op)
+        eq(ts[1].kind,"symbol","symbol category "..op)
+        eq(ts[1].value,op,"whole symbol "..op)
+    end
+    for _,spelling in ipairs({"1e+","0x","12abc","1..2","0x1p2","1LL"}) do
+        local _,reason=Lexer.Tokenize(spelling)
+        eq(type(reason),"string","malformed numeral diagnosed "..spelling)
+    end
+    local ts=Lexer.Tokenize("0x1e+2 - .5 .. f(...)")
+    local values={"0x1e","+","2","-",".5","..","f","(","...",")"}
+    eq(#ts,#values,"hex exponent-like digit does not consume addition")
+    for i,value in ipairs(values) do eq(ts[i].value,value,"mixed token "..i) end
+    local Syntax=require("SpellHotReload.Source.LuaSyntax")
+    local source="local x=0x1e+2; f(x,...)"
+    ts=assert(Lexer.Tokenize(source))
+    local original={}
+    for i,t in ipairs(ts) do original[i]={kind=t.kind,value=t.value,pos=t.pos,depth=t.depth} end
+    local rows=assert(Syntax.Parse(source,ts)).body
+    eq(#rows,2,"syntax consumes lexer tokens")
+    same(ts,original,"syntax leaves shared tokens untouched")
+    eq(rows[1].first,1,"syntax first token index")
+    eq(rows[1].last,7,"syntax uses original complete-token indices")
+    eq(rows[2].first,8,"syntax next token index")
     eq(Capture.Trailer({}), "return {}", "empty trailer bytes")
     eq(Capture.Trailer({"a"}), 'return {["a"]=a}', "single trailer bytes")
     eq(Capture.Trailer({"a","b"}), 'return {["a"]=a,["b"]=b}', "ordered trailer bytes")

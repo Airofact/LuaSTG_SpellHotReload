@@ -42,6 +42,7 @@
 
 local Anchor = require("SpellHotReload.Load.Anchor")
 local Lexer = require("SpellHotReload.Source.Lexer")
+local Syntax = require("SpellHotReload.Source.LuaSyntax")
 local CodeCache = require("SpellHotReload.Source.CodeCache")
 
 local M = {}
@@ -210,57 +211,16 @@ function M.Declare(names)
     return "local " .. table.concat(parts, ", ")
 end
 
----Names a fragment mentions inside a nested function scope, `declared` only.
----
----A nested closure cannot be reached after the fragment has been compiled, so a
----prefix name it alone captures would keep pointing at a fresh cell. This scan
----over-approximates on purpose: it reports a mention unless the token is
----clearly a field access (`x.name`, `x:name`) or a record key (`{ name = ... }`).
----@param body string
----@param declared table<string, boolean>
----@return table<string, boolean>
-local function nested_mentions(body, declared)
-    local tokens = Lexer.Tokenize(body)
-    local stack, mentions = {}, {}
-
-    local function function_level()
-        local level = 0
-        for i = 1, #stack do
-            if stack[i] == "function" then level = level + 1 end
-        end
-        return level
+---Conservative nested-function identifier mentions from the shared syntax tree.
+---Field labels and declarations are distinct nodes. Scope shadowing is not proved.
+local function nested_mentions(ast,declared)
+    local mentions={}
+    local function visit(n,functions)
+        if n.kind=="function" then functions=functions+1 end
+        if n.kind=="name" and declared[n.name] and functions>=2 then mentions[n.name]=true end
+        for _,child in ipairs(n.children) do visit(child,functions) end
     end
-
-    for i = 1, #tokens do
-        local tok = tokens[i]
-        if tok.kind == "word" then
-            local value = tok.value
-            if value == "function" or value == "if" or value == "do"
-                or value == "repeat" then
-                stack[#stack + 1] = value
-            elseif value == "end" then
-                if #stack > 0 then stack[#stack] = nil end
-            elseif value == "until" then
-                if stack[#stack] == "repeat" then stack[#stack] = nil end
-            elseif declared[value] and function_level() >= 2 then
-                local prev = tokens[i - 1]
-                local skip = prev ~= nil and prev.kind == "symbol"
-                    and (prev.value == "." or prev.value == ":")
-                if not skip then
-                    local nxt = tokens[i + 1]
-                    if nxt ~= nil and nxt.kind == "symbol" and nxt.value == "=" then
-                        if prev == nil or (prev.kind == "symbol"
-                            and (prev.value == "{" or prev.value == ","
-                                or prev.value == ";")) then
-                            skip = true
-                        end
-                    end
-                end
-                if not skip then mentions[value] = true end
-            end
-        end
-    end
-    return mentions
+    visit(ast,0);return mentions
 end
 
 ---Assemble a fragment into a new closure whose free top-level names are real
@@ -385,7 +345,15 @@ function M.Create(body, target, visible, options)
     -- reading a fresh cell. Over-approximating here can only over-refuse.
     local prefix_set = {}
     for i = 1, #prefix do prefix_set[prefix[i]] = true end
-    local nested = nested_mentions(body, prefix_set)
+    local syntax=options.syntax
+    if not syntax then
+        local fragment=form=="expression" and ("return "..body) or body
+        local tokens,lexerr=Lexer.Tokenize(fragment)
+        if lexerr then return nil,lexerr end
+        local reason;syntax,reason=Syntax.Parse(fragment,tokens)
+        if not syntax then return nil,reason end
+    end
+    local nested = nested_mentions(syntax, prefix_set)
     for name in pairs(nested) do
         local found = false
         for i = 1, #used do

@@ -84,7 +84,7 @@
 local Plan = require("SpellHotReload.Source.FunctionPlan")
 local Compose = require("SpellHotReload.Source.Compose")
 local Anchor = require("SpellHotReload.Load.Anchor")
-local Lexer = require("SpellHotReload.Source.Lexer")
+local Tree = require("SpellHotReload.Source.SyntaxTree")
 local M = { Kind = "SpellHotReload.FunctionVersions", Version = 1 }
 
 local function plain(v) return type(v) == "table" and getmetatable(v) == nil end
@@ -116,16 +116,7 @@ local function inspect(content, state, snapshot)
     if result == nil then return fail(err.code, err.message, state) end
     return result
 end
--- Length-delimited TOKEN sequence, not a hash or full Lua equivalence test.
--- Ignore comments/formatting; preserve opaque strings, numeric spelling and
--- every operator. Any token change conservatively requires a new definition.
-local function signature(body)
-    local pieces = {}
-    for _, token in ipairs(Lexer.Tokenize(body)) do
-        pieces[#pieces + 1] = token.kind .. ":" .. #token.value .. ":" .. token.value
-    end
-    return table.concat(pieces, "|")
-end
+-- Version signatures reuse original syntax/token ranges; no fragment re-lexing.
 local function function_names(scan)
     local list = {}
     for name in next, scan.definitions do list[#list + 1] = name end
@@ -139,8 +130,7 @@ local function state_signatures(scan, units)
     for _, declaration in ipairs(scan.bindings.declarations) do
         if units[declaration.name] == nil then
             local statement = scan.analysis.statements[declaration.statement]
-            result[declaration.name] = signature(scan.analysis.source:sub(
-                statement.source_range.first, statement.source_range.last))
+            result[declaration.name] = Tree.Signature(statement.syntax,scan.analysis.tokens)
         end
     end
     return result
@@ -293,7 +283,7 @@ function M.Seed(entry, session_id, initial)
             end
         end
         state.units[name] = { name = name, fn = initial[name],
-            signature = signature(item.definition.body), body = item.definition.body,
+            signature = item.definition.signature, body = item.definition.body,
             dependencies = actual, definition_version = 1, definition = item.definition }
     end
     state.initializers = state_signatures(scan, state.units)
@@ -368,7 +358,7 @@ local function compare(state, content, snapshot, partial)
     end
     for _, item in ipairs(prepared.functions) do
         local name, previous = item.name, state.units[item.name]
-        local sig = signature(item.definition.body)
+        local sig = item.definition.signature
         local changed = sig ~= previous.signature
         local dependencies = copy(item.created.used)
         table.sort(dependencies)

@@ -305,14 +305,20 @@ function M.run()
                 eq(f.classes.K.cards[2]:init(1),15,"retained wrapper only sees safe helper propagation")
                 eq(f.classes.L.cards[1]:init(1),315,"independent wrapper remains valid")
             end
-            -- Literal metadata is retained, never executed; Lexer splits its
-            -- numeric tokens. Arithmetic/nonliteral effects are NOT whitelisted.
-            for _,literal in ipairs({"-10","1.5","1e+2","0x10"}) do
+            -- Literal metadata uses complete number tokens and is never executed.
+            -- Arithmetic/nonliteral effects are NOT whitelisted.
+            for _,literal in ipairs({"-10","- 10","1.5","1e+2",".25e-2","0x10","0x1e"}) do
                 f=fixture();candidate(f,(EDIT:gsub("'B',1,2,3,100","'B',1,2,3,"..literal)))
                 result=f.p:ApplyFileFromUI(FILE)
                 has(result,"definitions committed; no restart","literal constructor metadata remains pending")
                 has(result,"constructor metadata is not published","literal metadata reason")
                 eq(f.constructions,3,"literal constructor never evaluated")
+            end
+            for _,expression in ipairs({"1 - 2","0x1e+2","- -10","tonumber('10')"}) do
+                f=fixture();base=f.capture.snapshot
+                candidate(f,(EDIT:gsub("'B',1,2,3,100","'B',1,2,3,"..expression)))
+                has(f.p:ApplyFileFromUI(FILE),"unbounded top-level change","expression cannot masquerade as number")
+                unchanged(f,base,"nonliteral constructor argument")
             end
             -- One unsupported helper blocks its candidate consumers, but not an
             -- independently captured helper/new wrapper in the same aggregate.

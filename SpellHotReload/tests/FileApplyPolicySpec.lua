@@ -51,6 +51,11 @@ function M.run()
     end
     local ok,problem=pcall(function()
         allowed("KEEP()","KEEP()","unchanged opaque call")
+        allowed("A=1 B=2 C=3","A=1\nB=2\nC=3","same-line assignment layout")
+        allowed("KEEP()","KEEP();","optional statement separator")
+        local _,inserted=refused("A() B() C()","INSERTED() A() B() C()","insertion points to actual new statement")
+        has(inserted.message,"bytes 1-10;","inserted source range")
+        refused("A() B()","B() A()","effect order remains semantic")
         allowed("KEEP()","-- comment\nKEEP ( ) ;","opaque call formatting")
         allowed("KEEP()","\239\187\191KEEP()","BOM is not an executable change")
         for i,pair in ipairs({
