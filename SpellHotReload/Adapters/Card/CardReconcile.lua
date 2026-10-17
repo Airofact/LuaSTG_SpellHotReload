@@ -1,9 +1,40 @@
 -- Card-owned source evidence. No live reads, compilation, execution or writes.
 -- Full source/list identity and binding safety remain Locate/commit obligations.
+local Tree=require("SpellHotReload.Source.SyntaxTree")
 local M={}
 local CALLBACKS={"before","init","frame","render","beforedel","del","after"}
 local function plain(v) return type(v)=="table" and getmetatable(v)==nil end
 local function label(v) return type(v)=="string" and v or "" end
+-- Class implementations/metadata are NOT Card callback writes. They stay in
+-- the complete file effect policy, and deletion requires the genuine first-load
+-- class identities to be rechecked before and after invalidation. No setters run.
+function M.ClassWriteKey(ast)
+    local target,value=Tree.SingleAssignment(ast)
+    if not target or target.kind~="member" or target.separator~="." then return nil end
+    local key=Tree.ClassKey(target.base)
+    if not key or key=="" then return nil end
+    local name=target.name
+    if (name=="init" or name=="frame" or name=="render" or name=="kill") and value.kind=="function" then return key end
+    if (name=="name" or name=="bgm" or name=="difficulty")
+        and value.kind=="literal" and value.literal_kind=="string" then return key end
+    if name=="_bg" and (value.kind=="name" and value.name~="_tmp_sc"
+        and value.name~="_editor_class" and value.name~="_sc_table"
+        or value.kind=="literal" and value.literal_kind=="nil") then return key end
+end
+local function class_signature(keys)
+    if not plain(keys) then return nil end
+    local pieces,previous,count={},nil,0
+    for index,key in next,keys do
+        if type(index)~="number" or index<1 or index~=math.floor(index) or index>#keys then return nil end
+        count=count+1
+    end
+    if count~=#keys then return nil end
+    for _,key in ipairs(keys) do
+        if type(key)~="string" or key=="" or previous and previous>=key then return nil end
+        pieces[#pieces+1]=#key..":"..key;previous=key
+    end
+    return table.concat(pieces)
+end
 function M.Run(previous,candidate,context)
     local Card=require("SpellHotReload.Adapters.Card.Card")
     local base=previous.state
@@ -11,36 +42,48 @@ function M.Run(previous,candidate,context)
     for _,entry in ipairs(candidate.entries) do
         if entry.adapter==Card then entries[entry.unit.context.class_key]=entry end
     end
-    local rows,card_rows,claims,occurrences,callback_points={},{},{},{},{}
+    local rows,card_rows,claims,occurrences,callback_points,perform_points={},{},{},{},{},{}
     for _,entry in ipairs(candidate.entries) do
         if entry.adapter==Card then
             for _,desc in ipairs(entry.unit.context.layout) do
                 for _,point in next,desc.callback_points or {} do callback_points[point.first]=true end
+                if desc.perform_point then
+                    local first=desc.perform_point.first
+                    perform_points[first]=(perform_points[first] or 0)+1
+                end
                 local point=desc.callback_points and desc.callback_points.init
                 if point then occurrences[point.first]=(occurrences[point.first] or 0)+1 end
             end
         end
     end
-    -- A domain-unmodeled write must never look like a deleted callback.
-    -- Read the SAME full AST; do not parse a fragment or execute a setter.
-    local Tree=require("SpellHotReload.Source.SyntaxTree")
-    local hazard=false
+    -- Interpret the SAME full AST. Metadata must belong to one discovered
+    -- descriptor; a class-field exception carries additional live obligations.
+    local hazard,class_keys,class_seen=nil,{},{}
+    local function unmodeled(statement)
+        if not hazard then hazard=statement.source_range end
+    end
     for _,statement in ipairs(candidate.analysis.statements) do
         local ast=statement.syntax
-        local callback=Tree.Callback(ast)
-        if callback and not callback_points[statement.source_range.first] then hazard=true end
-        if ast.kind=="assign" then
-            for _,target in ipairs(ast.targets) do
-                if not Tree.IsName(target,"_tmp_sc") and not Tree.ClassKey(target) and not Tree.CardList(target) then
-                    local touches=false
-                    Tree.Walk(target,function(n)
-                        if Tree.IsName(n,"_tmp_sc") or Tree.IsName(n,"_editor_class") then touches=true end
-                    end)
-                    if touches and not callback_points[statement.source_range.first] then hazard=true end
-                end
+        local modeled=callback_points[statement.source_range.first]
+            or perform_points[statement.source_range.first]==1
+        local class_key=M.ClassWriteKey(ast)
+        if class_key and not class_seen[class_key] then
+            class_seen[class_key]=true;class_keys[#class_keys+1]=class_key
+        end
+        local function written(target)
+            if not Tree.IsName(target,"_tmp_sc") and not Tree.ClassKey(target) and not Tree.CardList(target) then
+                local touches=false
+                Tree.Walk(target,function(n)
+                    if Tree.IsName(n,"_tmp_sc") or Tree.IsName(n,"_editor_class") then touches=true end
+                end)
+                if touches and not modeled and not class_key then unmodeled(statement) end
             end
         end
+        if Tree.Callback(ast) and not modeled then unmodeled(statement) end
+        if ast.kind=="assign" then for _,target in ipairs(ast.targets) do written(target) end
+        elseif ast.kind=="function_statement" then written(ast.target) end
     end
+    table.sort(class_keys)
     local function row(status,record,reason,into,evidence)
         local r={status=status,previous=record,reason=reason,candidate=into,
             evidence=evidence or {},dependencies={},conditions={"fresh ownership and transaction guards required"}}
@@ -84,7 +127,8 @@ function M.Run(previous,candidate,context)
                 if old_name~="" and old_count==1 and new_count==1 then
                     local slot,why=require("SpellHotReload.Adapters.Card.CardTarget").SourceSlot(before,after,
                         {slot=record.slot,name=old_name,names=names})
-                    if slot then
+                    if slot and desc.kind==after[slot].kind and desc.constructor==after[slot].constructor
+                        and desc.perform==after[slot].perform then
                         r.status,r.reason="corresponding",why
                         r.candidate=candidate_at(entry,slot)
                         r.evidence={"unique named card and shape-preserving layout alignment"}
@@ -115,12 +159,14 @@ function M.Run(previous,candidate,context)
                     {"owning card correspondence established"})
                 r.dependencies={unpack(record.definition.dependencies)}
                 if hazard then
-                    r.status,r.reason="unresolved","candidate has an unmodeled callback/registry write"
+                    r.status,r.reason="unresolved",string.format(
+                        "candidate has an unmodeled callback/registry write at bytes %d-%d",hazard.first,hazard.last)
                 elseif record.definition.body~=nil and descriptor.callbacks[record.callback]==nil then
                     if record.callback=="init" then return nil end
                     r.status,r.reason="deleted","optional callback absent from complete mapped card"
                     r.tombstone={owner=previous.owner,owner_id=previous.owner_id,
-                        previous=record,definition_version=record.definition_version}
+                        previous=record,definition_version=record.definition_version,
+                        class_keys=class_keys,class_signature=class_signature(class_keys)}
                     r.conditions={"complete source remainder and effect checks must succeed",
                         "prepare saved default restoration and validate all consumers",
                         "publish tombstone only after successful atomic transaction"}
@@ -224,20 +270,22 @@ function M.Deletion(state,snapshot,key,name,slot,descriptor,rows)
         or not plain(tomb) or tomb.owner~=state.owner or tomb.owner_id~=state.owner_id
         or tomb.previous~=row.previous or tomb.previous.definition~=old
         or tomb.definition_version~=old.definition_version
+        or class_signature(tomb.class_keys)~=tomb.class_signature or type(tomb.class_signature)~="string"
         or not plain(into) or into.slot~=slot or into.descriptor~=descriptor
         or into.callback~=name or into.entry.adapter~=state.owner
         or snapshot.by_key[into.entry.unit.key]~=into.entry
         or descriptor.callbacks[name]~=nil then
         return nil,{phase="reconcile",code="ambiguous",file=state.file,unit_key=key,
-            message="optional callback deletion has no current owner/version evidence"}
+            message="optional callback deletion has no current owner/version evidence"
+                ..(plain(row) and type(row.reason)=="string" and ": "..row.reason or "")}
     end
     return tomb
 end
 
 -- Called by Card's final preflight, both before and after cache invalidation.
 -- No new publication, default identity or old version may enter through absence.
-function M.CheckPublications(selection)
-    local state,rows=selection.base,nil
+function M.CheckPublications(selection,capture,live)
+    local state,rows,checked_classes,card_tables=selection.base,nil,{},nil
     for _,pub in ipairs(selection.publications) do
         local unit=state.units[pub.unit_key]
         local old=plain(unit) and unit.callbacks[pub.key]
@@ -252,6 +300,25 @@ function M.CheckPublications(selection)
             local descriptor=entry and entry.unit.context.layout[item.source_slot]
             local tomb,err=M.Deletion(state,selection.discovery,pub.unit_key,pub.key,item.source_slot,descriptor,rows)
             if not tomb then return nil,err end
+            for _,key in ipairs(tomb.class_keys) do
+                if not checked_classes[key] then
+                    local expected=plain(capture) and plain(capture.class_bindings) and capture.class_bindings[key]
+                    local valid=plain(expected) and plain(live) and live.classes==capture.classes
+                        and plain(live.classes) and rawget(live.classes,key)==expected
+                    -- A class alias to ANY published Card is not an unrelated
+                    -- class implementation, even if its assignment text is unchanged.
+                    if not card_tables then
+                        card_tables={}
+                        for _,unit_key in ipairs(state.order) do card_tables[state.units[unit_key].card]=true end
+                    end
+                    if card_tables[expected] then valid=false end
+                    if not valid then
+                        return nil,{phase="commit",code="stale",file=state.file,unit_key=pub.unit_key,
+                            message="first-load deletion class binding changed or aliases a card: "..key}
+                    end
+                    checked_classes[key]=true
+                end
+            end
             if pub.deletion~=tomb or pub.value~=state.defaults[pub.key] or cb.fn~=pub.value
                 or cb.previous~=old or pub.before~=old.fn or pub.target~=unit.card then
                 return nil,{phase="commit",code="stale",file=state.file,unit_key=pub.unit_key,

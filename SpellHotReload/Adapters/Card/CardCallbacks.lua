@@ -82,7 +82,14 @@ function M.Read(content,class_key,analysis)
             pending.callback_points[callback]={first=tokens[ast.first].pos+offset,
                 last=tokens[fn.last].pos+#tokens[fn.last].value-1+offset}
         elseif pending and target and target.kind=="member" and Tree.IsName(target.base,"_tmp_sc") then
-            if target.name=="perform" then pending.perform=Tree.Text(rhs,analysis)
+            if target.name=="perform" then
+                if pending.perform~="" then return nil,"duplicate card perform assignment" end
+                pending.perform=Tree.Text(rhs,analysis)
+                -- Only a single boolean assignment attached to this constructor
+                -- is generated metadata. Other expressions remain unmodeled effects.
+                if rhs.kind=="literal" and rhs.literal_kind=="boolean" then
+                    pending.perform_point={first=statement.source_range.first,last=statement.source_range.last}
+                end
             else return nil,"unsupported card assignment: "..target.name end
         elseif call and Tree.Path(call.callee)=="table.insert" and #call.args==2
             and Tree.CardList(call.args[1])==class_key then

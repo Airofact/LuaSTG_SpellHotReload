@@ -375,8 +375,16 @@ function Card.SeedVersions(entry, session_id, classes, defaults)
     if not owners then return nil, ownership end
     local snapshot, cerr = Cards.Seed(functions, owners, defaults)
     if not snapshot then return nil, cerr end
+    -- Capture only the class bindings required by the recognized source fields.
+    -- Reuse the existing first-load scan; never reconstruct them at Apply time.
+    local class_bindings={}
+    local Evidence=require("SpellHotReload.Adapters.Card.CardReconcile")
+    for _,statement in ipairs(scan.analysis.statements) do
+        local key=Evidence.ClassWriteKey(statement.syntax)
+        if key then class_bindings[key]=rawget(classes,key) end
+    end
     return { kind = "SpellHotReload.LoadVersions", version = 1, snapshot = snapshot,
-        classes = classes, ownership = ownership }
+        classes = classes, ownership = ownership, class_bindings=class_bindings }
 end
 
 ---Card-specific selection/capture shape, publication bases and located-root
@@ -435,7 +443,7 @@ function Card.CheckCommitInput(selection, capture, live)
             end
         end
     end
-    return require("SpellHotReload.Adapters.Card.CardReconcile").CheckPublications(selection)
+    return require("SpellHotReload.Adapters.Card.CardReconcile").CheckPublications(selection,capture,live)
 end
 
 ---Card owns the aggregate version format. This ONLY proposes the next snapshot;

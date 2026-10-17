@@ -226,7 +226,7 @@ function M.run()
             local fake={file="Fake_Boss.lua",loaded_source="loaded bytes",reloadable=true,map={helper=old_helper}}
             local defs={helper={}}
             local analysis,initial_functions,matched,initial_owners,ownership,aggregate
-            analysis,initial_functions,matched,initial_owners,ownership,aggregate={},{},{},{},{},{}
+            analysis,initial_functions,matched,initial_owners,ownership,aggregate={statements={}},{},{},{},{},{}
             local function step(i)
                 log[#log+1]=i
                 if stop==i then return nil,marker end

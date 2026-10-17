@@ -650,6 +650,11 @@ local function compare(state, content, snapshot, location, file_location)
             end
             local loaded,err=Source.Inspect(state.loaded_source)
             if not loaded then return nil,err end
+            for _,name in ipairs({"_tmp_sc","_sc_table","_editor_class","boss","table"}) do
+                if discovery.scan.bindings.by_name[name] or loaded.bindings.by_name[name] then
+                    return fail("unsupported","generated wiring name is shadowed: "..name,state)
+                end
+            end
             report.file_facts={before=card_file_facts(state,loaded,pending),
                 after=card_file_facts(state,discovery.scan,pending)}
             local safe,why=require("SpellHotReload.Apply.FileApply").CheckTopLevel(report)

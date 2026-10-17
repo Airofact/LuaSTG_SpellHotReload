@@ -20,10 +20,21 @@ function M.run()
     local source=table.concat({"_editor_class['K'].cards={}","_tmp_sc=boss.card.New('A',1,2,3,4)",
         "function _tmp_sc:init() end","function _tmp_sc:frame() return 10 end",
         "table.insert(_editor_class['K'].cards,_tmp_sc)"},"\n")
+    -- Real generated files contain class implementations and Card perform metadata.
+    -- These remain unchanged when an optional callback alone disappears.
+    source=table.concat({
+        "_editor_class['K'].name='Generated Boss'",
+        "_editor_class['K']._bg=nil",
+        "_editor_class['K'].difficulty='Normal'",
+        "_editor_class['K'].init=function(self) end",
+        "_editor_class['K'].render=function(self) end",
+        "_editor_class['Other'].render=function(self) end",
+        (source:gsub("function _tmp_sc:init", "_tmp_sc.perform=false\nfunction _tmp_sc:init")),
+    },"\n")
     local bytes=source:gsub("function _tmp_sc:frame%(%) return 10 end\n","")
     local constructions=0
     local ok,problem=pcall(function()
-        _G._editor_class={K={}}
+        _G._editor_class={K={},Other={}}
         _G.boss={card={New=function(name)
             constructions=constructions+1
             local card={name=name,is_combat=true};for k,v in next,defaults do card[k]=v end;return card
@@ -60,6 +71,12 @@ function M.run()
             refused("foreign "..field)
             row.tombstone[field]=old
         end
+        local original_class=_editor_class.Other
+        _editor_class.Other={};refused("unrelated class binding drift");_editor_class.Other=original_class
+        local first_classes=capture.class_bindings;capture.class_bindings={}
+        refused("missing first-load class identities");capture.class_bindings=first_classes
+        local class_keys=row.tombstone.class_keys;row.tombstone.class_keys={}
+        refused("omitted source class obligations");row.tombstone.class_keys=class_keys
         local exact=publication.deletion;publication.deletion={}
         refused("foreign transaction tombstone");publication.deletion=exact
         local value=publication.value;publication.value=function() end
