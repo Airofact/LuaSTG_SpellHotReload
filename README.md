@@ -232,7 +232,14 @@ end
 | `Adapters/Card/PracticeBinding.lua`、`GeneratedBossScanner.lua` | 读取当前练习/SC Debug 绑定，格式检查及 UI 摘要 |
 | `UI/View.lua`、`UI/Tab/`、`Runtime/ChangeLog.lua` | 调试界面与日志 |
 
-适配器仅实现当前 `ContractVersion = 3` 的 `Match / Locate / Inject / Commit`。
+两侧只读协调通过 `Driver:DiscoverPublished` 接收实际发布快照和同一次完整候选。
+即使 Card 零命中，原发布记录仍进入 Reconcile；解析/Match 失败或原适配器不可用时保留 unresolved。
+`CardVersions.Publication` 从当前发布版本提取原 owner、定义和版本，不使用上次未采用的候选。
+协调结果只提供对应/删除等证据，不能进入 SelectDiscovery 冒充候选，也不能发布或推进版本。
+本阶段只为唯一命名且保持形状的 Card 生成对应证据；重复/改名/无法对应及 helper 绑定保留未解决项。
+可选回调删除仅产出带旧定义版本的 tombstone，实际默认恢复和事务发布继续由业务准备处理。
+
+适配器仅实现当前 `ContractVersion = 4` 的 `Match / Reconcile / Locate / Inject / Commit`。
 Driver 仅注册 discovery Id，不再提供载体路由或 `Plan / Commit / Apply / Restart`。
 Card 不再接收旧 request、平铺 env 或直接发布请求；比较必须携带当前或文件对应证明。
 `GeneratedBossLoader`、`Legacy/Functions`、`UpvalueRegistry`、`LoadVersions` 及
@@ -246,14 +253,14 @@ Retry 消费同一冻结目标，不重读源码、不编译、不再次发布�
 
 ## 验证
 
-从游戏目录运行快速离线 smoke：
+从游戏目录运行快速离线回归子集：
 
 ```powershell
 lua plugin/SpellHotReload/SpellHotReload/tests/Run.lua
 luajit plugin/SpellHotReload/SpellHotReload/tests/Run.lua
 ```
 
-`Run.lua` 运行基础源码、发现、监视和重启工作流的 smoke 集合，不代表所有 spec。
+`Run.lua` 运行基础源码、发现、协调、监视和重启工作流的离线子集，不代表所有 spec，也不属于引擎 smoke。
 完整回归按独立进程执行 `tests/*Spec.lua`，部分故障注入 spec 还需对应源码路径参数。
 首载/释放、事务回滚、当前/文件 Apply、候选剩余、共享 cell 和 Retry 均有独立测试。
 `PlanningFixture.lua` 只为测试组装当前发现和文件定位路径，消费真正首载 capture，

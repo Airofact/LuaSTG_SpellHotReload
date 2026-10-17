@@ -106,6 +106,17 @@ function M.run()
         candidate(f,EDIT)
         enter(f,2)
         local driver=f.p._driver
+        local discover_published=driver.DiscoverPublished
+        driver.DiscoverPublished=function(self,file,content,publication,...)
+            eq(publication.groups[1].state,f.capture.snapshot,"production uses actual publication snapshot")
+            local d,e,failure=discover_published(self,file,content,publication,...)
+            if d then
+                eq(d.reconciliation.publication,publication,"production keeps exact two-sided publication")
+                eq(d.reconciliation.snapshot,d.snapshot,"production reuses complete candidate analysis")
+                eq(d.reconciliation.published,false,"production reconciliation never publishes")
+            end
+            return d,e,failure
+        end
         local discover=driver.Discover
         driver.Discover=function(self,...)
             f.discoveries=f.discoveries+1

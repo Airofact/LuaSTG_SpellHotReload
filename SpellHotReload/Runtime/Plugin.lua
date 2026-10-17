@@ -110,6 +110,18 @@ function Plugin:_CaptureVersions(file, entry)
 	self._versions[file] = { capture = capture, reason = reason }
 end
 
+function Plugin:_DiscoverVersioned(file, candidate, capture)
+    local Cards=require("SpellHotReload.Adapters.Card.CardVersions")
+    if type(capture)~="table" or getmetatable(capture)~=nil
+        or type(capture.snapshot)~="table" then
+        return nil,{phase="reconcile",code="unsupported",message="first-load versions unavailable; restart game",file=file}
+    end
+    local publication,err=Cards.Publication(capture.snapshot)
+    if not publication then return nil,err end
+    return self._driver:DiscoverPublished(file,candidate.first_content,publication,{
+        candidate_generation=candidate.generation,published_units=capture.snapshot})
+end
+
 function Plugin:GetDriver() return self._driver end
 function Plugin:GetLog() return self._log end
 function Plugin:GetWatcher() return self._watcher end
@@ -494,10 +506,7 @@ function Plugin:_AccountVersioned(file, candidate, capture, base, receipt)
     local refresh = function() return self:_FreshVersioned(file,candidate,capture,true) end
     local live, lerr = refresh()
     if not live then return nil, message(lerr) end
-    local discovery, derr = self._driver:Discover(file,candidate.first_content,{
-        session_id=self._session_id, candidate_generation=candidate.generation,
-        loaded_source=live.entry.loaded_source, registry_entry=live.entry,
-        base_revision=snapshot.revision, published_units=snapshot})
+    local discovery, derr = self:_DiscoverVersioned(file,candidate,capture)
     if not discovery then return nil, "discover: " .. message(derr) end
     local model, witness, fresh = require("SpellHotReload.Apply.FileApply").InspectFileRemainder(capture,discovery,live,refresh)
     if not model then return nil, message(witness) end
@@ -650,10 +659,7 @@ function Plugin:_applyFile(file, token)
     if not gate.ok then return "source: " .. message(gate.error) end
     local live, lerr = self:_FreshVersioned(file,candidate,capture,true)
     if not live then return "file preflight: " .. message(lerr) end
-    local discovery, derr = self._driver:Discover(file,candidate.first_content,{
-        session_id=self._session_id,candidate_generation=candidate.generation,
-        loaded_source=live.entry.loaded_source,registry_entry=live.entry,
-        base_revision=capture.snapshot.revision,published_units=capture.snapshot})
+    local discovery, derr = self:_DiscoverVersioned(file,candidate,capture)
     if not discovery then return "discover: " .. message(derr) end
     local refresh = function() return self:_FreshVersioned(file,candidate,capture,true) end
     local prepared, perr = Card.PrepareFileVersioned(capture,discovery,live,refresh)
@@ -690,10 +696,7 @@ function Plugin:InspectCandidate(file)
         initial = Card.FreezeBinding(initial)
         local live, lerr = self:_FreshVersioned(file,candidate,capture)
         if not live then return nil, "inspection: " .. message(lerr) end
-        local discovery, derr = self._driver:Discover(file,candidate.first_content,{
-            session_id=self._session_id, candidate_generation=candidate.generation,
-            loaded_source=live.entry.loaded_source, registry_entry=live.entry,
-            base_revision=capture.snapshot.revision, published_units=capture.snapshot})
+        local discovery, derr = self:_DiscoverVersioned(file,candidate,capture)
         if not discovery then return nil, "discover: " .. message(derr) end
         local prepared, perr = self:_PrepareVersioned(file,candidate,capture,discovery,initial)
         if not prepared then return nil, perr end
@@ -772,10 +775,7 @@ function Plugin:_apply(token)
                     capture = self:GetVersions(file)
                     local base = capture and capture.snapshot
                     local derr
-                    discovery, derr = self._driver:Discover(file,candidate.first_content,{
-                        session_id=self._session_id, candidate_generation=candidate.generation,
-                        loaded_source=entry.loaded_source, registry_entry=entry,
-                        base_revision=base and base.revision, published_units=base})
+                    discovery, derr = self:_DiscoverVersioned(file,candidate,capture)
                     if not discovery then return "discover: " .. message(derr) end
                     matches = Card.DefinesCurrent(discovery,current)
                 else

@@ -122,7 +122,7 @@ function M.run()
         -- contract + discovery registration
         ------------------------------------------------------------------------
         eq(Card.Id, "card", "card: carries the discovery Id")
-        eq(Card.ContractVersion, 3, "card: declares ContractVersion 2")
+        eq(Card.ContractVersion, 4, "card: declares ContractVersion 4")
         eq(Adapter.ValidateDiscovery(Card), true, "card: satisfies the discovery contract")
         local registry = NodeRegistry.New()
         eq(registry:RegisterDiscovery(Card), true, "card: registers for discovery")

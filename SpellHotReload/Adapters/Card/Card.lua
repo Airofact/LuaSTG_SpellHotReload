@@ -9,7 +9,7 @@ local Card = {}
 
 Card.name = "Card"
 Card.Id = "card"
-Card.ContractVersion = 3
+Card.ContractVersion = 4
 
 local RUNTIME_KIND = "SpellHotReload.Card.RuntimeContext"
 local HANDLE_KIND = "SpellHotReload.Card.VersionedHandle"
@@ -756,6 +756,11 @@ function Card.Commit(handle, plan, context)
     local receipt, problem = transaction(handle, plan, context)
     if not receipt then return false, problem end
     return true, nil, receipt
+end
+
+---Read-only two-sided interpretation; mutation remains in Locate/Inject/Commit.
+function Card.Reconcile(previous, candidate, context)
+    return require("SpellHotReload.Adapters.Card.CardReconcile").Run(previous, candidate, context)
 end
 
 return Card

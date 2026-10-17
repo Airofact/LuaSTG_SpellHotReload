@@ -22,7 +22,7 @@ function M.run(options)
     local calls, analysis_calls, shared, shared_common = {}, 0
     local function adapter(id, specs, claim_key)
         return {
-            ContractVersion=3, Id=id,
+            ContractVersion=4, Id=id,
             Match=function(analysis, common)
                 calls[#calls+1] = id
                 if shared then
@@ -37,6 +37,7 @@ function M.run(options)
                 end
                 return {units=units, claims=claims, context={all=true, id=id}}
             end,
+            Reconcile=function() error("unexpected reconciliation") end,
             Locate=function() error("Locate forbidden") end,
             Inject=function() error("Inject forbidden") end,
             Commit=function() error("Commit forbidden") end,
@@ -117,7 +118,8 @@ function M.run(options)
     reject(v,e,"analyze","non-string content")
     local empty_driver = DriverAPI.New()
     eq(#assert(empty_driver:Discover("empty.lua","")).index.list,0,"empty file/registry")
-    local legacy = {Locate=function() error("legacy Locate forbidden") end,
+    local legacy = {Reconcile=function() error("unexpected reconciliation") end,
+            Locate=function() error("legacy Locate forbidden") end,
         Inject=function() error("legacy Inject forbidden") end,
         Commit=function() error("legacy Commit forbidden") end}
     eq(#assert(empty_driver:Discover("legacy.lua","G=1")).index.list,0,"legacy adapters excluded")

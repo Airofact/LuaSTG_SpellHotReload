@@ -225,4 +225,41 @@ function Driver:CommitDiscovery(prepared, transaction)
     return ok,err,receipt
 end
 
+---Complete two-sided read-only discovery. On source failure the THIRD result
+---retains unresolved publications; nil/error stay failure, never empty success.
+function Driver:DiscoverPublished(file,content,publication,supplied,options)
+    local Reconciliation=require("SpellHotReload.Pipeline.Reconciliation")
+    local common={}
+    if supplied~=nil and not plain(supplied) then
+        return discovery_error("reconcile","plain candidate context required",file)
+    end
+    for k,v in next,supplied or {} do common[k]=v end
+    if not Reconciliation.ValidatePublication(publication) or file~=publication.file then
+        return discovery_error("reconcile","matching actual publication required",file)
+    end
+    for _,key in ipairs({"file","session_id","loaded_source","registry_entry","base_revision"}) do
+        local expected=key=="registry_entry" and publication.entry
+            or key=="base_revision" and publication.revision or publication[key]
+        if common[key]~=nil and common[key]~=expected then
+            return discovery_error("reconcile","candidate context disagrees with publication",file)
+        end
+    end
+    common.session_id,common.loaded_source=publication.session_id,publication.loaded_source
+    common.registry_entry,common.base_revision=publication.entry,publication.revision
+    local discovery,err=self:Discover(file,content,common,options)
+    local snapshot=discovery and discovery.snapshot
+    local problem
+    if not discovery then
+        problem=type(content)~="string" and "candidate bytes unavailable"
+            or (plain(err) and err.phase=="match") and "candidate Match failed"
+            or "candidate analysis failed"
+    end
+    local report,why=Reconciliation.Run(self.adapters,publication,snapshot,problem)
+    if report and not discovery then report.source_error=err end
+    if not report then return nil,why end
+    if not discovery then return nil,err,report end
+    discovery.reconciliation=report
+    return discovery
+end
+
 return Driver

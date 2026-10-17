@@ -19,7 +19,7 @@ function M.run()
         local adapters={}
         for i,id in ipairs({"local","host","value"}) do
             local key=id..":unit"
-            local adapter={Id=id,ContractVersion=3}
+            local adapter={Id=id,ContractVersion=4,Reconcile=function() error("unexpected reconciliation") end}
             adapter.Match=function(analysis,common)
                 return {units={{key=key,carrier=id,source_ranges={{first=i,last=i}},
                     context={tag=key}}},claims={{kind="definition",key=key,unit_key=key}},

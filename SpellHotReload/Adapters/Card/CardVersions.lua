@@ -214,6 +214,7 @@ local function observed(unit, functions)
 end
 local function valid(state)
     if not plain(state) or state.kind ~= M.Kind or state.version ~= M.Version
+        or state.owner ~= Card or state.owner_id ~= "card"
         or not plain(state.functions) or state.functions.kind ~= Functions.Kind
         or state.entry ~= state.functions.entry or state.anchor ~= state.functions.anchor
         or state.loaded_source ~= state.functions.loaded_source
@@ -280,7 +281,7 @@ function M.Seed(functions, initial, defaults)
     local state = { kind = M.Kind, version = M.Version, file = functions.file,
         functions = functions, entry = functions.entry, anchor = functions.anchor,
         loaded_source = functions.loaded_source, session_id = functions.session_id,
-        revision = 0, layout = discovery.layout, order = copy(discovery.order),
+        owner = Card, owner_id = Card.Id, revision = 0, layout = discovery.layout, order = copy(discovery.order),
         defaults = copy(defaults), units = {} }
     for _, key in ipairs(state.order) do
         local owner, desc = owners[key], discovery.descriptors[key]
@@ -1000,6 +1001,34 @@ function M.SelectFile(report)
     if not selection then return nil,err end
     selection.blocked=blocked
     return selection
+end
+
+---Actual published definitions, not the last scanned/accepted candidate.
+---The original adapter is captured by Seed and copied unchanged by Next.
+function M.Publication(state)
+    if not valid(state) then return fail("unsupported", "published Card snapshot required", state) end
+    local records = {}
+    local function record(key, kind, definition, extra)
+        local row = {key=key, kind=kind, definition=definition,
+            definition_version=definition.definition_version}
+        for k,v in next,extra or {} do row[k]=v end
+        records[#records+1]=row
+    end
+    for _,key in ipairs(state.order) do
+        local unit=state.units[key]
+        record(key,"card",unit,{class_key=unit.class_key,slot=unit.slot})
+        for _,name in ipairs(CALLBACKS) do
+            record(key..":"..name,"callback",unit.callbacks[name],
+                {class_key=unit.class_key,slot=unit.slot,card_key=key,callback=name})
+        end
+    end
+    for _,name in ipairs(state.functions.names) do
+        record("local:"..name,"function",state.functions.units[name],{name=name})
+    end
+    return {kind="SpellHotReload.Publication",version=1,file=state.file,
+        session_id=state.session_id,revision=state.revision,entry=state.entry,
+        loaded_source=state.loaded_source,groups={{owner=state.owner,owner_id=state.owner_id,
+            state=state,records=records}}}
 end
 
 return M

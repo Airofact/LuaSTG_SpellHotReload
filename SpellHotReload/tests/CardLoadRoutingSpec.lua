@@ -233,7 +233,7 @@ function M.run()
         p._store = {GetCandidateFileNames=function() return {file} end,GetCandidate=function() return candidate end,
             Clear=function() end}
         p._watcher = {ReadFile=function() return candidate.first_content end,Release=function() end}
-        p._driver = {Discover=function() return discovery end}
+        p._DiscoverVersioned = function() return discovery end
         p._CheckLoad = function() return true end
         p._commit.Check = function() return true end
         p._ApplyVersioned = function(self, token, f, c, cap, d, b)

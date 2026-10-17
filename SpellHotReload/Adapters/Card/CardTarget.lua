@@ -504,4 +504,11 @@ end
 function M.CheckFileDiscovery(report,capture,live)
     return protected(check_file,live,report,capture,live)
 end
+---Pure source evidence only. Callers still need live ownership and final guards.
+function M.SourceSlot(before,after,target)
+    if not layout_valid(before) or not layout_valid(after) or not plain(target)
+        or not integer(target.slot,1) or target.slot>#before or type(target.name)~="string"
+        or dense(target.names)~=#before then return nil,"invalid source alignment input" end
+    return source_slot(before,after,target)
+end
 return M

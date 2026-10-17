@@ -249,11 +249,11 @@ function M.run()
                 owner=driver,discovery=discovery,file=discovery.file,content=discovery.content,
                 entries={{entry=discovered,adapter=Card,unit=unit,context=context,
                     handle=handle,plan=selection}}}}
-        driver.Discover=function() return discovery end
         local p=setmetatable({_loads={[target.file]=entry},_session_id=target.session_id,
             _candidate_inspections={},_activated=true,_supported=true,_sandbox_ok=true,
             _store={GetCandidate=function() return candidate end},
             _driver=driver},Plugin)
+        p._DiscoverVersioned=function() return discovery end
         -- Dispatch-only synthetic receipt fixture, not publication evidence.
         -- Real completion/receipt validation lives in CandidateCompletionSpec.
         p._FinishVersioned=function() return "; synthetic accounting, not completion" end

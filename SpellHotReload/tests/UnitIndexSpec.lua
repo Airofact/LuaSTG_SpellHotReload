@@ -76,7 +76,7 @@ function M.run()
     end
     local function adapter(id, match)
         return {
-            ContractVersion = 3, Id = id, Match = match,
+            ContractVersion = 4, Id = id, Match = match, Reconcile = function() error("unexpected reconciliation") end,
             Locate = hook, Inject = hook, Commit = hook, Restart = hook,
         }
     end
@@ -502,8 +502,8 @@ function M.run()
     eq(functions, 0, "the index carries data only")
 
     local executions = 0
-    local counting = { ContractVersion = 3, Id = "counting" }
-    for _, name in ipairs({ "Match", "Locate", "Inject", "Commit", "Restart" }) do
+    local counting = { ContractVersion = 4, Id = "counting", Reconcile=function() error("unexpected reconciliation") end }
+    for _, name in ipairs({ "Match", "Reconcile", "Locate", "Inject", "Commit", "Restart" }) do
         counting[name] = function() executions = executions + 1 end
     end
     local trapped = setmetatable({ Id = "trapped" }, {

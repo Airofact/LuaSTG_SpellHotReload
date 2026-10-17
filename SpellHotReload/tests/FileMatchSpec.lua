@@ -13,7 +13,7 @@ function M.run()
     local function hook() error("execution hooks must not run") end
     local function adapter(id, match)
         return {
-            ContractVersion = 3, Id = id, Match = match,
+            ContractVersion = 4, Id = id, Match = match, Reconcile = function() error("unexpected reconciliation") end,
             Locate = hook, Inject = hook, Commit = hook, Restart = hook,
         }
     end
