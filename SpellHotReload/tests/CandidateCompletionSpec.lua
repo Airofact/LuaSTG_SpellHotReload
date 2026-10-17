@@ -247,7 +247,7 @@ function M.run()
         f=fixture();candidate(f,SOURCE.."\nInclude(helper(1))")
         local result=f.p:ApplyFromUI()
         has(result,"candidate retained","Current dynamic Include remains pending")
-        has(result,"unbounded top-level change","dynamic call cannot confirm completion")
+        has(result,"top-level change not published or not confirmed","dynamic call stays explicitly pending")
         check(f.p:GetStore():GetCandidate(FILE)~=nil,"dynamic call candidate not swallowed")
         eq(f.includes,0,"Current dynamic Include not executed")
         -- Current consumes the SAME full remainder: sibling edits are not ACKed.

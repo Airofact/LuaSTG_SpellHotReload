@@ -662,6 +662,23 @@ function Plugin:_applyFile(file, token)
     local discovery, derr = self:_DiscoverVersioned(file,candidate,capture)
     if not discovery then return "discover: " .. message(derr) end
     local refresh = function() return self:_FreshVersioned(file,candidate,capture,true) end
+    local has_card=false
+    for _,entry in ipairs(discovery.snapshot.entries) do
+        if entry.adapter==Card then has_card=true;break end
+    end
+    if not has_card then
+        -- Old-only publications still need full accounting. No fake candidate
+        -- key, empty commit/receipt, helper write, restart or completion record.
+        self:_ClearCompletion(file)
+        self._candidate_remainders[file]=nil
+        local model,witness,fresh=require("SpellHotReload.Apply.FileApply").InspectFileRemainder(
+            capture,discovery,live,refresh)
+        if not model then return "file remainder: "..message(witness).."; candidate retained" end
+        if model.complete then return "file remainder has no Card aggregate; candidate retained" end
+        self._candidate_remainders[file]={model=model,capture=capture,snapshot=capture.snapshot,entry=fresh.entry}
+        return "pending file "..file..": no candidate Card aggregate; no definitions published; no restart"
+            ..remainder_text(model,witness)
+    end
     local prepared, perr = Card.PrepareFileVersioned(capture,discovery,live,refresh)
     if not prepared then return perr end
     local selection, controller = prepared.selection, self._commit

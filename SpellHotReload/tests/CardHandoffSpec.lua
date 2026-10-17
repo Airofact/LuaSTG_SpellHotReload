@@ -77,7 +77,7 @@ function M.run()
         local live={capture=capture,snapshot=base,entry=entry,classes=_editor_class,
             session_id=base.session_id,content=source(5),binding=initial}
         local driver=Driver.New();assert(driver:RegisterDiscovery(Card))
-        local discovery=must(driver:Discover(entry.file,live.content,{session_id=base.session_id,
+        local discovery=must(driver:DiscoverPublished(entry.file,live.content,assert(require("SpellHotReload.Adapters.Card.CardVersions").Publication(base)),{session_id=base.session_id,
             registry_entry=entry,loaded_source=base.loaded_source,base_revision=base.revision,
             published_units=base,candidate_generation=3}))
         local fresh=0

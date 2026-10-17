@@ -71,7 +71,7 @@ VERSION_DISCOVERY_EFFECT()
         local driver=Driver.New()
         assert(driver:RegisterDiscovery(Card))
         local function discover(bytes,base)
-            return must(driver:Discover(base.file,bytes,{session_id=base.session_id,
+            return must(driver:DiscoverPublished(base.file,bytes,assert(Cards.Publication(base)),{session_id=base.session_id,
                 registry_entry=base.entry,loaded_source=base.loaded_source,
                 base_revision=base.revision,published_units=base,candidate_generation=3})).snapshot
         end

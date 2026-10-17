@@ -10,7 +10,9 @@ function M.Report(capture,content,snapshot,base)
     if not snapshot then
         local driver=Driver.New()
         assert(driver:RegisterDiscovery(Card))
-        local found,err=driver:Discover(base.file,content,{session_id=base.session_id,
+        local publication,perr=Cards.Publication(base)
+        if not publication then return nil,perr end
+        local found,err=driver:DiscoverPublished(base.file,content,publication,{session_id=base.session_id,
             registry_entry=base.entry,loaded_source=base.loaded_source,
             base_revision=base.revision,published_units=base,candidate_generation=1})
         if not found then return nil,err end

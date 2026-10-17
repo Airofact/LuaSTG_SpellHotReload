@@ -95,7 +95,7 @@ function M.run()
         f.p._sandbox_ok=join~=nil
         f.p._sandbox_error="shared-cell debug APIs unavailable"
         f.disk=EDIT
-        f.p._store:SetAccepted(FILE,SOURCE,"baseline")
+        f.p._store:SetAccepted(FILE,first_source or SOURCE,"baseline")
         local Watcher=require("SpellHotReload.Runtime.Watcher")
         f.p._watcher=Watcher.New({root="mod/Test",store=f.p._store,quiet_frames=1,read_gap=1,drift_interval=5})
         f.p._watcher.ReadFile=function()
@@ -410,9 +410,121 @@ function M.run()
             has(f.p:ApplyFileFromUI(FILE),"class registry binding changed","postflush external class binding rechecked")
             unchanged(f,base,"postflush registry read")
             _G.jit=saved.jit
+
+            -- Real optional deletion consumes the current-owner tombstone,
+            -- restores the first-load default and advances only installed versions.
+            local frame_line="function _tmp_sc:frame(n) return helper(n)+1 end"
+            local with_frame=SOURCE:gsub("function _tmp_sc:init%(n%) return helper%(n%) end",
+                "function _tmp_sc:init(n) return helper(n) end\n"..frame_line,1)
+            f=fixture(with_frame);base=f.capture.snapshot
+            local key="card:1:K:2"
+            local function deleted(revision,version,label)
+                eq(f.classes.K.cards[2].frame,defaults.frame,label.." saved default restored")
+                eq(f.capture.snapshot.revision,revision,label.." aggregate revision")
+                eq(f.capture.snapshot.units[key].callbacks.frame.definition_version,version,label.." callback version")
+                eq(f.capture.snapshot.units[key].callbacks.frame.body,nil,label.." source deletion recorded")
+                eq(f.capture.snapshot.units[key].callbacks.init.definition_version,1,label.." unedited init version retained")
+            end
+            candidate(f,SOURCE)
+            result=f.p:ApplyFileFromUI(FILE)
+            has(result,"definitions committed","optional deletion executes in production file transaction")
+            has(result,"candidate complete; removed","successful deletion can complete candidate")
+            deleted(1,2,"first deletion")
+            local installed=f.capture.snapshot
+            candidate(f,SOURCE)
+            has(f.p:ApplyFileFromUI(FILE),"no definition changes","repeated deletion is a no-op")
+            eq(f.capture.snapshot,installed,"repeated deletion keeps exact snapshot")
+            deleted(1,2,"repeated deletion")
+            candidate(f,with_frame)
+            has(f.p:ApplyFileFromUI(FILE),"definitions committed","restoring first-load source after deletion is a new publication")
+            eq(f.capture.snapshot.units[key].callbacks.frame.definition_version,3,"restored source own version")
+            eq(f.classes.K.cards[2]:frame(1),6,"restored callback executes correct published helper")
+            -- Deletion from revision two uses the actual callback version three.
+            candidate(f,SOURCE)
+            has(f.p:ApplyFileFromUI(FILE),"definitions committed","delete restored version")
+            deleted(3,4,"delete restored source")
+            eq(f.constructions,3,"delete/repeat/restore never reconstructs cards")
+            eq(f.restarts,0,"file deletion never restarts")
+            f=fixture(with_frame);base=f.capture.snapshot;candidate(f,SOURCE)
+            has(f.p:ApplyFromUI(),"definitions committed; restart requested","Current optional deletion commits before restart request")
+            deleted(1,2,"Current deletion")
+            eq(f.restarts,1,"Current deletion requests one restart")
+            -- Removing a helper's definition does not erase a binding still
+            -- captured by live or pending consumers, including retained siblings.
+            -- Its declaration-kind change is an explicit whole-plan refusal.
+            f=fixture(with_frame);base=f.capture.snapshot
+            candidate(f,(SOURCE:gsub("local function helper%(n%) return state%+n end","local helper")))
+            result=f.p:ApplyFileFromUI(FILE)
+            has(result,"declaration kind changed","helper declaration removal refuses before publication")
+            eq(f.capture.snapshot,base,"blocked helper dependencies prevent deletion publication")
+            eq(Anchor.Get(f.entry,"helper"),base.functions.units.helper.fn,"missing source never clears a shared binding")
+            eq(f.classes.K.cards[2].frame,base.units[key].callbacks.frame.fn,"dependent card deletion remains unapplied")
+            eq(f.classes.K.cards[3]:init(1),105,"retained sibling still has its original helper")
+            check(f.p._store:GetCandidate(FILE)~=nil,"missing helper cannot complete candidate")
+            -- A pending source write is not evidence of absence. Current may
+            -- publish its own safe definition, but cannot restore a guessed default.
+            f=fixture(with_frame);base=f.capture.snapshot
+            candidate(f,SOURCE.."\n_editor_class['K'].cards[2].frame=unproved")
+            result=f.p:ApplyFromUI()
+            has(result,"deletion has no current owner/version evidence","Current deletion requires complete source evidence")
+            unchanged(f,base,"unmodeled deletion")
+            f=fixture(with_frame);base=f.capture.snapshot
+            candidate(f,SOURCE.."\nUNREPLAYED_UNKNOWN()")
+            has(f.p:ApplyFromUI(),"unbounded top-level change","Current deletion also checks complete top-level effects")
+            unchanged(f,base,"Current deletion effect policy")
+            -- Ambiguous names cannot authorize default restoration, even when
+            -- existing source location could select an in-place callback update.
+            local duplicate=with_frame:gsub("New%('B'","New('A'")
+            f=fixture(duplicate);base=f.capture.snapshot
+            candidate(f,SOURCE:gsub("New%('B'","New('A'"))
+            result=f.p:ApplyFileFromUI(FILE)
+            has(result,"deletion has no current owner/version evidence","ambiguous deletion stays pending")
+            eq(f.classes.K.cards[2].frame,base.units[key].callbacks.frame.fn,"ambiguous deletion retains original callback")
+            eq(f.capture.snapshot,base,"ambiguous deletion does not advance version")
+            check(f.p._store:GetCandidate(FILE)~=nil,"ambiguous deletion cannot complete candidate")
+            -- Pending ambiguous deletion of one sibling cannot block a
+            -- separately located current root whose update has no such dependency.
+            f=fixture(duplicate);base=f.capture.snapshot;enter(f,3)
+            candidate(f,(SOURCE:gsub("New%('B'","New('A'"):gsub("helper%(n%)%+100","helper(n)+200")))
+            has(f.p:ApplyFromUI(),"definitions committed","independent Current update survives sibling deletion ambiguity")
+            eq(f.classes.K.cards[2].frame,base.units[key].callbacks.frame.fn,"pending sibling default not restored")
+            eq(f.classes.K.cards[3]:init(1),205,"safe current callback published")
+            check(f.p._store:GetCandidate(FILE)~=nil,"sibling deletion still retained after Current publication")
+            -- Invalidation can change evidence after preparation. The second
+            -- Guard must reject it before any callback, helper or version write.
+            f=fixture(with_frame);base=f.capture.snapshot
+            candidate(f,(SOURCE:gsub("state%+n end","state+n+10 end")))
+            local saved_reconcile=Card.Reconcile
+            Card.Reconcile=function(previous,snapshot,context)
+                local rows=saved_reconcile(previous,snapshot,context)
+                f.deletion_rows=rows;return rows
+            end
+            _G.jit={flush=function()
+                for _,row in ipairs(f.deletion_rows) do
+                    if row.tombstone then row.tombstone.definition_version=999 end
+                end
+            end}
+            result=f.p:ApplyFileFromUI(FILE)
+            Card.Reconcile=saved_reconcile;_G.jit=saved.jit
+            has(result,"deletion has no current owner/version evidence","postflush tombstone version drift refused")
+            unchanged(f,base,"postflush deletion evidence")
+            -- Deleting one callback does not free a helper captured by retained
+            -- siblings. The helper update and default restoration are one group.
+            f=fixture(with_frame);base=f.capture.snapshot
+            candidate(f,(SOURCE:gsub("state%+n end","state+n+10 end")))
+            has(f.p:ApplyFileFromUI(FILE),"definitions committed","deletion and shared helper update share one transaction")
+            deleted(1,2,"delete plus helper")
+            eq(f.capture.snapshot.functions.units.helper.definition_version,2,"shared helper version advanced")
+            eq(f.classes.K.cards[3]:init(1),115,"retained sibling uses safe shared helper update")
             -- No aggregate entry means no fabricated publication authority.
             f=fixture();base=f.capture.snapshot;candidate(f,SOURCE:sub(1,kstart-1))
-            has(f.p:ApplyFileFromUI(FILE),"no genuine Card discovery entry","no entry refused")
+            local absent=f.p:ApplyFileFromUI(FILE)
+            has(absent,"pending file","old-only file is diagnosed")
+            has(absent,"captured class is absent from candidate","old-only owner retained")
+            has(absent,"no definitions published","zero-match never fabricates a receipt")
+            local remainder=f.p:GetCandidateRemainder(FILE)
+            check(remainder and not remainder.complete and #remainder.pending>0,"zero-match full pending model available")
+            check(f.p._store:GetCandidate(FILE)~=nil,"zero-match candidate retained")
             unchanged(f,base,"no Card entry")
             f=fixture();base=f.capture.snapshot
             f.p._store.RecordPartialPublication=function() return nil,"bookkeeping fault" end

@@ -502,7 +502,7 @@ function M.run()
         local raw_target=audit_owners[1].card
         setmetatable(raw_target,{__newindex=trap})
         refuse(function() return report(audit_state,source) end,
-            "ownership","published target acquired a metatable")
+            "unsupported","published target with metatable cannot form a publication")
         setmetatable(raw_target,nil)
         eq(metamethods,0,"refusals never invoke unknown table metamethods")
         local changed_defaults=shallow(defaults)
@@ -545,11 +545,11 @@ function M.run()
         local broken=shallow(audit_state)
         broken.revision=-1
         refuse(function() return report(broken,source) end,
-            "stale","invalid aggregate revision refused")
+            "unsupported","invalid aggregate revision cannot form a publication")
         broken=shallow(audit_state)
         broken.anchor=function() end
         refuse(function() return report(broken,source) end,
-            "stale","different anchor snapshot refused")
+            "unsupported","different anchor cannot form a publication")
         audit_entry.missing=true
         refuse(function() return report(audit_state,source) end,
             "stale","missing anchor file cannot prepare")

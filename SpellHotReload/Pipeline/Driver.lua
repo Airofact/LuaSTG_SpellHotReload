@@ -259,6 +259,7 @@ function Driver:DiscoverPublished(file,content,publication,supplied,options)
     if not report then return nil,why end
     if not discovery then return nil,err,report end
     discovery.reconciliation=report
+    discovery.snapshot.reconciliation=report
     return discovery
 end
 

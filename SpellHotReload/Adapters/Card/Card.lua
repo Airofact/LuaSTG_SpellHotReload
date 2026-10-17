@@ -435,7 +435,7 @@ function Card.CheckCommitInput(selection, capture, live)
             end
         end
     end
-    return true
+    return require("SpellHotReload.Adapters.Card.CardReconcile").CheckPublications(selection)
 end
 
 ---Card owns the aggregate version format. This ONLY proposes the next snapshot;

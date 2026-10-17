@@ -183,7 +183,7 @@ function M.InspectFileRemainder(capture, discovery, live, refresh)
     local base = capture.snapshot
     local location, lerr = Target.LocateFileDiscovery(discovery.snapshot,capture,live)
     if not location then return nil, "correspondence: " .. message(lerr) end
-    local report, rerr = M.CompareCards(base,location,capture,live)
+    local report, rerr = Cards.CompareFileLocated(base,location,capture,live)
     if not report then return nil, "compare: " .. message(rerr) end
     local model, merr = M.Remaining(report)
     if not model then return nil, "remainder: " .. message(merr) end

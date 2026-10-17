@@ -330,7 +330,7 @@ function M.run()
             check(cached.file_remainder.pending[1].reason~="corrupted","remainder cache detached")
             has(f.p:ApplyFileFromUI(FILE),"compare: unbounded top-level change","file rejects before commit")
             eq(f.capture.snapshot,before,"refused file keeps published snapshot")
-            has(f.p:ApplyFromUI(),"completion unavailable","Current retains committed definitions on failed completion")
+            has(f.p:ApplyFromUI(),"candidate retained; pending: unknown","Current retains committed definitions and reports unsupported remainder")
             eq(f.p._store:GetCandidate(FILE)~=nil,true,"completion failure keeps candidate")
             eq(f.classes.K.extra,nil,"neither Apply publishes object method")
 

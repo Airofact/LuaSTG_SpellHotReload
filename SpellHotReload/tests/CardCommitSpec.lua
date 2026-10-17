@@ -164,6 +164,30 @@ function M.run(opts)
         eq(l.classes.K.cards[2].frame,defaults.frame,"deleted optional default restored")
         eq(c.snapshot.units["card:1:K:2"].callbacks.frame.body,nil,"deleted version body")
         test(#Planning.Report(c,l.content).changed>0,"unselected deletion pending")
+        -- Failed default restoration or snapshot install must undo deletion,
+        -- including native operations which mutate and then throw.
+        for _,after in ipairs({false,true}) do
+            for cut=1,2 do
+                local writes=0
+                local deletion_tx=isolated({rawset=function(target,key,value)
+                    writes=writes+1
+                    if writes==cut then
+                        if after then rawset(target,key,value) end
+                        error("deletion journal fault")
+                    end
+                    return rawset(target,key,value)
+                end})
+                tx,s,c,l=fixture("raw",deletion_tx)
+                l.content=source:gsub("function _tmp_sc:frame%(%) return 10 end","")
+                s=must(Cards.Select(must(Planning.Report(c,l.content)),{"card:1:K:2"}))
+                local before=baseline(s,c,l)
+                local v,e=scoped(tx,s,c,l)
+                refusal(v,e,"publish","deletion rollback cut "..cut)
+                unchanged(s,c,l,before,"deletion rollback")
+                eq(c.snapshot.units["card:1:K:2"].callbacks.frame.definition_version,1,"failed deletion version retained")
+                eq(tx:Poisoned(),false,"successful deletion rollback not poisoned")
+            end
+        end
         -- Bodies are not run by commit, even bodies which immediately throw.
         tx,s,c,l=fixture("raw")
         l.content=source:gsub("return 10 end","error('body must not run') end")

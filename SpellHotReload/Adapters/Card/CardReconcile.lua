@@ -151,4 +151,117 @@ function M.Run(previous,candidate,context)
     end
     return rows
 end
+-- Resolve one exact reconciliation against the current publication. No parsing,
+-- compilation or live writes. Source evidence never replaces the final Guard.
+function M.Index(state,snapshot)
+    local Card=require("SpellHotReload.Adapters.Card.Card")
+    local Cards=require("SpellHotReload.Adapters.Card.CardVersions")
+    local Reconciliation=require("SpellHotReload.Pipeline.Reconciliation")
+    local function fail(reason)
+        return nil,{phase="reconcile",code="stale",message=reason,file=state.file}
+    end
+    local report=plain(snapshot) and snapshot.reconciliation
+    local publication=plain(report) and report.publication
+    if not plain(report) or report.kind~=Reconciliation.Kind or report.version~=Reconciliation.Version
+        or report.snapshot~=snapshot or report.published~=false or report.problem~=nil
+        or report.revision~=state.revision or report.file~=state.file
+        or not Reconciliation.ValidatePublication(publication)
+        or publication.revision~=state.revision or publication.file~=state.file
+        or publication.session_id~=state.session_id or publication.entry~=state.entry
+        or publication.loaded_source~=state.loaded_source then
+        return fail("current publication reconciliation required")
+    end
+    local expected,err=Cards.Publication(state)
+    if not expected then return nil,err end
+    local originals={}
+    for _,record in ipairs(expected.groups[1].records) do originals[record.key]=record end
+    local group,output
+    for _,g in ipairs(publication.groups) do
+        if g.owner==Card then group=g end
+    end
+    for _,g in ipairs(report.groups) do
+        if g.owner==Card then output=g end
+    end
+    if not group or group.owner_id~=state.owner_id or group.state~=state
+        or not output or output.previous~=group or output.owner_id~=group.owner_id or output.reason then
+        return fail("original Card owner reconciliation unavailable")
+    end
+    local records,rows={},{}
+    for _,record in ipairs(group.records) do
+        local old=originals[record.key]
+        if not old or records[record.key] or record.definition~=old.definition
+            or record.kind~=old.kind or record.definition_version~=old.definition_version then
+            return fail("reconciliation publication definition changed")
+        end
+        records[record.key]=record
+    end
+    for key in next,originals do
+        if not records[key] then return fail("reconciliation omitted a publication") end
+    end
+    for _,row in ipairs(output.rows) do
+        local record=row.previous
+        if record then
+            if records[record.key]~=record or rows[record.key] then
+                return fail("reconciliation publication row changed")
+            end
+            rows[record.key]=row
+        end
+    end
+    for key in next,records do
+        if not rows[key] then return fail("reconciliation omitted a publication row") end
+    end
+    return rows
+end
+
+-- A callback absence is executable only with the exact old-owner/version
+-- tombstone and the SAME candidate occurrence used by live location.
+function M.Deletion(state,snapshot,key,name,slot,descriptor,rows)
+    local row=rows[key..":"..name]
+    local old=state.units[key].callbacks[name]
+    local tomb=plain(row) and row.tombstone
+    local into=plain(row) and row.candidate
+    if not row or row.status~="deleted" or name=="init" or old.body==nil
+        or not plain(tomb) or tomb.owner~=state.owner or tomb.owner_id~=state.owner_id
+        or tomb.previous~=row.previous or tomb.previous.definition~=old
+        or tomb.definition_version~=old.definition_version
+        or not plain(into) or into.slot~=slot or into.descriptor~=descriptor
+        or into.callback~=name or into.entry.adapter~=state.owner
+        or snapshot.by_key[into.entry.unit.key]~=into.entry
+        or descriptor.callbacks[name]~=nil then
+        return nil,{phase="reconcile",code="ambiguous",file=state.file,unit_key=key,
+            message="optional callback deletion has no current owner/version evidence"}
+    end
+    return tomb
+end
+
+-- Called by Card's final preflight, both before and after cache invalidation.
+-- No new publication, default identity or old version may enter through absence.
+function M.CheckPublications(selection)
+    local state,rows=selection.base,nil
+    for _,pub in ipairs(selection.publications) do
+        local unit=state.units[pub.unit_key]
+        local old=plain(unit) and unit.callbacks[pub.key]
+        local cb=plain(pub.callback) and pub.callback
+        if old and cb and old.body~=nil and cb.body==nil then
+            if not rows then
+                local err;rows,err=M.Index(state,selection.discovery)
+                if not rows then return nil,err end
+            end
+            local item=selection.report.by_key[pub.unit_key]
+            local entry=selection.discovery.by_key[item.source_key]
+            local descriptor=entry and entry.unit.context.layout[item.source_slot]
+            local tomb,err=M.Deletion(state,selection.discovery,pub.unit_key,pub.key,item.source_slot,descriptor,rows)
+            if not tomb then return nil,err end
+            if pub.deletion~=tomb or pub.value~=state.defaults[pub.key] or cb.fn~=pub.value
+                or cb.previous~=old or pub.before~=old.fn or pub.target~=unit.card then
+                return nil,{phase="commit",code="stale",file=state.file,unit_key=pub.unit_key,
+                    message="callback deletion publication evidence changed"}
+            end
+        elseif pub.deletion~=nil then
+            return nil,{phase="commit",code="stale",file=state.file,
+                message="deletion evidence attached to a non-deletion publication"}
+        end
+    end
+    return true
+end
 return M

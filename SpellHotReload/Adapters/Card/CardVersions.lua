@@ -439,6 +439,8 @@ local function compare(state, content, snapshot, location, file_location)
             return fail("stale", "discovery published baseline disagrees", state)
         end
     end
+    local reconciliation,rerr=require("SpellHotReload.Adapters.Card.CardReconcile").Index(state,snapshot)
+    if not reconciliation then return nil,rerr end
     local function_diff, ferr
     local class_reads={}
     if file_location then function_diff,ferr=Functions.CompareFileDiscovery(state.functions,snapshot)
@@ -550,6 +552,13 @@ local function compare(state, content, snapshot, location, file_location)
                 -- Keep real published captures for impact/observations; no guessed Inject.
                 candidate = copy(previous)
             end
+            if previous.body~=nil and candidate.body==nil then
+                local deletion,err=require("SpellHotReload.Adapters.Card.CardReconcile").Deletion(
+                    state,snapshot,key,name,source.slot,descriptor,reconciliation)
+                if not deletion then
+                    item.blocked=item.blocked or err
+                else candidate.deletion=deletion end
+            end
             if previous.body and candidate.body and not same(previous.visible, candidate.visible) then
                 local _,err=fail("unsupported","callback definition-point binding changed",state,key)
                 if not file_location then return nil,err end
@@ -621,6 +630,32 @@ local function compare(state, content, snapshot, location, file_location)
             end
         end
     end
+    if location then
+        local deletes=false
+        for _,key in ipairs({location.key}) do
+            for _,name in ipairs(CALLBACKS) do
+                if report.by_key[key].callbacks[name].deletion then deletes=true end
+            end
+        end
+        if deletes then
+            -- Current's normal update scope is unchanged. Removing a callback
+            -- additionally requires the complete file's effect/remainder policy.
+            local pending={}
+            for class,layout in next,state.layout do
+                if not discovery.layout[class] or not fixed_layout({[class]=layout},
+                    {[class]=discovery.layout[class]}) then pending[class]=true end
+            end
+            for class in next,discovery.layout do
+                if not state.layout[class] then pending[class]=true end
+            end
+            local loaded,err=Source.Inspect(state.loaded_source)
+            if not loaded then return nil,err end
+            report.file_facts={before=card_file_facts(state,loaded,pending),
+                after=card_file_facts(state,discovery.scan,pending)}
+            local safe,why=require("SpellHotReload.Apply.FileApply").CheckTopLevel(report)
+            if not safe then return nil,why end
+        end
+    end
     return report
 end
 
@@ -636,6 +671,9 @@ function M.Select(report, keys, function_keys)
             return fail("unsupported", "unknown or duplicate current card", report.base, key)
         end
         if report.location and (key ~= report.location.key or report.by_key[key].pending) then
+            if key==report.location.key and report.by_key[key].blocked then
+                return nil,report.by_key[key].blocked
+            end
             return fail("ambiguous", "only the proven current root may be selected", report.base, key)
         end
         if report.file_location and report.by_key[key].pending then
@@ -708,7 +746,7 @@ function M.Select(report, keys, function_keys)
                     end
                     result.publications[#result.publications + 1] = {
                         unit_key = key, target = item.previous.card, key = name,
-                        before = cb.previous.fn, value = cb.fn, callback = cb,
+                        before = cb.previous.fn, value = cb.fn, callback = cb, deletion=cb.deletion,
                     }
                 end
             end

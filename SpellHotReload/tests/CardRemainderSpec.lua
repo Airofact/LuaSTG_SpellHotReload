@@ -73,7 +73,7 @@ function M.run()
         function f.report(bytes,scope)
             local base=f.capture.snapshot
             f.bytes=bytes;f.live.snapshot=base;f.live.content=bytes
-            local discovery=must(f.driver:Discover(f.entry.file,bytes,{session_id=base.session_id,
+            local discovery=must(f.driver:DiscoverPublished(f.entry.file,bytes,assert(require("SpellHotReload.Adapters.Card.CardVersions").Publication(base)),{session_id=base.session_id,
                 registry_entry=f.entry,loaded_source=base.loaded_source,published_units=base,
                 base_revision=base.revision,candidate_generation=7})).snapshot
             if scope=="current" then

@@ -64,7 +64,7 @@ function M.run(opts)
         local function discovery(candidate)
             local base=capture.snapshot
             live.content=candidate
-            return must(driver:Discover(entry.file,candidate,{session_id=base.session_id,
+            return must(driver:DiscoverPublished(entry.file,candidate,assert(require("SpellHotReload.Adapters.Card.CardVersions").Publication(base)),{session_id=base.session_id,
                 registry_entry=entry,loaded_source=base.loaded_source,published_units=base,
                 base_revision=base.revision,candidate_generation=7})).snapshot
         end

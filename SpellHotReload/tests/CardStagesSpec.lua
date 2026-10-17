@@ -84,7 +84,7 @@ function M.run()
         local base=capture.snapshot
         local bytes=source(7,15)
         local driver=Driver.New();assert(driver:RegisterDiscovery(Card))
-        local discovery=must(driver:Discover(entry.file,bytes,{
+        local discovery=must(driver:DiscoverPublished(entry.file,bytes,assert(require("SpellHotReload.Adapters.Card.CardVersions").Publication(base)),{
             session_id=base.session_id,registry_entry=entry,loaded_source=base.loaded_source,
             base_revision=base.revision,published_units=base,candidate_generation=3}))
         local initial={class_key="K",card=_editor_class.K.cards[1],slot=1,

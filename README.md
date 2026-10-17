@@ -237,7 +237,12 @@ end
 `CardVersions.Publication` 从当前发布版本提取原 owner、定义和版本，不使用上次未采用的候选。
 协调结果只提供对应/删除等证据，不能进入 SelectDiscovery 冒充候选，也不能发布或推进版本。
 本阶段只为唯一命名且保持形状的 Card 生成对应证据；重复/改名/无法对应及 helper 绑定保留未解决项。
-可选回调删除仅产出带旧定义版本的 tombstone，实际默认恢复和事务发布继续由业务准备处理。
+可选回调删除现由准备流程消费 tombstone：原 owner、实际旧定义与版本、候选卡对应必须一致，
+才能把保存的默认函数送入原有事务；最终 Guard 在缓存失效前后复验同一证据。
+成功事务才推进回调版本；再次扫描已删除定义不会重复删除，恢复源码按实际发布版本重新比较。
+无法证明的删除保持 pending；整卡或整类消失保留活体。零 Card 命中的文件只做完整剩余核对，
+不伪造候选单元、提交收据或完成记录，也不通过这条只读路径发布 helper。
+helper 的保留/更新与依赖仍由实际发布图和统一选择检查；没有绑定清空或函数删除执行器。
 
 适配器仅实现当前 `ContractVersion = 4` 的 `Match / Reconcile / Locate / Inject / Commit`。
 Driver 仅注册 discovery Id，不再提供载体路由或 `Plan / Commit / Apply / Restart`。
@@ -297,8 +302,9 @@ regions; repeated unanchored regions stay ambiguous. An insertion does not make
 all following unchanged statements pending. Changed rows keep independent old
 and candidate byte locations. Reordered effects are not accepted as equivalent.
 Unknown top-level edits still refuse file Apply, and source alignment grants no
-runtime ownership, publication or deletion permission. Old-only adapter records
-and semantic deletion reconciliation remain a later stage.
+runtime ownership, publication or deletion permission. Actual old-only records
+now enter reconciliation; callback deletion additionally requires its exact
+owner/version tombstone, fresh location and the existing atomic transaction.
 
 `LuaSyntaxSpec.lua` and `StatementAlignmentSpec.lua` exercise grammar boundaries,
 invalid-source refusal, ordered changes, duplicates and large sparse inputs.
