@@ -13,9 +13,9 @@
 --------------------------------------------------------------------------------
 
 local lstg_debug = require("lib.Ldebug")
-local Plugin = require("SpellHotReload.Plugin")
-local View = require("SpellHotReload.View")
-local Loader = require("SpellHotReload.GeneratedBossLoader")
+local Plugin = require("SpellHotReload.Runtime.Plugin")
+local View = require("SpellHotReload.UI.View")
+local LoadHook = require("SpellHotReload.Load.LoadHook")
 
 local plugin = nil
 local view = nil
@@ -29,9 +29,21 @@ local function ensure_loaded()
 	view:initialize(plugin)
 	plugin:SetView(view)
 	lstg_debug.addView("lstg.debug.SpellHotReload", view)
-	-- Intercept lstg.DoFile before the mod loads so Boss-file top-level locals
-	-- are captured during normal load (the "file-level upvalue collection").
-	Loader.InstallDoFileHook(plugin:GetRegistry())
+	-- Keep the existing watch scope, but capture ALL top-level locals and the
+	-- complete reload verdict from one normal execution, not the legacy hook.
+	local ok, reason = LoadHook.Install(lstg, function(file, entry)
+		return plugin:AdoptLoad(file, entry)
+	end, { select = LoadHook.BossFile })
+	if not ok then error("SpellHotReload load hook: " .. tostring(reason)) end
+	-- THlib's final GameExit is already defined here. FrameFunc and the engine
+	-- can both call it: our cleanup is idempotent, but the previous callback must
+	-- still run on every invocation with its arguments/results/errors unchanged.
+	local original_GameExit = GameExit
+	GameExit = function(...)
+		LoadHook.Release(lstg)
+		plugin:Release("game exit")
+		if original_GameExit then return original_GameExit(...) end
+	end
 end
 
 lstg.plugin.RegisterEvent("afterTHlib", "dims.debug.spellHotReload", 0, function()

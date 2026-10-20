@@ -5,7 +5,7 @@
 --- and LuaJIT with the game directory as cwd (see tests/Run.lua).
 --------------------------------------------------------------------------------
 
-local LC = require("SpellHotReload.LoadCapture")
+local LC = require("SpellHotReload.Load.LoadCapture")
 
 local M = {}
 local passed, failed = 0, 0
@@ -159,11 +159,17 @@ end
 do
     local result, err, stage = LC.Run("local x = = 1", "@spec:badcompile")
     eq(result, nil, "compile failure: no result")
-    eq(stage, "compile", "compile failure: staged as compile")
-    check(tostring(err):find("compile failed", 1, true) == 1, "compile failure: message")
+    eq(stage, "analyze", "syntax failure: refused before compilation")
+    check(tostring(err):find("Lua syntax:", 1, true) == 1, "syntax failure: message")
 end
 
 do
+    local parameters={}
+    for i=1,201 do parameters[i]="p"..i end
+    local invalid,why,phase=LC.Run("function LIMIT("..table.concat(parameters,",")..") end")
+    eq(invalid,nil,"compiler restriction has no result")
+    eq(phase,"compile","compiler limit still enforced")
+    check(tostring(why):find("compile failed",1,true)==1,"compiler reason retained")
     local result, err, stage = LC.Run("local a = 1\nerror('boom')", "@spec:badrun")
     eq(result, nil, "runtime failure: no result")
     eq(stage, "run", "runtime failure: staged as run")

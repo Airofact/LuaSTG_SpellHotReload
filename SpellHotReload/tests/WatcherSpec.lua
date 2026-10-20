@@ -31,7 +31,7 @@ end
 
 local FS_MODULE = "lstg.FileSystemWatcher"
 local ACTION_MODULE = "lstg.FileSystemWatcher.FileAction"
-local WATCHER_MODULE = "SpellHotReload.Watcher"
+local WATCHER_MODULE = "SpellHotReload.Runtime.Watcher"
 
 ---Run `fn` with stubbed engine modules and globals, then restore everything.
 ---@param entries table[] entries as returned by lstg.FileManager.EnumFiles
@@ -69,11 +69,11 @@ end
 --------------------------------------------------------------------------------
 
 local function test_dismiss_stops_drift()
-    local Store = require("SpellHotReload.SnapshotStore")
+    local Store = require("SpellHotReload.Runtime.SnapshotStore")
     local entries = { { "A_Boss.lua", false }, { "B_Boss.lua", false } }
 
     with_stubs(entries, function()
-        local Watcher = require("SpellHotReload.Watcher")
+        local Watcher = require("SpellHotReload.Runtime.Watcher")
         local store = Store.New()
         local disk = { ["A_Boss.lua"] = "draft-a", ["B_Boss.lua"] = "draft-b" }
         local ready = {}
