@@ -1,13 +1,20 @@
--- Card planning plus runtime-owned restart rules; synthetic objects. Existing
--- VersionedApply/Monitor suites cover genuine first-load production transactions.
--- No Plugin receiver/cache, candidate execution, join, cell write or publication.
+-- Real common planning/inspection and runtime-owned frozen restart rules.
+-- Miniature first loads only. No engine/readiness/performance claim; LuaJIT target.
 local M={}
+local serial=0
 function M.run()
     local Card=require("SpellHotReload.Adapters.Card.Card")
+    local Local=require("SpellHotReload.Adapters.Local.Local")
     local Target=require("SpellHotReload.Adapters.Card.CardTarget")
     local Cards=require("SpellHotReload.Adapters.Card.CardVersions")
     local Binding=require("SpellHotReload.Adapters.Card.PracticeBinding")
     local Restart=require("SpellHotReload.Runtime.CurrentRestart")
+    local Load=require("SpellHotReload.Load.AnchorLoad")
+    local Source=require("SpellHotReload.Source.FileAnalysis")
+    local Compose=require("SpellHotReload.Source.Compose")
+    local Anchor=require("SpellHotReload.Load.Anchor")
+    local Guard=require("SpellHotReload.Apply.CommitCheck")
+    local FileApply=require("SpellHotReload.Apply.FileApply")
     local passed,failed,failures=0,0,{}
     local function check(v,label)
         if v then passed=passed+1 else failed=failed+1;failures[#failures+1]=label end
@@ -17,316 +24,410 @@ function M.run()
         if type(value)=="table" then value=rawget(value,"message") end
         check(type(value)=="string" and value:find(part,1,true)~=nil,label)
     end
+    local function must(v,e) assert(v,type(e)=="table" and rawget(e,"message") or e);return v,e end
     local function reject(fn,part,label)
-        local v,e=fn();eq(v,nil,label.." refused");has(e,part,label.." reason")
+        local v,e=fn();eq(v,nil,label.." refused");has(e,part,label.." reason");return e
     end
     local function copy(v) local r={};for k,x in next,v do r[k]=x end;return r end
-    local services={Resolve=Target.Resolve,Check=Target.Check,LocateDiscovery=Target.LocateDiscovery,
-        CheckDiscovery=Target.CheckDiscovery,CompareLocated=Cards.CompareLocated,
-        Select=Cards.Select,Describe=Cards.Describe,Restart=Restart.Handoff,IsReplay=Binding.IsReplay}
-    local old_setup,old_join=debug.setupvalue,debug.upvaluejoin
-    local old_jit=rawget(_G,"jit")
-    local trace={}
-    local function mark(v) trace[#trace+1]=v end
-    local key="card:1:K:2"
-    local anchor=function() end
-    local card={name="Live",init=function() return 11 end}
-    local placeholder={is_combat=false}
-    local list={placeholder,card}
-    local class={cards=list}
-    local classes={K=class}
-    local entry={anchor=anchor,reloadable=true}
-    local snapshot={units={[key]={callbacks={init={fn=card.init}}}}}
-    local capture={snapshot=snapshot,ownership={{class_key="K",class=class,list=list,slots={placeholder,card}}}}
-    local initial={class_key="K",slot=2,card=card,name="Live",mode="practice",
-        include_previous=true,names={"","Live"}}
-    local target={file="Runtime_Boss.lua",session_id="runtime:1",entry=entry,classes=classes,
-        class_key="K",class=class,list=list,card=card,slot=2,name="Live",include_previous=true,key=key}
-    local proof={}
-    local live={binding=initial,classes=classes,entry=entry,snapshot=snapshot,session_id=target.session_id}
-    local common={file="Runtime_Boss.lua",content="synthetic candidate"}
-    local Driver=require("SpellHotReload.Pipeline.Driver")
-    local driver=Driver.New();assert(driver:RegisterDiscovery(Card))
-    local discovery=assert(driver:Discover(common.file,
-        "_editor_class['K'].cards={}\n_tmp_sc=boss.card.New('Live',1,2,3,4)\nfunction _tmp_sc:init() end\ntable.insert(_editor_class['K'].cards,_tmp_sc)"))
-    common=discovery.snapshot.common
-    local discovered=discovery.snapshot.by_key["card:K"]
-    local unit=discovered.unit
-    local location,report,selection={match="identity",target=target,
-        discovery=discovery.snapshot,entry=discovered},{},{}
-    local model={selected={key}}
-    local function refresh() mark("refresh");return live end
-    local function refusal(value,err,part,label)
-        eq(value,nil,label.." refused");has(err,part,label.." reason")
+    local globals={"boss","_editor_class","_tmp_sc","_runtime_runs","jit","lstg"}
+    local saved={};for _,name in ipairs(globals) do saved[name]=rawget(_G,name) end
+    local modules={"lstg.FileSystemWatcher","lstg.FileSystemWatcher.FileAction",
+        "SpellHotReload.Runtime.Watcher","SpellHotReload.Runtime.Plugin"}
+    local loaded={};for _,name in ipairs(modules) do loaded[name]=package.loaded[name] end
+    package.loaded[modules[1]],package.loaded[modules[2]]={},{}
+    package.loaded[modules[3]],package.loaded[modules[4]]=nil,nil
+    local Plugin=require("SpellHotReload.Runtime.Plugin")
+    local old_set,old_join=debug.setupvalue,debug.upvaluejoin
+    local old_capture,old_replay,old_handoff=Binding.CaptureCurrent,Binding.IsReplay,Restart.Handoff
+    local plugins={}
+    -- Scoped observations/refusals always restore actual methods, even on throw.
+    local function patched(patches,body)
+        for _,row in ipairs(patches) do row[4]=row[1][row[2]];row[1][row[2]]=row[3] end
+        local ok,err=pcall(body)
+        for i=#patches,1,-1 do local row=patches[i];row[1][row[2]]=row[4] end
+        if not ok then error(err,0) end
     end
-    local ok,problem=pcall(function()
-        local frozen=Card.FreezeBinding(initial)
-        eq(frozen.card,card,"binding keeps live identity")
-        eq(frozen.include_previous,true,"binding keeps restart flag")
-        eq(frozen.names==initial.names,false,"binding copies names")
-        initial.names[2]="Changed"
-        eq(frozen.names[2],"Live","binding does not alias caller names")
-        initial.names[2]="Live"
-        local minimal=Card.FreezeBinding({card=card,include_previous=false})
-        eq(minimal.names,nil,"binding missing names stays nil")
-        eq(minimal.name,nil,"binding missing name stays nil")
-        eq(minimal.include_previous,false,"binding false stays false")
-        Target.Resolve=function(i,c,p)
-            mark("resolve");eq(i,initial,"initial binding explicit");eq(c,capture,"capture explicit")
-            eq(p,proof,"resolve proof explicit");return target
-        end
-        Target.Check=function(t,b,c,l)
-            mark("check");eq(t,target,"resolved target reused");eq(b,initial,"fresh binding consumed")
-            eq(c,capture,"check capture");eq(l,live,"fresh context consumed");return true
-        end
-        Target.LocateDiscovery=function(t,s,b,c,l)
-            mark("locate");eq(s,discovery.snapshot,"complete discovery consumed");return location
-        end
-        Cards.CompareLocated=function(s,p,b,c,l)
-            mark("compare");eq(s,snapshot,"actual published snapshot");eq(p,location,"proved correspondence")
-            return report
-        end
-        Cards.Select=function(r,keys)
-            mark("select");eq(r,report,"full report consumed");eq(#keys,1,"only one root chosen")
-            eq(keys[1],key,"published key chosen");return selection
-        end
-        Cards.Describe=function(s) mark("describe");eq(s,selection,"prepared selection described");return model end
-        Target.CheckDiscovery=function(p,b,c,l)
-            mark("recheck");eq(p,location,"same location rechecked");eq(l,live,"final fresh context");return true
-        end
-        debug.setupvalue=function() error("premature cell write") end
-        debug.upvaluejoin=function() error("premature join") end
-        _G.jit={flush=function() error("premature cache flush") end}
-        local prepared=assert(Card.PrepareVersioned(capture,discovery,initial,proof,refresh))
-        eq(table.concat(trace,","),"resolve,refresh,check,locate,compare,select","preparation order retained")
-        eq(prepared.target,target,"prepared target");eq(prepared.live,live,"prepared fresh view")
-        eq(prepared.location,location,"prepared correspondence");eq(prepared.selection,selection,"prepared selection")
-        trace={}
-        local display,fresh=Card.InspectPrepared(prepared,capture,refresh)
-        eq(display,model,"caller receives presentation");eq(fresh,live,"caller receives final live view")
-        eq(table.concat(trace,","),"describe,refresh,recheck","inspection revalidates after describe")
-        for _,fault in ipairs({"resolve","refresh","check","locate","compare","select"}) do
-            trace={}
-            local old
-            local err=setmetatable({}, {__tostring=function() error("unsafe error formatting") end})
-            if fault=="refresh" then
-                reject(function() return Card.PrepareVersioned(capture,discovery,initial,proof,function() return nil,err end) end,
-                    "versioned preflight: operation refused","refresh error")
-            else
-                local object,method=Target,({resolve="Resolve",check="Check",locate="LocateDiscovery"})[fault]
-                if not method then object,method=Cards,({compare="CompareLocated",select="Select"})[fault] end
-                old=object[method];object[method]=function() mark("failure");return nil,err end
-                local value,why=Card.PrepareVersioned(capture,discovery,initial,proof,refresh)
-                object[method]=old
-                refusal(value,why,(fault=="check" or fault=="resolve") and "locate:" or fault..":",fault.." error")
-                eq(trace[#trace],"failure",fault.." stops pipeline")
-            end
-        end
-        local old_describe=Cards.Describe
-        Cards.Describe=function() return nil,{message="describe refused"} end
-        reject(function() return Card.InspectPrepared(prepared,capture,refresh) end,"describe:","describe failure")
-        Cards.Describe=old_describe
-        local v,e=Card.InspectPrepared(prepared,capture,function() return nil,{message="fresh refused"} end)
-        refusal(v,e,"inspection: fresh refused","inspection refresh failure")
-        local old_check=Target.CheckDiscovery
-        Target.CheckDiscovery=function() return nil,{message="target changed"} end
-        v,e=Card.InspectPrepared(prepared,capture,refresh)
-        Target.CheckDiscovery=old_check
-        refusal(v,e,"inspection: target changed","inspection final target failure")
-
-        local run=Restart.Freeze(target,capture)
-        eq(run.kind,"versioned-card-restart","run tagged for controller retry")
-        for _,field in ipairs({"file","session_id","entry","classes","class_key","class","list","card","slot","name","include_previous","key"}) do
-            eq(run[field],target[field],"run frozen "..field)
-        end
-        eq(run.anchor,anchor,"anchor fixed");eq(run.raw_name,"Live","raw live name fixed")
-        eq(run.capture,capture,"capture fixed")
-        eq(run.snapshot,nil,"uncommitted run has no installed receipt")
-        assert(Restart.BindReceipt(run,{snapshot=snapshot},capture)) -- synthetic no-op receipt
-        local restart_live={session_id=target.session_id,entry=entry,classes=classes}
-        local restarts=0
+    local defaults={}
+    for _,name in ipairs({"before","init","frame","render","beforedel","del","after"}) do defaults[name]=function() end end
+    local function source(n)
+        return table.concat({"-- Generated by LuaSTG Editor Sharp","local state=4",
+            "local function helper(n) return state+n+"..n.." end","_runtime_runs=_runtime_runs+1",
+            "_editor_class['K'].cards={boss.move.New(0,0,1)}",
+            "_tmp_sc=boss.card.New('Live',1,2,3,100)",
+            "function _tmp_sc:init(n) return helper(n)+"..(6+n).." end",
+            "table.insert(_editor_class['K'].cards,_tmp_sc)"},"\n")
+    end
+    local function fixture(n)
+        serial=serial+1;_runtime_runs=0
+        debug.setupvalue,debug.upvaluejoin=old_set,old_join;jit=saved.jit
+        lstg={var={},Log=function() end};_editor_class={K={}}
+        boss={move={New=function() return {is_combat=false} end},
+            card={_default_card=defaults,New=function(name)
+                local card={name=name,is_combat=true};for k,fn in next,defaults do card[k]=fn end;return card
+            end}}
+        local f={classes=_editor_class,reads=0,kernels=0}
+        f.p=Plugin.New();plugins[#plugins+1]=f.p
+        f.entry=must(Load.Capture(source(0),{name="Runtime_Boss.lua"}));must(f.entry.reloadable,f.entry.reason)
+        f.entry.file="Runtime_Boss.lua";must(f.p:AdoptLoad(f.entry.file,f.entry))
+        f.capture=must(f.p:GetVersions(f.entry.file));f.base=f.capture.snapshot
+        f.class=f.classes.K;f.list=f.class.cards;f.card=f.list[2];f.placeholder=f.list[1]
+        f.initial={class_key="K",slot=2,card=f.card,name="Live",mode="practice",
+            include_previous=true,names={"","Live"}}
+        f.disk=source(n or 1)
+        -- Byte-identical candidates are suppressed; no-op here keeps definitions unchanged.
+        if n==0 then f.disk=f.disk.."\n-- runtime no-op candidate" end
+        f.p._activated,f.p._supported,f.p._sandbox_ok=true,true,true
+        f.p._activation_attempted=true
+        f.p._watcher={ReadFile=function() f.reads=f.reads+1;return f.disk end}
+        f.p._store:SetAccepted(f.entry.file,source(0),"baseline")
+        f.candidate=f.p._store:BeginCandidate(f.entry.file,7,"runtime")
+        must(f.p._store:RecordFirstRead(f.entry.file,f.candidate.generation,f.disk,1))
+        must(f.p._store:VerifyStable(f.entry.file,f.candidate.generation,f.disk,2,1))
+        f.candidate=must(f.p._store:GetCandidate(f.entry.file))
+        Binding.CaptureCurrent=function() return f.initial end
         Binding.IsReplay=function() return false end
+        Restart.Handoff=function() end
+        local kernel=f.p._commit.Commit
+        f.p._commit.Commit=function(self,...)
+            f.kernels=f.kernels+1
+            local receipt,err=kernel(self,...);f.receipt=receipt;return receipt,err
+        end
+        function f.discovery()
+            return must(f.p:_DiscoverVersioned(f.entry.file,f.candidate,f.capture,must(Source.Build(f.disk))))
+        end
+        function f.prepare(discovery)
+            return f.p:_PrepareVersioned(f.entry.file,f.candidate,f.capture,discovery or f.discovery(),f.initial,"current")
+        end
+        return f
+    end
+    local function fragment(prepared,owner)
+        for _,row in ipairs(prepared.driver_prepared.entries) do if row.owner==owner then return row.fragment end end
+        error("missing genuine owner fragment")
+    end
+    local function no_publication(f,label)
+        eq(f.capture.snapshot,f.base,label.." actual snapshot")
+        eq(f.card.init,f.base.owners[2].state.units["card:1:K:2"].callbacks.init.fn,label.." raw callback")
+        eq(Anchor.Get(f.entry,"helper"),f.base.owners[1].state.by_name.helper.fn,label.." helper cell")
+        eq(f.kernels,0,label.." no kernel");eq(_runtime_runs,1,label.." no candidate replay")
+    end
+    local function committed(f)
+        local prepared=must(f.prepare())
+        eq(#prepared.driver_prepared.dependencies.safe_roots,1,"restart fixture root safe")
+        eq(#prepared.driver_prepared.dependencies.blocked_roots,0,"restart fixture not blocked")
+        local run=must(Restart.Freeze(prepared.target,f.capture))
+        local second=must(Restart.Freeze(prepared.target,f.capture))
+        eq(run.snapshot,nil,"uncommitted run has no installed snapshot")
+        eq(run.receipt,nil,"uncommitted run has no receipt")
+        eq(run.state,"prepared","run frozen before publication")
+        local ran,receipt,err=f.p._commit:Run(function(token) return f.p:_CommitVersioned(token,prepared) end)
+        eq(ran,true,"trusted common commit scope");must(receipt,err)
+        eq(receipt.kind,"SpellHotReload.FileCommit.Receipt","real restart receipt")
+        must(Restart.BindReceipt(run,receipt,f.capture));must(Restart.BindReceipt(second,receipt,f.capture))
+        return run,second,prepared
+    end
+    local traps=0
+    local hostile=setmetatable({},{__tostring=function() traps=traps+1;error("unsafe error formatting") end})
+    local ok,problem=pcall(function()
+        must(Anchor.Supported(Compose.Capability(debug)))
+        local f=fixture()
+        local frozen=Card.FreezeBinding(f.initial)
+        eq(frozen.card,f.card,"binding keeps live identity")
+        eq(frozen.include_previous,true,"binding keeps restart flag")
+        check(frozen.names~=f.initial.names,"binding copies names")
+        f.initial.names[2]="Changed";eq(frozen.names[2],"Live","binding names do not alias")
+        f.initial.names[2]="Live"
+        local minimal=Card.FreezeBinding({card=f.card,include_previous=false})
+        eq(minimal.names,nil,"missing names stays nil");eq(minimal.name,nil,"missing name stays nil")
+        eq(minimal.include_previous,false,"false restart flag stays false")
+
+        local trace={};local discovery=f.discovery();local prepared
+        local function observe(object,name,label)
+            local original=object[name]
+            return {object,name,function(...) trace[#trace+1]=label;return original(...) end}
+        end
+        patched({observe(f.p,"_FreshVersioned","refresh"),observe(Target,"Resolve","resolve"),
+            observe(Target,"LocateFileDiscovery","file-locate"),observe(Target,"LocateDiscovery","locate"),
+            observe(Cards,"Compare","compare"),observe(Cards,"Resolve","select"),observe(Cards,"Prepare","prepare"),
+            {debug,"setupvalue",function() error("premature cell write") end},
+            {debug,"upvaluejoin",function() error("premature join") end},
+            {_G,"jit",{flush=function() error("premature cache flush") end}}},function()
+            prepared=must(f.prepare(discovery))
+        end)
+        local order={};for i,label in ipairs(trace) do if not order[label] then order[label]=i end end
+        local prior=0
+        for _,label in ipairs({"refresh","resolve","file-locate","locate","compare","select","prepare"}) do
+            check(order[label] and order[label]>prior,"real preparation order "..label);prior=order[label] or prior
+        end
+        eq(#prepared.driver_prepared.dependencies.safe_roots,1,"real prepared Current root")
+        eq(#prepared.driver_prepared.dependencies.blocked_roots,0,"no hidden blocked Current")
+        eq(prepared.operation.source,discovery.source,"complete source reused")
+        eq(prepared.target,prepared.operation.card.target,"operation owns frozen target")
+        eq(prepared.location,fragment(prepared,Card).card_runtime.current_location,"actual correspondence returned")
+        eq(prepared.live.capture,f.capture,"original capture returned")
+        eq(Target.Check(prepared.target,f.initial,f.capture,prepared.live),true,"explicit target Check still valid")
+        eq(#fragment(prepared,Local).cell_writes,1,"real helper preparation")
+        eq(#fragment(prepared,Card).raw_writes,1,"real callback preparation")
+        no_publication(f,"preparation")
+
+        -- Hard refusals stop the actual chain; never stub a retired facade.
+        for _,site in ipairs({{Target,"Resolve"},{Target,"LocateFileDiscovery"},
+            {Target,"LocateDiscovery"},{Cards,"Compare"},{Cards,"Prepare"}}) do
+            f=fixture();discovery=f.discovery()
+            local reached,later=0,0;local patches={}
+            patches[1]={site[1],site[2],function() reached=reached+1;return nil,hostile end}
+            if site[2]~="Prepare" then
+                local original=Cards.Prepare
+                patches[#patches+1]={Cards,"Prepare",function(...) later=later+1;return original(...) end}
+            end
+            patched(patches,function()
+                local value,err=f.prepare(discovery)
+                eq(value,nil,site[2].." stops preparation")
+                if site[2]=="Resolve" or site[2]=="Prepare" then
+                    eq(err,hostile,site[2].." direct error identity")
+                else
+                    eq(err.phase,"resolve",site[2].." normalized phase")
+                    eq(err.code,"ownership",site[2].." normalized code")
+                    eq(err.message,"owner resolve refused without diagnostic",site[2].." normalized message")
+                end
+            end)
+            eq(reached,1,site[2].." refusal reached once");eq(later,0,site[2].." no later Card preparation")
+            no_publication(f,site[2].." refusal")
+        end
+        f=fixture();discovery=f.discovery()
+        local roots=0
+        patched({{f.p,"_FreshVersioned",function() return nil,hostile end},
+            {Card,"CurrentRoot",function() roots=roots+1;error("fresh failure must stop root") end}},function()
+            local value,err=f.prepare(discovery)
+            eq(value,nil,"initial fresh refusal");eq(err,hostile,"fresh error identity")
+        end)
+        eq(roots,0,"fresh failure stops before root");no_publication(f,"fresh refusal")
+        f=fixture();discovery=f.discovery()
+        local reads=0;local fresh=f.p._FreshVersioned
+        patched({{f.p,"_FreshVersioned",function(self,...)
+            reads=reads+1;local live,err=fresh(self,...)
+            if live and reads==2 then live.binding=copy(live.binding);live.binding.card={} end
+            return live,err
+        end}},function()
+            local value,err=f.prepare(discovery)
+            eq(value,nil,"fresh binding drift refused by real locate")
+            eq(err.phase,"locate","fresh drift phase")
+        end)
+        eq(reads,2,"second physical read really drifted");no_publication(f,"fresh binding drift")
+        f=fixture();discovery=f.discovery()
+        local blocked_reason={phase="inject",code="unsupported",message="selected callback refused"}
+        patched({{Cards,"Resolve",function() return nil,blocked_reason end}},function()
+            local blocked=must(f.prepare(discovery))
+            local deps=blocked.driver_prepared.dependencies
+            eq(#deps.safe_roots,0,"refused callback root not safe")
+            eq(#deps.blocked_roots,1,"exact callback root blocked")
+            eq(deps.blocked_roots[1].reason,blocked_reason,"blocked reason retained")
+            for _,row in ipairs(blocked.driver_prepared.entries) do
+                eq(#row.fragment.joins+#row.fragment.cell_writes+#row.fragment.raw_writes,0,"blocked owner has no actions")
+                eq(row.fragment.proposed_group,row.fragment.base_group,"blocked owner retains actual group")
+            end
+        end)
+        no_publication(f,"blocked selection")
+
+        -- Inspect uses real descriptions then final Fresh/Proof/Guard, no commit.
+        for _,fault in ipairs({"describe","fresh","guard","proof"}) do
+            f=fixture();local described,checks,proofs,late_reads=0,0,0,0
+            local describe,read,guard,proof=Card.Describe,f.p._FreshVersioned,Guard.Check,FileApply.CheckProof
+            local old=f.card.init
+            patched({{Card,"Describe",function(...)
+                described=described+1
+                if fault=="describe" then return nil,{message="describe refused"} end
+                local result,err=describe(...)
+                if fault=="guard" then f.card.init=function() end end
+                return result,err
+            end},{f.p,"_FreshVersioned",function(self,...)
+                if described>0 then
+                    late_reads=late_reads+1
+                    if fault=="fresh" then return nil,{message="fresh refused"} end
+                end
+                local live,err=read(self,...)
+                if described>0 and fault=="proof" and live then live.generation=live.generation+1 end
+                return live,err
+            end},{Guard,"Check",function(...) checks=checks+1;return guard(...) end},
+                {FileApply,"CheckProof",function(...) proofs=proofs+1;return proof(...) end}},function()
+                local value,err=f.p:InspectCandidate(f.entry.file)
+                eq(value,nil,fault.." inspection refused")
+                has(err,fault=="describe" and "describe: describe refused"
+                    or fault=="fresh" and "inspection: fresh refused" or "inspection:",fault.." diagnostic")
+            end)
+            f.card.init=old
+            eq(described,1,fault.." real Card Describe seam reached")
+            eq(late_reads,fault=="describe" and 0 or 1,fault.." final Fresh boundary")
+            eq(proofs,(fault=="guard" or fault=="proof") and 1 or 0,fault.." proof boundary")
+            eq(checks,fault=="guard" and 1 or 0,fault.." exact Guard boundary")
+            eq(f.p:GetCandidateInspection(f.entry.file,f.initial),nil,fault.." no cached display")
+            no_publication(f,fault.." inspection")
+        end
+
+        -- Real Plugin dispatch, detached scalar display, one common receipt.
+        f=fixture();local calls={};local patches={};local observed_prepared
+        for _,site in ipairs({{Card,"FreezeBinding"},{Card,"CurrentRoot"},{Card,"Locate"},{Card,"Inject"},
+            {Local,"Commit"},{Card,"Commit"},{Local,"Describe"},{Card,"Describe"},
+            {Card,"InspectionBindingMatches"},{Restart,"Freeze"},{Restart,"BindReceipt"},{Restart,"Request"}}) do
+            local object,name=site[1],site[2];local original=object[name]
+            local label=(object==Local and "Local." or object==Restart and "Restart." or "Card.")..name
+            patches[#patches+1]={object,name,function(...)
+                calls[label]=(calls[label] or 0)+1
+                if name=="Request" then
+                    local run,live=...
+                    eq(run.receipt,f.receipt,"dispatch uses real common receipt")
+                    eq(live.entry,f.entry,"dispatch frozen lifecycle entry")
+                    eq(f.p._restart_active,true,"busy spans real Request")
+                end
+                return original(...)
+            end}
+        end
+        local prepare=f.p._PrepareVersioned
+        patches[#patches+1]={f.p,"_PrepareVersioned",function(self,...)
+            local value,err=prepare(self,...);observed_prepared=value;return value,err
+        end}
+        local restarts=0
         Restart.Handoff=function(k,n,c,s,previous)
-            restarts=restarts+1
-            eq(k,"K","restart frozen class");eq(n,"Live","restart frozen name")
-            eq(c,card,"restart frozen card");eq(s,2,"restart frozen slot")
-            eq(previous,true,"restart frozen previous flag")
+            restarts=restarts+1;eq(k,"K","dispatch frozen class");eq(n,"Live","dispatch frozen name")
+            eq(c,f.card,"dispatch frozen card");eq(s,2,"dispatch frozen slot");eq(previous,true,"dispatch previous flag")
         end
-        trace={}
-        eq(Restart.Request(run,restart_live),true,"runtime performs committed request")
-        eq(table.concat(trace,","),"","restart has no source service/refresh path")
-        eq(restarts,1,"one handoff")
+        patched(patches,function()
+            patched({{f.p._commit,"Run",function() error("inspection opens no UI commit scope") end}},function()
+                local display=must(f.p:InspectCandidate(f.entry.file))
+                eq(display.target.key,"card:1:K:2","actual selected target presented")
+                eq(observed_prepared.operation.mode,"inspect","shared prepare uses inspection mode")
+                eq(#observed_prepared.driver_prepared.dependencies.safe_roots,1,"inspection root safe")
+                eq(#observed_prepared.driver_prepared.dependencies.blocked_roots,0,"inspection not silently blocked")
+                eq(display.cards[1].selected,true,"actual Card selection presented")
+                eq(display.functions[1].selected,true,"actual helper selection presented")
+                display.target.name="mutated";display.cards[1].selected=false
+                local cached=must(f.p:GetCandidateInspection(f.entry.file,f.initial))
+                eq(cached.target.name,"Live","presentation detached from internal cache")
+                eq(cached.cards[1].selected,true,"nested presentation detached")
+                cached.functions[1].selected=false
+                eq(must(f.p:GetCandidateInspection(f.entry.file,f.initial)).functions[1].selected,true,"each cache return detached")
+                no_publication(f,"real inspection")
+            end)
+            local result=f.p:ApplyFromUI()
+            has(result,"applied","real Plugin dispatch applies")
+            eq(observed_prepared.operation.mode,"current","same prepare entry uses Current mode")
+            eq(f.receipt.kind,"SpellHotReload.FileCommit.Receipt","dispatch common receipt")
+            eq(f.receipt.changed,true,"dispatch real definitions changed")
+            eq(f.capture.snapshot,f.receipt.snapshot,"dispatch installs actual common snapshot")
+            eq(f.capture.snapshot.revision,1,"dispatch one revision")
+            eq(f.kernels,1,"dispatch one common kernel")
+            eq(f.card:init(1),13,"dispatch actual helper and callback update")
+            eq(restarts,1,"dispatch one handoff")
+            eq(f.p._pending_restart_run,nil,"successful dispatch clears pending")
+            eq(f.p._restart_active,false,"successful dispatch clears busy")
+            eq(_runtime_runs,1,"dispatch never executes candidate source")
+        end)
+        for label,count in next,calls do check(count>0,"actual dispatch observes "..label) end
+        for _,label in ipairs({"Local.Commit","Card.Commit","Local.Describe","Card.Describe",
+            "Card.FreezeBinding","Card.CurrentRoot","Card.Locate","Card.Inject","Card.InspectionBindingMatches",
+            "Restart.Freeze","Restart.BindReceipt","Restart.Request"}) do
+            check((calls[label] or 0)>0,"required production consumer "..label)
+        end
+
+        f=fixture(0)
+        local run,second,p=committed(f)
+        eq(run.kind,"versioned-card-restart","run tagged for workflow retry")
+        for _,field in ipairs({"file","session_id","entry","classes","class_key","class","list","card","slot","name","include_previous","key"}) do
+            eq(run[field],p.target[field],"run freezes "..field)
+        end
+        eq(run.anchor,f.entry.anchor,"anchor fixed");eq(run.raw_name,"Live","raw name fixed")
+        eq(run.capture,f.capture,"actual capture fixed")
+        eq(run.receipt,f.receipt,"actual receipt bound");eq(run.receipt.changed,false,"real no-op receipt")
+        eq(run.snapshot,f.base,"no-op uses actual original snapshot")
+        local live={session_id=f.p._session_id,entry=f.entry,classes=f.classes}
+        local handoffs=0
+        Restart.Handoff=function(k,n,c,s,previous)
+            handoffs=handoffs+1;eq(k,"K","restart class");eq(n,"Live","restart name")
+            eq(c,f.card,"restart card");eq(s,2,"restart slot");eq(previous,true,"restart previous")
+        end
+        local source_calls=0
+        local function forbidden() source_calls=source_calls+1;error("restart source work forbidden") end
+        patched({{Source,"Build",forbidden},{Compose,"Create",forbidden},{f.p,"_FreshVersioned",forbidden},
+            {f.p._driver,"DiscoverPublished",forbidden},{f.p._commit,"Commit",forbidden}},function()
+            eq(Restart.Request(run,live),true,"runtime accepts committed request")
+        end)
+        eq(source_calls,0,"restart has no source/refresh/publication path")
+        eq(handoffs,1,"one concrete handoff");eq(run.ready,"unobserved","request not readiness")
         for _,fault in ipairs({"released","poisoned","publication_error","session","entry","classes"}) do
-            local view=copy(restart_live)
-            if fault=="session" then view.session_id="other"
-            elseif fault=="entry" then view.entry={}
-            elseif fault=="classes" then view.classes={}
-            else view[fault]=true end
-            v,e=Restart.Request(run,view)
-            refusal(v,e,"frozen restart target",fault)
+            local view=copy(live)
+            if fault=="session" then view.session_id="other" elseif fault=="entry" then view.entry={}
+            elseif fault=="classes" then view.classes={} else view[fault]=true end
+            reject(function() return Restart.Request(run,view) end,"frozen restart target",fault)
         end
+        local anchor,callback=f.entry.anchor,f.card.init
         local mutations={
-            {"anchor",function() entry.anchor=function() end end,function() entry.anchor=anchor end,"target"},
-            {"disabled",function() entry.reloadable=false end,function() entry.reloadable=true end,"target"},
-            {"snapshot",function() capture.snapshot={} end,function() capture.snapshot=snapshot end,"target"},
-            {"name",function() card.name="Renamed" end,function() card.name="Live" end,"target"},
-            {"class",function() classes.K={} end,function() classes.K=class end,"target"},
-            {"list",function() class.cards={} end,function() class.cards=list end,"target"},
-            {"selected",function() list[2]={} end,function() list[2]=card end,"target"},
-            {"sibling",function() list[1]={} end,function() list[1]=placeholder end,"slot ownership"},
-            {"extra",function() list.foreign={} end,function() list.foreign=nil end,"slot ownership"},
-            {"length",function() list[3]={} end,function() list[3]=nil end,"class/list ownership"},
-            {"metatable",function() setmetatable(list,{}) end,function() setmetatable(list,nil) end,"committed frozen"},
-            {"callback",function() card.init=function() end end,
-                function() card.init=snapshot.units[key].callbacks.init.fn end,"committed callback"},
+            {"anchor",function() f.entry.anchor=function() end end,function() f.entry.anchor=anchor end,"target"},
+            {"disabled",function() f.entry.reloadable=false end,function() f.entry.reloadable=true end,"target"},
+            {"snapshot",function() f.capture.snapshot={} end,function() f.capture.snapshot=f.base end,"target"},
+            {"name",function() f.card.name="Renamed" end,function() f.card.name="Live" end,"target"},
+            {"class",function() f.classes.K={} end,function() f.classes.K=f.class end,"class/list ownership"},
+            {"list",function() f.class.cards={} end,function() f.class.cards=f.list end,"class/list ownership"},
+            {"selected",function() f.list[2]={} end,function() f.list[2]=f.card end,"slot ownership"},
+            {"sibling",function() f.list[1]={} end,function() f.list[1]=f.placeholder end,"slot ownership"},
+            {"extra",function() f.list.foreign={} end,function() f.list.foreign=nil end,"class/list ownership"},
+            {"length",function() f.list[3]={} end,function() f.list[3]=nil end,"class/list ownership"},
+            {"metatable",function() setmetatable(f.list,{}) end,function() setmetatable(f.list,nil) end,"class/list ownership"},
+            {"callback",function() f.card.init=function() end end,function() f.card.init=callback end,"committed callback"},
         }
         for _,mutation in ipairs(mutations) do
-            mutation[2]();v,e=Restart.Request(run,restart_live);mutation[3]()
-            refusal(v,e,mutation[4],mutation[1])
+            mutation[2]()
+            local value,err=Restart.Request(run,live)
+            mutation[3]()
+            eq(value,nil,mutation[1].." restart refused");has(err,mutation[4],mutation[1].." reason")
         end
-        eq(restarts,1,"all stale handoffs refused before game call")
+        eq(handoffs,1,"stale accepted requests cannot reach game")
         Binding.IsReplay=function() return true end
-        reject(function() return Restart.Request(run,restart_live) end,"replay","replay")
+        reject(function() return Restart.Request(run,live) end,"replay","replay revalidated")
         Binding.IsReplay=function() return false end
-        entry.missing=true;entry.reloadable=false
-        eq(Restart.Request(run,restart_live),true,"Missing preserves committed retry")
-        entry.missing=nil;entry.reloadable=true
-        run=Restart.Freeze(target,capture);assert(Restart.BindReceipt(run,{snapshot=snapshot},capture))
-        Restart.Handoff=function() error(setmetatable({}, {__tostring=function() error("unsafe") end})) end
-        reject(function() return Restart.Request(run,restart_live) end,"operation refused","hostile restart error")
+        Restart.Handoff=function() error(hostile) end
+        reject(function() return Restart.Request(second,live) end,"operation refused","hostile handoff error")
 
-        local record={binding=Card.FreezeBinding(initial),classes=classes,class=class,list=list}
-        eq(Card.InspectionBindingMatches(record,initial,classes),true,"past binding valid")
-        eq(Card.InspectionBindingMatches(record,nil,classes),false,"missing current")
-        eq(Card.InspectionBindingMatches(record,initial,{}),false,"changed classes")
+        -- Cheap inspection binding validity remains a separate identity check.
+        local record={binding=Card.FreezeBinding(f.initial),classes=f.classes,class=f.class,list=f.list}
+        eq(Card.InspectionBindingMatches(record,f.initial,f.classes),true,"past binding valid")
+        eq(Card.InspectionBindingMatches(record,nil,f.classes),false,"missing current")
+        eq(Card.InspectionBindingMatches(record,f.initial,{}),false,"changed registry")
         for _,field in ipairs({"class_key","card","slot","name","mode","include_previous","names"}) do
-            local b=copy(initial);b[field]=field=="names" and {"","Other"} or {}
-            eq(Card.InspectionBindingMatches(record,b,classes),false,"inspection drift "..field)
+            local b=copy(f.initial);b[field]=field=="names" and {"","Other"} or {}
+            eq(Card.InspectionBindingMatches(record,b,f.classes),false,"inspection drift "..field)
         end
-        local b=copy(initial);b.names=nil
-        eq(Card.InspectionBindingMatches(record,b,classes),false,"inspection missing names")
-        b.names={"Live"}
-        eq(Card.InspectionBindingMatches(record,b,classes),false,"inspection list length")
-        class.cards={}
-        eq(Card.InspectionBindingMatches(record,initial,classes),false,"inspection list identity")
-        class.cards=list;list[2]={}
-        eq(Card.InspectionBindingMatches(record,initial,classes),false,"inspection card identity")
-        list[2]=card
-    end)
-    Target.Resolve,Target.Check,Target.LocateDiscovery,Target.CheckDiscovery=
-        services.Resolve,services.Check,services.LocateDiscovery,services.CheckDiscovery
-    Cards.CompareLocated,Cards.Select,Cards.Describe=services.CompareLocated,services.Select,services.Describe
-    Restart.Handoff,Binding.IsReplay=services.Restart,services.IsReplay
-    debug.setupvalue,debug.upvaluejoin=old_setup,old_join
-    rawset(_G,"jit",old_jit)
-    if not ok then failed=failed+1;failures[#failures+1]="unexpected: "..tostring(problem) end
-    -- Controller dispatch checks use explicit fake receipts/context, not shared
-    -- semantics. Real transaction/Monitor behavior remains in the existing suites.
-    local names={"lstg.FileSystemWatcher","lstg.FileSystemWatcher.FileAction","SpellHotReload.Runtime.Watcher","SpellHotReload.Runtime.Plugin"}
-    local saved_modules={}
-    for _,n in ipairs(names) do saved_modules[n]=package.loaded[n] end
-    package.loaded[names[1]],package.loaded[names[2]]={},{}
-    package.loaded[names[3]],package.loaded[names[4]]=nil,nil
-    local saved_classes=rawget(_G,"_editor_class")
-    rawset(_G,"_editor_class",classes)
-    local methods={"FreezeBinding","PrepareVersioned","Freeze","BindReceipt","Commit","Request","InspectPrepared","InspectionBindingMatches"}
-    local function service(method)
-        if method=="Freeze" or method=="BindReceipt" or method=="Request" then return Restart end
-        return Card
-    end
-    local originals,counts={},{}
-    for _,n in ipairs(methods) do originals[n],counts[n]=service(n)[n],0 end
-    local replay,capture_current=Binding.IsReplay,Binding.CaptureCurrent
-    local wired,werr=pcall(function()
-        local Plugin=require("SpellHotReload.Runtime.Plugin")
-        local candidate={stable=true,generation=7,first_content="synthetic candidate"}
-        local context={common=common,adapter={file=discovered.context.adapter.file,
-            unit=unit.context}}
-        local handle={refresh=function() return live end}
-        local prepared={target=target,live=live,location=location,selection=selection,
-            handle=handle,context=context,
-            driver_prepared={kind="SpellHotReload.Driver.PreparedDiscovery",version=1,
-                owner=driver,discovery=discovery,file=discovery.file,content=discovery.content,
-                entries={{entry=discovered,adapter=Card,unit=unit,context=context,
-                    handle=handle,plan=selection}}}}
-        local p=setmetatable({_loads={[target.file]=entry},_session_id=target.session_id,
-            _candidate_inspections={},_activated=true,_supported=true,_sandbox_ok=true,
-            _store={GetCandidate=function() return candidate end},
-            _driver=driver},Plugin)
-        p._DiscoverVersioned=function() return discovery end
-        -- Dispatch-only synthetic receipt fixture, not publication evidence.
-        -- Real completion/receipt validation lives in CandidateCompletionSpec.
-        p._FinishVersioned=function() return "; synthetic accounting, not completion" end
-        p._commit={Check=function() return true end,Poisoned=function() return false end,
-            Commit=function() return {snapshot=snapshot,changed=false} end}
-        p.GetVersions=function() return capture end
-        local fresh_count=0
-        p._FreshVersioned=function() fresh_count=fresh_count+1;return live end
-        for _,n in ipairs(methods) do
-            local method=n
-            service(method)[method]=function(...)
-                counts[method]=counts[method]+1
-                if method=="PrepareVersioned" then
-                    local c,d,b,proof,refresh=...
-                    eq(c,capture,"controller capture explicit");eq(d,discovery,"controller discovery explicit")
-                    eq(proof.session_id,target.session_id,"controller proof session")
-                    eq(proof.entry,entry,"controller proof entry")
-                    eq(refresh(),live,"controller physical refresh remains caller-owned")
-                    return prepared
-                elseif method=="Commit" then
-                    local h,plan,ctx=...
-                    eq(h,handle,"controller passes located handle");eq(plan,selection,"controller passes injected output")
-                    eq(ctx,context,"controller extends same per-call context")
-                    local receipt,err=ctx.adapter.transaction(h,plan,ctx)
-                    return receipt~=nil,err,receipt
-                elseif method=="InspectPrepared" then
-                    local value,c,refresh=...
-                    eq(value,prepared,"controller prepared selection");eq(c,capture,"controller inspect capture")
-                    eq(refresh(),live,"controller inspection final refresh");return model,live
-                elseif method=="Request" then
-                    local run,view=...
-                    eq(run.card,card,"controller frozen card");eq(view.entry,entry,"controller restart entry")
-                    eq(view.session_id,target.session_id,"controller restart session")
-                    eq(p._restart_active,true,"controller busy gate spans workflow handoff")
-                    return true
-                end
-                return originals[method](...)
-            end
-        end
-        Binding.IsReplay=function() return false end
-        Binding.CaptureCurrent=function() return initial end
-        eq(p:_PrepareVersioned(target.file,candidate,capture,discovery,initial),prepared,"controller delegates preparation")
-        local result=p:_ApplyVersioned({},target.file,candidate,capture,discovery,initial)
-        has(result,"applied","controller delegates versioned Apply")
-        eq(p._pending_restart_run,nil,"successful handoff drops pending run")
-        eq(p._restart_active,false,"controller clears busy gate after success")
-        local display=assert(p:InspectCandidate(target.file))
-        eq(display==model,false,"controller still detaches cached presentation")
-        eq(display.selected[1],key,"controller preserves presented selection")
-        display=assert(p:GetCandidateInspection(target.file,initial))
-        eq(display.selected[1],key,"cheap inspection delegates binding validity")
-        check(fresh_count>=3,"controller invokes supplied fresh views")
-        for _,method in ipairs(methods) do check(counts[method]>0,"actual controller invokes "..method) end
-        Restart.Request=function() error("workflow validation fixture") end
-        local run=originals.Freeze(target,capture);assert(originals.BindReceipt(run,{snapshot=snapshot},capture))
-        local called,err=pcall(p._RestartVersioned,p,run)
-        eq(called,false,"unexpected workflow throw propagated")
-        has(err,"workflow validation fixture","unexpected workflow error preserved")
-        eq(p._restart_active,false,"controller clears busy gate on throw")
-        Restart.Request=function()
-            local v,e=p:_RestartVersioned(run)
-            eq(v,nil,"reentrant workflow retry refused");has(e,"already active","reentrant retry reason")
+        local b=copy(f.initial);b.names=nil
+        eq(Card.InspectionBindingMatches(record,b,f.classes),false,"inspection missing names")
+        b.names={"Live"};eq(Card.InspectionBindingMatches(record,b,f.classes),false,"inspection list length")
+        f.class.cards={};eq(Card.InspectionBindingMatches(record,f.initial,f.classes),false,"inspection list identity")
+        f.class.cards=f.list;f.list[2]={}
+        eq(Card.InspectionBindingMatches(record,f.initial,f.classes),false,"inspection card identity");f.list[2]=f.card
+
+        patched({{Restart,"Request",function() error("workflow validation fixture") end}},function()
+            local called,err=pcall(f.p._RestartVersioned,f.p,run)
+            eq(called,false,"unexpected workflow throw propagated");has(err,"workflow validation fixture","workflow error preserved")
+            eq(f.p._restart_active,false,"throw clears workflow busy")
+        end)
+        patched({{Restart,"Request",function()
+            local value,err=f.p:_RestartVersioned(run)
+            eq(value,nil,"reentrant workflow refused");has(err,"already active","reentrant workflow reason")
             return nil,"retry fixture"
-        end
-        local v,e=p:_RestartVersioned(run)
-        eq(v,nil,"failed workflow handoff surfaced");eq(e,"retry fixture","failed workflow reason kept")
-        eq(p._restart_active,false,"controller clears busy gate on refusal")
+        end}},function()
+            local value,err=f.p:_RestartVersioned(run)
+            eq(value,nil,"workflow refusal surfaced");eq(err,"retry fixture","workflow refusal reason")
+            eq(f.p._restart_active,false,"refusal clears workflow busy")
+        end)
+        must(f.p:Missing(f.entry.file,"runtime fixture"))
+        eq(f.p:GetVersions(f.entry.file),nil,"Missing really retires lookup")
+        eq(Restart.Request(run,live),true,"Missing preserves accepted committed run")
+        eq(handoffs,1,"accepted Missing request stays idempotent")
+        eq(traps,0,"hostile errors never stringified")
     end)
-    for _,n in ipairs(methods) do service(n)[n]=originals[n] end
-    Binding.IsReplay,Binding.CaptureCurrent=replay,capture_current
-    rawset(_G,"_editor_class",saved_classes)
-    for _,n in ipairs(names) do package.loaded[n]=saved_modules[n] end
-    if not wired then failed=failed+1;failures[#failures+1]="dispatch: "..tostring(werr) end
+    debug.setupvalue,debug.upvaluejoin=old_set,old_join
+    Binding.CaptureCurrent,Binding.IsReplay,Restart.Handoff=old_capture,old_replay,old_handoff
+    for _,p in ipairs(plugins) do p._watcher=nil;p:Release("runtime spec") end
+    for _,name in ipairs(modules) do package.loaded[name]=loaded[name] end
+    for _,name in ipairs(globals) do rawset(_G,name,saved[name]) end
+    if not ok then failed=failed+1;failures[#failures+1]="unexpected: "..(type(problem)=="string" and problem or "opaque error") end
     print(string.format("CardRuntimeSpec: %d passed / %d failed",passed,failed))
     for _,label in ipairs(failures) do print("  FAIL "..label) end
     return {passed=passed,failed=failed}

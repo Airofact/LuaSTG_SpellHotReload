@@ -31,8 +31,7 @@
 --- that cannot be captured is executed once, as-is.
 --------------------------------------------------------------------------------
 
-local IR = require("SpellHotReload.Source.TopLevelIR")
-local Binding = require("SpellHotReload.Source.Binding")
+local Source = require("SpellHotReload.Source.FileAnalysis")
 local CodeCache = require("SpellHotReload.Source.CodeCache")
 
 local M = {}
@@ -152,37 +151,15 @@ end
 
 ---Decide whether a file can be captured, without executing it.
 ---@param content string
----@param options table?  -- { analysis =, bindings =, ir_options =, limit = }
+---@param options table?  -- { limit = }
 ---@return table? policy  -- { reloadable, reason, names, has_return, duplicates,
 ---                       --   opaque, statements, limit }
 ---@return string? reason
-function M.Policy(content, options)
-    if type(content) ~= "string" then
-        return nil, "content must be a string"
-    end
-    options = options or {}
-    local analysis = options.analysis
-    if analysis == nil then
-        local nodes, err, snapshot = IR.Analyze(content, options.ir_options)
-        if nodes == nil or snapshot == nil then
-            return nil, tostring(err or "top-level analysis failed")
-        end
-        analysis = snapshot
-    end
-    if not plain(analysis) or not plain(analysis.nodes) or not plain(analysis.statements) then
-        return nil, "analysis must provide nodes and statements"
-    end
-    local bindings = options.bindings
-    if bindings == nil then
-        local err
-        bindings, err = Binding.Analyze(analysis)
-        if bindings == nil then
-            return nil, tostring(err)
-        end
-    end
-    if not plain(bindings) or not plain(bindings.names) or not plain(bindings.duplicates) then
-        return nil, "bindings must provide names and duplicates"
-    end
+function M.Policy(source, options)
+    local valid,err=Source.Validate(source)
+    if not valid then return nil,err.message end
+    options=options or {}
+    local analysis,bindings=source.analysis,source.bindings
     local has_return = false
     for _, node in ipairs(analysis.nodes) do
         if node.kind == "return" then
@@ -386,7 +363,7 @@ end
 ---After the trailer chunk has run, a capture problem never re-runs the file.
 ---
 ---@param content string
----@param options table?  -- { name=, analysis=, bindings=, ir_options=,
+---@param options table?  -- { name=, ir_options=,
 ---                       --   capability=, limit=, args={n=,...} }
 ---@return table? result  -- { captured, reloadable, reason, anchor, slots, order,
 ---                       --   names, missing, loaded_source, ret, policy }
@@ -397,7 +374,9 @@ function M.Capture(content, options)
     if type(content) ~= "string" then
         return nil, "content must be a string", "analyze"
     end
-    local policy, perr = M.Policy(content, options)
+    local facts, ferr=Source.Build(content,options.ir_options)
+    if not facts then return nil,ferr.message,"analyze" end
+    local policy, perr = M.Policy(facts, options)
     if policy == nil then
         return nil, tostring(perr), "analyze"
     end
@@ -408,7 +387,7 @@ function M.Capture(content, options)
     local result = {
         captured = false, reloadable = false, anchor = nil, slots = nil,
         order = nil, names = policy.names, missing = false,
-        loaded_source = content, ret = pack(), policy = policy,
+        loaded_source = content, source = facts, ret = pack(), policy = policy,
     }
 
     -- Non-reloadable files (and files on an incapable runtime) load normally.

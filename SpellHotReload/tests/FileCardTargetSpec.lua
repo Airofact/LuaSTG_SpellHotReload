@@ -1,12 +1,18 @@
--- Synthetic genuine first-load metadata; no generated mod or engine execution.
--- Lua5.1's presence-only join fixture proves reads, not shared-cell publication.
+-- Real shared-source/capture file correspondence from miniature first loads.
+-- Read-only location/recheck; no candidate chunk, common publication or engine.
 local M={}
 function M.run(opts)
     opts=opts or {}
     local Target=opts.target or require("SpellHotReload.Adapters.Card.CardTarget")
     local Load=require("SpellHotReload.Load.AnchorLoad")
-    local Capture=require("SpellHotReload.Adapters.Card.Card")
-    local Driver=require("SpellHotReload.Pipeline.Driver")
+    local Planning=require("SpellHotReload.tests.PlanningFixture")
+    local Files=require("SpellHotReload.Pipeline.FileVersions")
+    local Source=require("SpellHotReload.Source.FileAnalysis")
+    local IR=require("SpellHotReload.Source.TopLevelIR")
+    local Binding=require("SpellHotReload.Source.Binding")
+    local Lexer=require("SpellHotReload.Source.Lexer")
+    local Compose=require("SpellHotReload.Source.Compose")
+    local Callbacks=require("SpellHotReload.Adapters.Card.CardCallbacks")
     local Card=require("SpellHotReload.Adapters.Card.Card")
     local passed,failed,failures=0,0,{}
     local function eq(a,b,label)
@@ -26,8 +32,20 @@ function M.run(opts)
     end
     local saved={}
     for _,n in ipairs({"boss","_editor_class","_tmp_sc","_BOSS_ESCAPE","FILE_TARGET_EFFECT"}) do saved[n]=rawget(_G,n) end
-    local real_join=debug.upvaluejoin
-    if not real_join then debug.upvaluejoin=function() error("presence only") end end
+    local saved_apis={read=Callbacks.Read,match=Card.Match,build=Source.Build,analyze=IR.Analyze,
+        bind=Binding.Analyze,tokenize=Lexer.Tokenize,create=Compose.Create}
+    local function restore_apis()
+        Callbacks.Read,Card.Match=saved_apis.read,saved_apis.match
+        Source.Build,IR.Analyze,Binding.Analyze,Lexer.Tokenize,Compose.Create=
+            saved_apis.build,saved_apis.analyze,saved_apis.bind,saved_apis.tokenize,saved_apis.create
+    end
+    local function card_state(capture)
+        return must(Files.Owner(capture,Card)).state
+    end
+    local function first_card(capture)
+        local group,initial=Files.Owner(capture,Card);must(group,initial)
+        return initial.evidence
+    end
     local serial,effects,constructors,escapes=0,0,0,0
     local function source(classes,opts)
         opts=opts or {}
@@ -68,19 +86,15 @@ function M.run(opts)
         serial=serial+1
         local bytes=source({{key="K",labels=labels or {"A","B"},move=move,escape=escape},
             {key="L",labels={"Side"}}})
-        local entry=must(Load.Capture(bytes,{name="FileTarget_Boss.lua",
-            capability={getupvalue=true,setupvalue=true,upvaluejoin=true}}))
+        local entry=must(Load.Capture(bytes,{name="FileTarget_Boss.lua"}))
         entry.file="FileTarget_Boss.lua"
-        local capture=must(Capture.SeedVersions(entry,"file-target:"..serial,_editor_class,defaults))
-        local driver=Driver.New();must(driver:RegisterDiscovery(Card))
+        local f=must(Planning.Capture(entry,"file-target:"..serial,_editor_class,defaults))
+        local capture=f.capture
         local live={capture=capture,snapshot=capture.snapshot,entry=entry,
-            classes=_editor_class,session_id=capture.snapshot.session_id}
+            classes=_editor_class,session_id=f.session,generation=7}
         local function discover(content)
-            local base=capture.snapshot
-            live.snapshot,live.content=base,content
-            return must(driver:DiscoverPublished(entry.file,content,assert(require("SpellHotReload.Adapters.Card.CardVersions").Publication(base)),{session_id=base.session_id,
-                registry_entry=entry,loaded_source=base.loaded_source,published_units=base,
-                base_revision=base.revision,candidate_generation=7})).snapshot
+            live.snapshot,live.content=capture.snapshot,content
+            return must(Planning.Discover(f,must(Source.Build(content)),7)).snapshot
         end
         local function report(content)
             local discovery=discover(content or bytes)
@@ -106,7 +120,9 @@ function M.run(opts)
         local a=row(r,"K",1)
         eq(a.target.card,f.live.classes.K.cards[1],"actual card identity")
         eq(a.target.list,f.live.classes.K.cards,"actual live list")
-        eq(a.target.unit,f.capture.snapshot.units[a.key],"actual publication unit")
+        eq(a.target.unit,card_state(f.capture).units[a.key],"actual private Card publication unit")
+        eq(r.card_group,must(Files.Owner(f.capture,Card)),"proof retains actual Card contribution")
+        eq(d.by_key["local:helper"].adapter.Id,"local","complete discovery retains independent Local owner")
         eq(a.target.slot,1,"live slot");eq(a.candidate_slot,1,"candidate slot")
         eq(a.target.mode,nil,"no invented practice mode")
         eq(a.target.include_previous,nil,"no invented restart flag")
@@ -123,9 +139,9 @@ function M.run(opts)
         before_effect,before_ctor=effects,constructors
         local before_escape=escapes
         r,d=f.report()
-        eq(f.capture.snapshot.layout.K[3].kind,"other","escape source placeholder")
+        eq(card_state(f.capture).layout.K[3].kind,"other","escape source placeholder")
         eq(deletion.is_combat,true,"escape deletion has runtime combat flag")
-        eq(f.capture.snapshot.units[key("K",3)],nil,"escape not a publication unit")
+        eq(card_state(f.capture).units[key("K",3)],nil,"escape not a publication unit")
         eq(#r.located,2,"generated cards still located with combat placeholder")
         eq(#r.pending,0,"unchanged escape is not an unmapped generated card")
         eq(#r.unowned,0,"escape does not become a new generated owner")
@@ -134,7 +150,7 @@ function M.run(opts)
         eq(escapes,before_escape,"escape registration not replayed")
         eq(constructors,before_ctor,"escape constructors not replayed")
         eq(effects,before_effect,"escape proof does not run top level")
-        f.capture.snapshot.layout.K[1].kind="other"
+        card_state(f.capture).layout.K[1].kind="other"
         refuse(function() return Target.LocateFileDiscovery(d,f.capture,f.live) end,
             "ownership","published card descriptor changed to placeholder")
         f=fixture({"A"},false,true);r,d=f.report()
@@ -143,7 +159,7 @@ function M.run(opts)
             "ownership","combat placeholder replacement")
         -- Source-absent first captured class must not hide another real entry.
         f=fixture();r=f.report(source({{key="L",labels={"Side"}}}))
-        eq(f.capture.ownership[1].class_key,"K","absent class was first captured owner")
+        eq(first_card(f.capture).ownership[1].class_key,"K","absent class was first captured owner")
         eq(row(r,"K",1).status,"source-absent","absent first source")
         eq(row(r,"K",1).entry,nil,"never forge deleted entry")
         eq(row(r,"L",1).status,"located","other class still mapped")
@@ -203,12 +219,12 @@ function M.run(opts)
             {"revision",function(_,_,c) c.snapshot.revision=1 end,"stale"},
             {"snapshot",function(_,_,c,l) c.snapshot=copy(c.snapshot);l.snapshot=c.snapshot end,"stale"},
             {"bytes",function(_,_,_,l) l.content=l.content.."\n" end,"stale"},
-            {"generation",function(_,d) d.common.candidate_generation=8 end,"stale"},
+            {"generation",function(_,d) d.common.generation=8 end,"stale"},
             {"live name",function(_,_,_,l) l.classes.K.cards[1].name="Other" end,"stale"},
             {"sibling name",function(_,_,_,l) l.classes.K.cards[2].name="Other" end,"stale"},
             {"live slot replacement",function(_,_,_,l) l.classes.K.cards[1]={} end,"ownership"},
             {"other class list",function(_,_,_,l) l.classes.L.cards=copy(l.classes.L.cards) end,"ownership"},
-            {"unindexed combat",function(_,_,c) local k=key("K",1);c.snapshot.units[k]=nil;table.remove(c.snapshot.order,1) end,"ownership"},
+            {"unindexed combat",function(_,_,c) local k=key("K",1);card_state(c).units[k]=nil;table.remove(card_state(c).order,1) end,"ownership"},
             {"unindexed discovery",function(_,d) d.by_key.extra={} end,"ownership"},
             {"filtered discovery",function(_,d) d.adapter_contexts.card.classes=9 end,"unsupported"},
             {"other adapter",function(_,d) local e=d.by_key["card:K"];e.adapter={} end,"ownership"},
@@ -238,7 +254,7 @@ function M.run(opts)
             local item=r.by_key[k];local coordinate=item.source_key..":"..item.candidate_slot
             eq(claimed[coordinate],nil,"unique source claim");claimed[coordinate]=k
         end
-        f.capture.snapshot.units[key("K",2)].slot=1
+        card_state(f.capture).units[key("K",2)].slot=1
         refuse(function() return Target.LocateFileDiscovery(d,f.capture,f.live) end,"ownership","duplicate live slot")
         -- Real parser-produced alias: a reset can reuse the same _tmp_sc twice.
         -- Both live owners must be rejected, not first-claim wins by slot order.
@@ -281,15 +297,22 @@ function M.run(opts)
             debug=setmetatable({},{__index=forbidden}),jit={flush=forbidden}},{__index=_G}))
         local pure=chunk()
         before_effect,before_ctor=effects,constructors
-        r=must(pure.LocateFileDiscovery(d,f.capture,f.live))
-        eq(pure.CheckFileDiscovery(r,f.capture,f.live),true,"read-only proof")
+        Callbacks.Read=forbidden;Card.Match=forbidden;Source.Build=forbidden
+        IR.Analyze=forbidden;Binding.Analyze=forbidden;Lexer.Tokenize=forbidden;Compose.Create=forbidden
+        local ran,value=pcall(function()
+            r=must(pure.LocateFileDiscovery(d,f.capture,f.live))
+            return pure.CheckFileDiscovery(r,f.capture,f.live)
+        end)
+        restore_apis()
+        eq(ran,true,"imported modules do not re-read, re-match, rebuild or construct")
+        eq(value,true,"read-only proof")
         eq(traps,0,"no forbidden APIs");eq(effects,before_effect,"no replay")
         eq(constructors,before_ctor,"no constructors")
         local hostile=setmetatable({},{__index=forbidden,__tostring=forbidden})
         refuse(function() return pure.LocateFileDiscovery(d,hostile,f.live) end,"unsupported","capture metatable")
         eq(traps,0,"no hostile handlers")
     end)
-    debug.upvaluejoin=real_join
+    restore_apis()
     -- Restore nil saves as well as existing globals.
     for _,n in ipairs({"boss","_editor_class","_tmp_sc","_BOSS_ESCAPE","FILE_TARGET_EFFECT"}) do rawset(_G,n,saved[n]) end
     if not ok then error(problem) end

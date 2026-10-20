@@ -160,8 +160,8 @@ function M.Build(snapshot)
         return nil, "snapshot must provide a dense claim list"
     end
     local content = nil
-    if plain(snapshot.common) and type(snapshot.common.content) == "string" then
-        content = snapshot.common.content
+    if plain(snapshot.common) and plain(snapshot.common.source) then
+        content = snapshot.common.source.content
     end
 
     local records, record_by_key = {}, {}

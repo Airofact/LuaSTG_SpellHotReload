@@ -9,7 +9,7 @@
 ---   * collects `_editor_class[...]` class keys for the UI's match hint
 --------------------------------------------------------------------------------
 
-local IR=require("SpellHotReload.Source.TopLevelIR")
+local Source=require("SpellHotReload.Source.FileAnalysis")
 local Tree=require("SpellHotReload.Source.SyntaxTree")
 local Scanner = {}
 
@@ -51,20 +51,14 @@ function Scanner.Scan(content, file_name)
 	return result
 end
 
----Collect class keys from index-expression nodes for the UI hint.
----A supplied snapshot must belong to these exact bytes; no token-pattern fallback.
-function Scanner.ClassKeys(content,analysis)
+---Collect class-key hints from the caller's complete shared analysis.
+---No source parsing/compilation, binding discovery or publication permission.
+---Invalid or stale input is a diagnostic, never a request to build fresh facts.
+function Scanner.ClassKeys(source)
+    local valid,err=Source.Validate(source)
+    if not valid then return nil,err end
     local keys={}
-    if type(content)~="string" then return keys end
-    local source=content
-    if source:sub(1,3)=="\239\187\191" then source=source:sub(4) end
-    if analysis then
-        if analysis.source~=source or analysis.source_offset~=#content-#source or not analysis.syntax then return keys end
-    else
-        local nodes,reason;nodes,reason,analysis=IR.Analyze(content)
-        if not nodes then return keys end
-    end
-    Tree.Walk(analysis.syntax,function(n)
+    Tree.Walk(source.analysis.syntax,function(n)
         local key=Tree.ClassKey(n);if key then keys[key]=true end
     end)
     return keys

@@ -1,319 +1,395 @@
---- R3 generated-card versions and explicit current-root planning.
---- PURE service: no source chunk/body, join, write, flush, publish or restart.
---- Seed(functions, initial, defaults) requires a genuine FIRST-load function
---- snapshot (revision 0) plus ALL discovered combat-card owners and all seven
---- genuine callback identities per owner. It does not manufacture load history.
---- initial = dense { {class_key, slot, card, callbacks={name->first function}} }
---- defaults = caller-owned standard callback identities, copied at first load.
---- Card tables must be plain; raw slots only. Metadata/functions must be genuine
---- first capture, not live reads after setter/Apply. Card.SeedVersions owns
---- production capture. Retain/release snapshots.
----
---- CompareLocated consumes one checked current target; CompareFileLocated
---- consumes complete file correspondence. Both require fresh capture ownership.
---- Other changed-layout owners remain unmapped and pending, never guessed by key.
---- Absent candidate classes yield source tombstones, NOT live deletions; unclaimed
---- candidate cards stay unowned/pending_sources, NOT automatically seeded owners.
---- Only the located current root is selectable in a located report. All published
---- callbacks/captures are still checked, including absent/unmapped consumers.
---- New/deleted callbacks (except required init)
---- are modeled; deleted callbacks revert to the saved standard default identity.
---- No unknown RHS, generated wiring, alias initialization or state replay occurs.
----
---- Select(report, dense_card_keys) follows CHANGED callback candidate captures
---- and UNCHANGED callback actual saved captures to derive local-function roots.
---- FunctionVersions selects only required changed dependencies. Aliases terminate
---- the graph. Only changed callbacks of selected cards produce raw-slot proposals.
---- Unselected callback edits/local definitions remain pending in complete_content.
---- Helper-only propagation updates observations without compiling/publishing new
---- runtime consumers. Compare may compile all ANALYSIS literals; not a publish.
----
---- Next(selection) is only a proposed aggregate snapshot: R4 must atomically
---- install it AFTER all joins/cell writes/raw-slot publications succeed, or keep
---- the old snapshot. revision advances once for any nonempty definition group.
---- Local-function revision separately counts its own nonempty write groups.
---- Every callback source version and card definition version advance only on
---- that card's selected source publication; shared observations update separately.
---- loaded_source/layout/defaults never advance. Empty selection returns base.
----
---- No phase token/commit-time byte/session/target verification, journals, rollback,
---- poisoned sessions, restart contexts, Watcher acceptance, production Apply or
---- global mutable cache here. R4 must ALSO freeze/recheck class list/card ownership;
---- target table references alone do not prove live class slot identity.
---- Tables are read-only by contract, not a sandbox. upvalueid is optional, never
---- replaced with a Probe. Without it physical rejoin by outside code is unproved.
-local Functions = require("SpellHotReload.Source.FunctionVersions")
-local Source = require("SpellHotReload.Source.FunctionPlan")
-local Card = require("SpellHotReload.Adapters.Card.Card")
-local Compose = require("SpellHotReload.Source.Compose")
-local Tree = require("SpellHotReload.Source.SyntaxTree")
-local Target = require("SpellHotReload.Adapters.Card.CardTarget")
-local M = { Kind = "SpellHotReload.CardVersions", Version = 1 }
-local CALLBACKS = { "before", "init", "frame", "render", "beforedel", "del", "after" }
-local allowed = {}
-for _, name in ipairs(CALLBACKS) do allowed[name] = true end
-local function plain(v) return type(v) == "table" and getmetatable(v) == nil end
+-- Card-owned callback versions and private capture mappings. No Local ledger,
+-- recursive provider selection, file revision, source execution or publication.
+local Source=require("SpellHotReload.Source.FileAnalysis")
+local Tree=require("SpellHotReload.Source.SyntaxTree")
+local Compose=require("SpellHotReload.Source.Compose")
+local Anchor=require("SpellHotReload.Load.Anchor")
+local M={Kind="SpellHotReload.CardVersions",Version=2}
+local CALLBACKS={"before","init","frame","render","beforedel","del","after"}
+local allowed={};for _,name in ipairs(CALLBACKS) do allowed[name]=true end
+local function plain(v) return type(v)=="table" and getmetatable(v)==nil end
 local function dense(v)
-    if not plain(v) then return nil end
-    local count, maximum = 0, 0
-    for k in next, v do
-        if type(k) ~= "number" or k < 1 or k ~= math.floor(k)
-            or k == math.huge then return nil end
-        count, maximum = count + 1, math.max(maximum, k)
+    if not plain(v) then return false end
+    local n,max=0,0
+    for k in next,v do
+        if type(k)~="number" or k<1 or k>=math.huge or k~=math.floor(k) then return false end
+        n=n+1;max=math.max(max,k)
     end
-    if count ~= maximum then return nil end
-    return count
+    return n==max
 end
-local function copy(v)
-    local r = {}
-    for k, value in next, v do r[k] = value end
-    return r
-end
-local function same(a, b)
-    if #a ~= #b then return false end
-    for i = 1, #a do if a[i] ~= b[i] then return false end end
+local function copy(v) local out={};for k,x in next,v do out[k]=x end;return out end
+local function same(a,b)
+    if #a~=#b then return false end
+    for i,x in ipairs(a) do if x~=b[i] then return false end end
     return true
 end
-local function fail(code, message, state, key)
-    return nil, { phase = "analyze", code = code, message = tostring(message),
-        file = plain(state) and state.file or nil, unit_key = key }
+local function fail(code,message,state,key)
+    return nil,{phase="inject",code=code,message=message,file=plain(state) and state.file,unit_key=key}
 end
-local function key_of(class_key, slot)
-    return "card:" .. #class_key .. ":" .. class_key .. ":" .. slot
+local function key_of(class,slot) return "card:"..#class..":"..class..":"..slot end
+local function signature(descriptor,name)
+    return descriptor.callbacks[name] and descriptor.callback_signatures[name] or "default"
 end
-local function discover(content, state, snapshot)
-    local scan, err
-    if snapshot ~= nil then scan, err = Source.InspectDiscovery(snapshot)
-    else scan, err = Source.Inspect(content) end
-    if not scan then return nil, err end
-    local match
-    if snapshot ~= nil then
-        local file_context = plain(snapshot.adapter_contexts)
-            and snapshot.adapter_contexts.card or nil
-        if not plain(file_context) or file_context.carrier ~= "card"
-            or dense(snapshot.entries) == nil or not plain(snapshot.by_key) then
-            return fail("unsupported", "complete registered Card discovery required", state)
+local function layout_copy(layout)
+    local out={}
+    for i,d in ipairs(layout) do
+        out[i]={kind=d.kind,name=d.name,constructor=d.constructor,perform=d.perform,callbacks={init=d.callbacks.init}}
+    end
+    return out
+end
+local function same_layout(a,b)
+    if not a or not b or #a~=#b then return false end
+    for i,d in ipairs(a) do
+        local n=b[i]
+        if d.kind~=n.kind or d.constructor~=n.constructor or d.perform~=n.perform then return false end
+    end
+    return true
+end
+local function captures(record,entry,state,key)
+    if record.body==nil then return {} end
+    local plan,err=Compose.Plan(record.fn,entry)
+    if not plan then return fail("stale",type(err)=="string" and err or "callback captures unavailable",state,key) end
+    local names=copy(plan.names);table.sort(names)
+    if not same(names,record.dependencies) then return fail("stale","published callback captures changed",state,key) end
+    for _,join in ipairs(plan.joins) do
+        if type(debug.upvalueid)=="function" then
+            local a,b=debug.upvalueid(join.fn,join.index),debug.upvalueid(join.anchor,join.donor)
+            if a==nil or b==nil or a~=b then return fail("stale","callback no longer shares Anchor",state,key) end
         end
-        local units = {}
-        for _, entry in ipairs(snapshot.entries) do
-            if not plain(entry) or not plain(entry.unit) then
-                return fail("unsupported", "invalid discovery entry", state)
+    end
+    return plan.joins
+end
+local function literal(source,descriptor,name,entry,defaults,providers,state,key)
+    local body=descriptor.callbacks[name]
+    if not body then return {body=nil,signature="default",fn=defaults[name],dependencies={},providers={},visible={}} end
+    local node=descriptor.callback_syntax[name]
+    local visible,err=Source.Visible(source,node)
+    if not visible then return nil,err end
+    local created,why=Compose.Create(body,nil,visible,{form="expression",syntax=node,name="CardVersions:"..key..":"..name})
+    if not created then return fail("compile",type(why)=="string" and why or "callback construction failed",state,key) end
+    local plan,perr=Compose.Plan(created,entry)
+    if not plan then return fail("unsupported",type(perr)=="string" and perr or "callback binding unavailable",state,key) end
+    local deps=copy(created.used);table.sort(deps)
+    local refs={}
+    for _,dep in ipairs(deps) do
+        if not plain(providers[dep]) or source.bindings.by_name[dep]==nil then
+            return fail("ownership","callback capture has no original provider",state,key)
+        end
+        refs[dep]=providers[dep]
+    end
+    return {body=body,signature=signature(descriptor,name),fn=created.fn,created=created,syntax=node,
+        dependencies=deps,providers=refs,visible=visible,join_plan=plan}
+end
+local function stored(record,version,ref)
+    return {body=record.body,signature=record.signature,fn=record.fn,
+        dependencies=copy(record.dependencies),providers=copy(record.providers),visible=copy(record.visible),
+        definition_version=version,unit_ref=ref}
+end
+local function project(state)
+    local group={owner=state.owner,owner_id=state.owner_id,state=state,units={},records={},functions={},edges={}}
+    for _,class in ipairs(state.classes) do group.units[#group.units+1]={unit_ref=state.class_refs[class],private_ref={class_key=class}} end
+    for _,key in ipairs(state.order) do
+        local unit=state.units[key]
+        group.records[#group.records+1]={key=key,kind="card",definition=unit,definition_version=unit.definition_version,
+            class_key=unit.class_key,slot=unit.slot}
+        for _,name in ipairs(CALLBACKS) do
+            local cb=unit.callbacks[name]
+            group.records[#group.records+1]={key=key..":"..name,kind="callback",definition=cb,
+                definition_version=cb.definition_version,card_key=key,callback=name,class_key=unit.class_key,slot=unit.slot}
+            group.functions[#group.functions+1]=cb.fn
+            for _,dep in ipairs(cb.dependencies) do group.edges[#group.edges+1]={consumer=unit.unit_ref,provider=cb.providers[dep]} end
+        end
+    end
+    return group
+end
+-- provider(binding) is a genuine first-load owner's canonical Binding -> unit
+-- mapping. Store references only, never that owner's records, versions or state.
+function M.Seed(owner,entry,session,match,owners,ownership,classes,defaults,provider)
+    if not plain(owner) or type(owner.Id)~="string" or not plain(entry) or not Source.Validate(entry.source)
+        or not Anchor.Live(entry) or entry.reloadable~=true or not plain(entry.map) or not plain(match) or not dense(match.units) or not dense(owners)
+        or not dense(ownership) or not plain(classes) or not plain(defaults) or type(provider)~="function"
+        or type(session)~="string" or session=="" then return fail("ownership","genuine complete Card first load required",entry) end
+    local state={kind=M.Kind,version=M.Version,owner=owner,owner_id=owner.Id,file=entry.file,
+        entry=entry,anchor=entry.anchor,loaded_source=entry.loaded_source,session_id=session,
+        classes={},class_refs={},layout={},order={},units={},providers={},defaults={}}
+    local authority={cells={},raws={},forbidden={}}
+    for _,name in ipairs(CALLBACKS) do
+        if type(rawget(defaults,name))~="function" then return fail("ownership","seven saved defaults required",state) end
+        state.defaults[name]=rawget(defaults,name);authority.forbidden[#authority.forbidden+1]=rawget(defaults,name)
+    end
+    for _,name in ipairs(entry.source.bindings.names) do
+        local binding=entry.source.bindings.by_name[name]
+        if not binding then return fail("ownership","unique original binding required",state) end
+        local ref=provider(binding)
+        if not plain(ref) or not plain(ref.owner) then return fail("ownership","original capture provider unavailable",state) end
+        state.providers[name]=ref
+    end
+    local initial={classes=classes,ownership=ownership,match=match,source=entry.source,class_bindings={}}
+    local identities,known={},{}
+    local function identity(v) if type(v)=="table" and not known[v] then known[v]=true;identities[#identities+1]=v end end
+    identity(classes)
+    local class_owners={}
+    for _,record in ipairs(ownership) do
+        if not plain(record) or class_owners[record.class_key] or not plain(record.class) or not plain(record.list)
+            or not dense(record.slots) or rawget(classes,record.class_key)~=record.class
+            or rawget(record.class,"cards")~=record.list or not dense(record.list) or #record.list~=#record.slots then
+            return fail("ownership","complete first-load class/list identity required",state)
+        end
+        class_owners[record.class_key]=record;identity(record.class);identity(record.list)
+        for slot,card in ipairs(record.slots) do
+            if not plain(card) or known[card] or rawget(record.list,slot)~=card then
+                return fail("ownership","first-load slot identity reused or unavailable",state)
             end
-            if entry.adapter == Card then
-                local unit, ctx = entry.unit, entry.context
-                if unit.carrier ~= "card" or not plain(unit.context)
-                    or type(unit.context.class_key) ~= "string"
-                    or unit.key ~= "card:" .. unit.context.class_key
-                    or snapshot.by_key[unit.key] ~= entry or not plain(ctx)
-                    or ctx.common ~= snapshot.common or not plain(ctx.adapter)
-                    or ctx.adapter.file ~= file_context or ctx.adapter.unit ~= unit.context
-                    or dense(unit.context.layout) == nil then
-                    return fail("ownership", "Card discovery context disagrees", state)
+            identity(card)
+        end
+    end
+    local by_key={}
+    for _,record in ipairs(owners) do
+        if not plain(record) or type(record.class_key)~="string" or type(record.slot)~="number"
+            or not plain(record.card) or not plain(record.callbacks) then return fail("ownership","complete combat owner required",state) end
+        local key=key_of(record.class_key,record.slot)
+        if by_key[key] then return fail("ownership","duplicate combat owner",state,key) end
+        for name in next,record.callbacks do if not allowed[name] then return fail("unsupported","unknown first callback",state,key) end end
+        by_key[key]=record
+    end
+    local consumed={}
+    for i,class in ipairs(match.units) do
+        local ctx=plain(class) and class.context
+        if not plain(ctx) or type(ctx.class_key)~="string" or ctx.class_key=="" or not dense(ctx.layout) then
+            return fail("ownership","complete Card class layout required",state)
+        end
+        local own=class_owners[ctx.class_key]
+        if not own or state.layout[ctx.class_key] or #own.slots~=#ctx.layout then return fail("ownership","missing class owner",state) end
+        state.classes[#state.classes+1]=ctx.class_key
+        local ref={owner=owner,id=i};state.class_refs[ctx.class_key]=ref;state.layout[ctx.class_key]=layout_copy(ctx.layout)
+        for slot,desc in ipairs(ctx.layout) do
+            if desc.kind=="card" and desc.callbacks.init then
+                local key=key_of(ctx.class_key,slot);local actual=by_key[key]
+                if not actual or actual.card~=own.slots[slot] or rawget(actual.card,"is_combat")~=true then
+                    return fail("ownership","missing captured combat card",state,key)
                 end
-                units[#units + 1] = unit
-            elseif entry.unit.carrier == "card" then
-                return fail("ownership", "card unit not owned by registered Card", state)
-            end
-        end
-        if #units ~= file_context.classes then
-            return fail("unsupported", "incomplete Card discovery", state)
-        end
-        match = { units = units }
-    else
-        local merr
-        match, merr = Card.Match(scan.analysis, { content = content })
-        if not match then return fail(merr.code, merr.message, state, merr.unit_key) end
-    end
-    local layout, order, descriptors = {}, {}, {}
-    for _, class in ipairs(match.units) do
-        local ctx = class.context
-        layout[ctx.class_key] = ctx.layout
-        for slot, descriptor in ipairs(ctx.layout) do
-            if descriptor.kind == "card" and descriptor.callbacks.init then
-                local key = key_of(ctx.class_key, slot)
-                order[#order + 1] = key
-                descriptors[key] = { class_key = ctx.class_key, slot = slot,
-                    descriptor = descriptor }
+                consumed[key]=true
+                local unit={key=key,class_key=ctx.class_key,slot=slot,card=actual.card,unit_ref=ref,definition_version=1,callbacks={}}
+                state.order[#state.order+1]=key;state.units[key]=unit
+                for _,name in ipairs(CALLBACKS) do
+                    local fn=rawget(actual.callbacks,name)
+                    if type(fn)~="function" or rawget(actual.card,name)~=fn then return fail("stale","genuine first callback identity required",state,key) end
+                    local candidate,err=literal(entry.source,desc,name,entry,state.defaults,state.providers,state,key)
+                    if not candidate then return nil,err end
+                    if candidate.body==nil and fn~=state.defaults[name] then return fail("stale","first default identity differs",state,key) end
+                    candidate.fn=fn
+                    local proof,why=captures(candidate,entry,state,key);if not proof then return nil,why end
+                    unit.callbacks[name]=stored(candidate,1,ref)
+                    authority.raws[#authority.raws+1]={unit_ref=ref,target=unit.card,key=name}
+                end
             end
         end
     end
-    return { scan = scan, layout = layout, order = order, descriptors = descriptors }
+    for class in next,class_owners do if not state.layout[class] then return fail("ownership","unrecognized captured class",state) end end
+    for key in next,by_key do if not consumed[key] then return fail("ownership","unrecognized combat owner",state,key) end end
+    local Evidence=require("SpellHotReload.Adapters.Card.CardReconcile")
+    for _,statement in ipairs(entry.source.analysis.statements) do
+        local class=Evidence.ClassWriteKey(statement.syntax)
+        if class then initial.class_bindings[class]=rawget(classes,class);identity(rawget(classes,class)) end
+    end
+    local group=project(state);group.initial=initial;group.identity_objects=identities;group.authority=authority
+    return group
 end
-local function fixed_layout(a, b)
-    for class_key, layout in next, a do
-        local newer = b[class_key]
-        if not newer or #layout ~= #newer then return false end
-        for i, desc in ipairs(layout) do
-            local new = newer[i]
-            if desc.kind ~= new.kind or desc.constructor ~= new.constructor
-                or desc.perform ~= new.perform then return false end
+-- A genuinely Card-free first load contributes no invented registry/defaults.
+function M.Empty(owner,entry,session,match)
+    if not plain(owner) or type(owner.Id)~="string" or not plain(entry) or not Anchor.Live(entry)
+        or not Source.Validate(entry.source) or not plain(match) or not dense(match.units) or #match.units~=0
+        or type(session)~="string" or session=="" then return fail("ownership","genuine Card-free first load required",entry) end
+    local state={kind=M.Kind,version=M.Version,owner=owner,owner_id=owner.Id,file=entry.file,
+        entry=entry,anchor=entry.anchor,loaded_source=entry.loaded_source,session_id=session,
+        classes={},class_refs={},layout={},order={},units={},providers={},defaults={}}
+    local group=project(state)
+    group.initial={source=entry.source,match=match,empty=true,ownership={},class_bindings={}}
+    group.identity_objects={};group.authority={cells={},raws={},forbidden={}}
+    return group
+end
+-- Match and source mapping are source-only evidence; real Locate owns locations.
+-- A changed signature is recorded without constructing any candidate callback.
+function M.Compare(group,initial,source,match,locations,rows)
+    local state=plain(group) and group.state
+    if not plain(state) or state.kind~=M.Kind or state.version~=M.Version or not plain(initial)
+        or not Source.Validate(source) or not plain(match) or not dense(match.units)
+        or not plain(locations) or not plain(locations.by_key) or not plain(rows) then
+        return fail("ownership","actual Card group, complete source/location/rows required",state)
+    end
+    local view={kind=M.Kind..".View",version=M.Version,base=state,base_group=group,initial=initial,
+        source=source,match=match,locations=locations,rows=rows,by_key={},pending_classes={},candidate_layout={},probes={}}
+    local descriptors={}
+    for _,class in ipairs(match.units) do
+        view.candidate_layout[class.context.class_key]=class.context.layout
+        for slot,desc in ipairs(class.context.layout) do descriptors[desc]=class.context.class_key..":"..slot end
+    end
+    for class,layout in next,state.layout do
+        if not same_layout(layout,view.candidate_layout[class]) then view.pending_classes[class]=true end
+    end
+    for class in next,view.candidate_layout do if not state.layout[class] then view.pending_classes[class]=true end end
+    local why
+    view.before_facts,why=M.Facts(initial.source,initial.match,view.pending_classes)
+    if not view.before_facts then return nil,why end
+    view.after_facts,why=M.Facts(source,match,view.pending_classes)
+    if not view.after_facts then return nil,why end
+    view.wiring_changed=view.before_facts.wiring~=view.after_facts.wiring
+    view.generated=next(state.layout)~=nil or next(view.candidate_layout)~=nil or view.before_facts.wiring~="" or view.after_facts.wiring~=""
+    if view.generated then
+        for _,name in ipairs({"_tmp_sc","_sc_table","_editor_class","boss","table"}) do
+            if initial.source.bindings.by_name[name] or source.bindings.by_name[name] then
+                view.blocked={code="unsupported",message="generated wiring name is shadowed: "..name}
+            end
         end
     end
-    for class_key in next, b do if not a[class_key] then return false end end
-    return true
-end
-local function prepare(discovery, descriptor, name, entry, defaults, state, key)
-    local body = descriptor.callbacks[name]
-    if not body then
-        return { body = nil, signature = "default", fn = defaults[name],
-            dependencies = {}, visible = {}, join_plan = nil }
+    for _,key in ipairs(state.order) do
+        local old=state.units[key];local located=locations.by_key[key]
+        if not plain(located) or located.key~=key then return fail("ownership","complete original Card locations required",state,key) end
+        local descriptor=located.status=="located" and located.descriptor or nil
+        if descriptor and descriptors[descriptor]~=old.class_key..":"..located.candidate_slot then
+            return fail("ownership","located descriptor is outside original class discovery",state,key)
+        end
+        local item={key=key,previous=old,location=located,descriptor=descriptor,callbacks={},changed=false}
+        if not descriptor then item.blocked={code="ambiguous",message=located.reason or "card has no proven source correspondence"} end
+        for _,name in ipairs(CALLBACKS) do
+            local previous=old.callbacks[name]
+            -- Body equality alone cannot prove definition-point bindings stayed
+            -- the same. Reuse full-source lexical facts; never rebuild source or
+            -- construct an unselected callback. Resolve still rejects the drift.
+            local binding_changed=false
+            if descriptor and descriptor.callbacks[name] and previous.body~=nil then
+                local visible,err=Source.Visible(source,descriptor.callback_syntax[name])
+                if not visible then return nil,err end
+                binding_changed=not same(visible,previous.visible)
+            end
+            local cb={previous=previous,changed=descriptor~=nil
+                and (signature(descriptor,name)~=previous.signature or binding_changed)}
+            item.callbacks[name]=cb;item.changed=item.changed or cb.changed
+        end
+        view.by_key[key]=item
     end
-    local point = descriptor.callback_points and descriptor.callback_points[name]
-    local record
-    for i, statement in ipairs(discovery.scan.analysis.statements) do
-        if point and statement.source_range.first == point.first then
-            record = discovery.scan.bindings.statements[i]; break
+    return view
+end
+-- Exact saved default restoration requires source-only deletion evidence from
+-- this owner/version and the same mapped descriptor; absence alone is insufficient.
+local function deletion(view,item,name)
+    local row=view.rows[item.key..":"..name]
+    local previous=item.previous.callbacks[name]
+    local tomb=plain(row) and row.tombstone;local into=plain(row) and row.candidate
+    if name=="init" or not row or row.status~="deleted" or not plain(tomb) or tomb.owner~=view.base.owner
+        or tomb.owner_id~=view.base.owner_id or not plain(row.previous) or row.previous.definition~=previous
+        or row.previous.definition_version~=previous.definition_version or tomb.previous~=row.previous
+        or tomb.definition_version~=previous.definition_version or not plain(into)
+        or into.descriptor~=item.descriptor or into.slot~=item.location.candidate_slot or into.callback~=name then
+        return fail("ambiguous","optional callback deletion lacks exact owner/version evidence",view.base,item.key)
+    end
+    return tomb
+end
+function M.Resolve(view,key)
+    local item=plain(view) and view.by_key[key]
+    if not item then return fail("ownership","unknown original Card selection",view and view.base,key) end
+    if view.blocked then return nil,view.blocked end
+    if item.blocked then return nil,item.blocked end
+    if item.resolved then return item.resolved end
+    local result={key=key,item=item,callbacks={},providers={},changed=item.changed,requires_file_check=false}
+    local seen={}
+    for _,name in ipairs(CALLBACKS) do
+        local cb=item.callbacks[name];local record=cb.previous
+        if cb.changed then
+            local candidate,err=literal(view.source,item.descriptor,name,view.base.entry,view.base.defaults,view.base.providers,view.base,key)
+            if not candidate then return nil,err end
+            if record.body~=nil and candidate.body~=nil and not same(record.visible,candidate.visible) then
+                return fail("unsupported","callback definition-point binding changed",view.base,key)
+            end
+            if record.body~=nil and candidate.body==nil then
+                local tomb,why=deletion(view,item,name);if not tomb then return nil,why end
+                candidate.deletion=tomb;result.requires_file_check=true
+            end
+            candidate.previous=record;record=candidate
+            view.probes[key..":"..name]=candidate
+        end
+        result.callbacks[name]=record
+        for _,dep in ipairs(record.dependencies) do
+            local ref=record.providers[dep]
+            if not seen[ref] then seen[ref]=true;result.providers[#result.providers+1]=ref end
         end
     end
-    if not record then return fail("unsupported", "callback definition point is not a top-level statement", state, key) end
-    local visible = {}
-    for local_name in next, record.visible do visible[#visible + 1] = local_name end
-    table.sort(visible)
-    local created, cerr = Compose.Create(body, nil, visible,
-        { form = "expression", syntax = descriptor.callback_syntax[name], name = "CardVersions:" .. key .. ":" .. name })
-    if not created then return fail("compile", cerr, state, key) end
-    local plan, perr = Compose.Plan(created, entry)
-    if not plan then return fail("unsupported", perr, state, key) end
-    local dependencies = copy(created.used)
-    table.sort(dependencies)
-    return { body = body, signature = descriptor.callback_signatures[name], fn = created.fn, syntax=descriptor.callback_syntax[name],
-        dependencies = dependencies, visible = visible, join_plan = plan }
+    item.resolved=result;return result
 end
-local function captures(record, entry, state, key)
-    if record.body == nil then return {} end -- defaults are not file closures
-    local live, err = Compose.Plan(record.fn, entry)
-    if not live then return fail("stale", err, state, key) end
-    local names = copy(live.names)
-    table.sort(names)
-    if not same(names, record.dependencies) then
-        return fail("stale", "published callback captures changed", state, key)
-    end
-    for _, join in ipairs(live.joins) do
-        if type(debug.upvalueid) == "function"
-            and debug.upvalueid(join.fn, join.index) ~= debug.upvalueid(join.anchor, join.donor) then
-            return fail("stale", "callback no longer shares the anchor cell", state, key)
+-- Every actual callback/capture is checked even when blocked, absent or unselected.
+function M.Reads(state)
+    local reads,capture_reads={},{}
+    for _,key in ipairs(state.order) do
+        local unit=state.units[key]
+        for _,name in ipairs(CALLBACKS) do
+            local cb=unit.callbacks[name]
+            if rawget(unit.card,name)~=cb.fn then return fail("stale","published raw callback was externally replaced",state,key) end
+            reads[#reads+1]={owner=state.owner,unit_ref=unit.unit_ref,target=unit.card,key=name,value=cb.fn}
+            local proof,err=captures(cb,state.entry,state,key);if not proof then return nil,err end
+            for _,read in ipairs(proof) do
+                local record=copy(read);record.owner=state.owner;record.unit_ref=unit.unit_ref
+                capture_reads[#capture_reads+1]=record
+            end
         end
     end
-    return live.joins
+    return {read_set=reads,capture_reads=capture_reads}
 end
-local function observed(unit, functions)
-    local seen, result = {}, {}
-    local function visit(name)
-        if seen[name] then return end
-        seen[name] = true
-        local target = functions.units[name]
-        if target then
-            result[name] = target.definition_version
-            for _, dep in ipairs(target.dependencies) do visit(dep) end
+-- Final keys are supplied by the owner AFTER root constraints. No provider
+-- selection, Local preparation or recursive closure expansion takes place here.
+function M.Prepare(view,keys,registry_reads)
+    if not dense(keys) or not dense(registry_reads) then return fail("ownership","selected Card keys and pruned registry proof required",view.base) end
+    for _,read in ipairs(registry_reads) do
+        if not plain(read) or read.registry~=view.initial.classes or type(read.key)~="string"
+            or not plain(read.value) or rawget(read.registry,read.key)~=read.value then
+            return fail("stale","selected class binding changed before preparation",view.base)
         end
     end
-    for _, name in ipairs(CALLBACKS) do
-        for _, dep in ipairs(unit.callbacks[name].dependencies) do visit(dep) end
-    end
-    return result
-end
-local function valid(state)
-    if not plain(state) or state.kind ~= M.Kind or state.version ~= M.Version
-        or state.owner ~= Card or state.owner_id ~= "card"
-        or not plain(state.functions) or state.functions.kind ~= Functions.Kind
-        or state.entry ~= state.functions.entry or state.anchor ~= state.functions.anchor
-        or state.loaded_source ~= state.functions.loaded_source
-        or state.session_id ~= state.functions.session_id or state.file ~= state.functions.file
-        or dense(state.order) == nil or not plain(state.units) or not plain(state.layout)
-        or not plain(state.defaults) or type(state.revision) ~= "number"
-        or state.revision < 0 or state.revision == math.huge
-        or state.revision ~= math.floor(state.revision) then return false end
-    local seen = {}
-    for _, name in ipairs(CALLBACKS) do
-        if type(state.defaults[name]) ~= "function" then return false end
-    end
-    for _, key in ipairs(state.order) do
-        local unit = state.units[key]
-        if type(key) ~= "string" or seen[key] or not plain(unit) or unit.key ~= key
-            or not plain(unit.card) or not plain(unit.callbacks) or not plain(unit.observed)
-            or type(unit.class_key) ~= "string" or type(unit.slot) ~= "number"
-            or key ~= key_of(unit.class_key, unit.slot)
-            or type(unit.definition_version) ~= "number" or unit.definition_version < 1 then return false end
-        seen[key] = true
-        for _, name in ipairs(CALLBACKS) do
-            local cb = unit.callbacks[name]
-            if not plain(cb) or type(cb.fn) ~= "function" or type(cb.signature) ~= "string"
-                or dense(cb.dependencies) == nil or dense(cb.visible) == nil
-                or type(cb.definition_version) ~= "number" or cb.definition_version < 1 then return false end
+    local reads,err=M.Reads(view.base);if not reads then return nil,err end
+    local plan={view=view,keys={},selected={},publications={},joins={},raw_writes={},cell_writes={},
+        read_set=reads.read_set,capture_reads=reads.capture_reads,registry_reads=copy(registry_reads),requires_file_check=false}
+    for _,key in ipairs(keys) do
+        if plan.selected[key] then return fail("ownership","duplicate Card selection",view.base,key) end
+        local resolved,why=M.Resolve(view,key);if not resolved then return nil,why end
+        plan.selected[key]=resolved;plan.keys[#plan.keys+1]=key
+        plan.requires_file_check=plan.requires_file_check or resolved.requires_file_check
+        for _,name in ipairs(CALLBACKS) do
+            local cb=resolved.callbacks[name]
+            if cb~=resolved.item.previous.callbacks[name] then
+                local old=resolved.item.previous
+                if cb.created then
+                    local fresh,perr=Compose.Plan(cb.created,view.base.entry)
+                    if not fresh then return fail("stale",type(perr)=="string" and perr or "prepared callback binding changed",view.base,key) end
+                    for _,join in ipairs(fresh.joins) do
+                        local record=copy(join);record.owner=view.base.owner;record.unit_ref=old.unit_ref
+                        plan.joins[#plan.joins+1]=record
+                    end
+                end
+                plan.raw_writes[#plan.raw_writes+1]={owner=view.base.owner,unit_ref=old.unit_ref,
+                    target=old.card,key=name,before=cb.previous.fn,value=cb.fn}
+                plan.publications[#plan.publications+1]={unit_key=key,key=name,target=old.card,before=cb.previous.fn,
+                    value=cb.fn,callback=cb,deletion=cb.deletion}
+            end
         end
     end
-    for key in next, state.units do if not seen[key] then return false end end
-    return true
+    return plan
+end
+function M.Next(plan)
+    local state=plan.view.base
+    if #plan.raw_writes==0 then return plan.view.base_group end
+    local next_state=copy(state);next_state.units={}
+    for _,key in ipairs(state.order) do
+        local old=state.units[key];local unit=copy(old);unit.callbacks=copy(old.callbacks)
+        next_state.units[key]=unit
+    end
+    local advanced={}
+    for _,pub in ipairs(plan.publications) do
+        local unit=next_state.units[pub.unit_key]
+        unit.callbacks[pub.key]=stored(pub.callback,state.units[pub.unit_key].callbacks[pub.key].definition_version+1,unit.unit_ref)
+        if not advanced[pub.unit_key] then unit.definition_version=unit.definition_version+1;advanced[pub.unit_key]=true end
+    end
+    return project(next_state)
 end
 
----Seed only at trusted genuine first load. All discovered combat owners required.
-function M.Seed(functions, initial, defaults)
-    if not plain(functions) or functions.kind ~= Functions.Kind or functions.revision ~= 0
-        or dense(initial) == nil or not plain(defaults) then
-        return fail("unsupported", "first-load function snapshot, dense owners and defaults required", functions)
-    end
-    for _, name in ipairs(CALLBACKS) do
-        if type(rawget(defaults, name)) ~= "function" then
-            return fail("unsupported", "all seven standard defaults required", functions)
-        end
-    end
-    local checked, ferr = Functions.Compare(functions, functions.loaded_source)
-    if not checked then return nil, ferr end
-    local discovery, derr = discover(functions.loaded_source, functions)
-    if not discovery then return nil, derr end
-    local owners, cards = {}, {}
-    for _, owner in ipairs(initial) do
-        if not plain(owner) or type(owner.class_key) ~= "string" or owner.class_key == ""
-            or type(owner.slot) ~= "number" or owner.slot < 1 or owner.slot == math.huge
-            or owner.slot ~= math.floor(owner.slot) or not plain(owner.card)
-            or not plain(owner.callbacks) then
-            return fail("unsupported", "invalid initial card owner", functions)
-        end
-        local key = key_of(owner.class_key, owner.slot)
-        if owners[key] or cards[owner.card] or not discovery.descriptors[key] then
-            return fail("ownership", "duplicate/unknown card owner", functions, key)
-        end
-        for name in next, owner.callbacks do
-            if not allowed[name] then return fail("unsupported", "unknown initial callback", functions, key) end
-        end
-        owners[key], cards[owner.card] = owner, true
-    end
-    local state = { kind = M.Kind, version = M.Version, file = functions.file,
-        functions = functions, entry = functions.entry, anchor = functions.anchor,
-        loaded_source = functions.loaded_source, session_id = functions.session_id,
-        owner = Card, owner_id = Card.Id, revision = 0, layout = discovery.layout, order = copy(discovery.order),
-        defaults = copy(defaults), units = {} }
-    for _, key in ipairs(state.order) do
-        local owner, desc = owners[key], discovery.descriptors[key]
-        if not owner then return fail("ownership", "missing first-load card owner", functions, key) end
-        local unit = { key = key, class_key = desc.class_key, slot = desc.slot,
-            card = owner.card, callbacks = {}, definition_version = 1 }
-        for _, name in ipairs(CALLBACKS) do
-            local identity = rawget(owner.callbacks, name)
-            if type(identity) ~= "function" or rawget(owner.card, name) ~= identity then
-                return fail("stale", "genuine first callback identity required", functions, key)
-            end
-            local record, err = prepare(discovery, desc.descriptor, name, state.entry, defaults, state, key)
-            if not record then return nil, err end
-            if record.body == nil and identity ~= defaults[name] then
-                return fail("stale", "first default callback identity mismatch", state, key)
-            end
-            record.fn, record.definition_version, record.join_plan = identity, 1, nil
-            local actual, aerr = captures(record, state.entry, state, key)
-            if not actual then return nil, aerr end
-            unit.callbacks[name] = record
-        end
-        unit.observed = observed(unit, functions)
-        state.units[key] = unit
-    end
-    return state
-end
-
--- Narrow file-layout allowance. Only exact safe generated wiring statements
--- are excluded from the unknown-effect check; NEVER mask a whole class range.
--- Nonliteral calls/field writes and changed class implementations remain a
--- file-wide refusal when their effect on globals/bindings cannot be bounded.
--- Adapter policy over syntax nodes. Grammar has already been parsed once.
 local function safe_wiring(ast)
     local function scalar(n,numeric)
         if not n then return false end
@@ -362,45 +438,61 @@ local function safe_wiring(ast)
         and values[4].kind=="unary" and values[4].operator=="#" and Tree.CardList(values[4].operand)~=nil
         and values[5].kind=="literal" and values[5].literal_kind=="boolean"
 end
-local function card_file_facts(state,source,pending_classes)
-    local excluded,wiring,binding_reads,structures={},{},{},{}
-    for _,definitions in next,source.definitions do
-        for _,definition in ipairs(definitions) do excluded[definition.statement]=true end
+-- Card facts cover only exact owned callback statements and safe generated
+-- wiring. Local definition/declaration coverage stays with its original owner.
+-- Whole classes are never masked. Function bodies are not top-level effects.
+function M.Facts(source,match,pending_classes)
+    local valid,err=Source.Validate(source)
+    if not valid then return nil,err end
+    if not plain(match) or not dense(match.units) or not plain(pending_classes or {}) then
+        return fail("ownership","complete Card source match required")
     end
-    for _,declaration in ipairs(source.bindings.declarations) do
-        if not state.functions.units[declaration.name] then excluded[declaration.statement]=true end
+    local excluded,wiring,binding_reads,structures={},{},{},{}
+    for _,unit in ipairs(match.units) do
+        for _,desc in ipairs(unit.context.layout) do
+            for name,node in next,desc.callback_syntax or {} do
+                local site=source.sites[node]
+                if not allowed[name] or not site or not site.statement then
+                    return fail("ownership","callback syntax is not owned by this source")
+                end
+                local statement=source.analysis.statements[site.statement]
+                local callback,fn=Tree.Callback(statement.syntax)
+                if callback~=name or fn~=node then return fail("ownership","callback is not a whole statement") end
+                excluded[site.statement]=true
+            end
+        end
     end
     for index,statement in ipairs(source.analysis.statements) do
-        local ast=statement.syntax
-        local name=Tree.Callback(ast)
-        local callback=name and allowed[name]
-        local wire=safe_wiring(ast)
-        if wire then wiring[#wiring+1]=Tree.Signature(ast,source.analysis.tokens) end
+        local ast=statement.syntax;local wire=safe_wiring(ast)
+        if wire then
+            wiring[#wiring+1]=Tree.Signature(ast,source.analysis.tokens)
+            excluded[index]=true
+        end
         structures[index]=wire or (ast.kind=="call_statement" and Tree.IsName(ast.expression.callee,"_BOSS_ESCAPE")) or nil
-        if callback or wire then excluded[index]=true end
         if not excluded[index] then
-            -- Only expressions evaluated at top level can be affected before publication.
-            local function reads(n,parent)
-                if n.kind=="function" then return end
+            local function reads(n,parent,may_execute)
+                -- A function value alone is delayed. Inside an evaluated call it
+                -- may be invoked immediately (callee, returned closure or callback
+                -- argument); conservatively inspect its full subtree. No attempt
+                -- to execute/evaluate the call or guess interprocedural behavior.
+                if n.kind=="function" and not may_execute then return end
                 if n.kind=="name" then
                     if n.name=="_tmp_sc" or n.name=="_sc_table" then binding_reads[index]=true end
                     if n.name=="_editor_class" then
                         local key=parent and parent.kind=="index" and parent.base==n and Tree.String(parent.key)
-                        if not key or pending_classes[key] then binding_reads[index]=true end
+                        if not key or pending_classes and pending_classes[key] then binding_reads[index]=true end
                     end
                 end
-                for _,child in ipairs(n.children) do reads(child,n) end
+                for _,child in ipairs(n.children) do reads(child,n,may_execute or n.kind=="call") end
             end
             if ast.kind=="assign" or ast.kind=="local" then
                 for _,value in ipairs(ast.values) do reads(value) end
             else reads(ast) end
         end
     end
-    return {scan=source,excluded=excluded,wiring=table.concat(wiring,"\n"),
-        binding_reads=binding_reads,structures=structures}
+    return {source=source,excluded=excluded,wiring=table.concat(wiring,"\n"),binding_reads=binding_reads,structures=structures}
 end
--- Generated binding checks inspect expression nodes; live registry identity still owns permission.
-local function class_binding(root,classes,state,key,pending_classes,wiring_changed)
+function M.Bindings(root,classes,state,key,pending_classes,wiring_changed)
     if not root then return {} end
     local reads,refusal={}
     local function visit(n,parent)
@@ -412,7 +504,7 @@ local function class_binding(root,classes,state,key,pending_classes,wiring_chang
             if n.name=="_editor_class" then
                 local name=parent and parent.kind=="index" and parent.base==n and Tree.String(parent.key)
                 if not name then refusal="dynamic class registry binding cannot be proved";return end
-                if not plain(rawget(classes,name)) then
+                if not plain(classes) or not plain(rawget(classes,name)) then
                     refusal="candidate class binding is unavailable; registration remains pending";return
                 end
                 if pending_classes[name] then
@@ -427,651 +519,251 @@ local function class_binding(root,classes,state,key,pending_classes,wiring_chang
     if refusal then return fail("unsupported",refusal,state,key) end
     return reads
 end
----Full candidate report; compares each actually published callback signature.
-local function compare(state, content, snapshot, location, file_location)
-    if not valid(state) then return fail("unsupported", "a valid card snapshot is required", state) end
-    if snapshot ~= nil then
-        local common = plain(snapshot) and snapshot.common or nil
-        if not plain(common) or common.file ~= state.file
-            or common.session_id ~= state.session_id or common.registry_entry ~= state.entry
-            or common.loaded_source ~= state.loaded_source
-            or common.base_revision ~= state.revision or common.published_units ~= state then
-            return fail("stale", "discovery published baseline disagrees", state)
+-- All owners' selected function AST facts carry exact root provenance from
+-- Dependencies. Card checks business bindings; it never chooses Local units.
+function M.Constraints(view,dependencies)
+    if not plain(view) or not plain(dependencies) or not plain(dependencies.operation)
+        or dependencies.operation.source~=view.source or dependencies.stable~=true
+        or not dense(dependencies.safe_roots) or not dense(dependencies.source_facts) then
+        return fail("ownership","stable same-source root facts required",view and view.base)
+    end
+    local roots={};local result={view=view,dependencies=dependencies,by_root={},blocked_roots={}}
+    for _,root in ipairs(dependencies.safe_roots) do
+        if not plain(root) or type(root.root_id)~="string" or roots[root.root_id] then
+            return fail("ownership","unique safe roots required",view.base)
+        end
+        roots[root.root_id]=true;result.by_root[root.root_id]={reads={},facts={}}
+    end
+    for _,fact in ipairs(dependencies.source_facts) do
+        if not plain(fact) or fact.source~=view.source or not plain(fact.node)
+            or fact.node.kind~="function" or view.source.sites[fact.node]==nil
+            or not roots[fact.root_id] then return fail("ownership","foreign selected function fact",view.base) end
+        local root=result.by_root[fact.root_id]
+        root.facts[#root.facts+1]=fact
+        if not root.blocked then
+            local reads,err
+            if view.blocked then err=view.blocked
+            else reads,err=M.Bindings(fact.node,view.initial.classes,view.base,nil,view.pending_classes,view.wiring_changed) end
+            if not reads then root.blocked=err
+            else for _,read in ipairs(reads) do root.reads[#root.reads+1]=read end end
         end
     end
-    local reconciliation,rerr=require("SpellHotReload.Adapters.Card.CardReconcile").Index(state,snapshot)
-    if not reconciliation then return nil,rerr end
-    local function_diff, ferr
-    local class_reads={}
-    if file_location then function_diff,ferr=Functions.CompareFileDiscovery(state.functions,snapshot)
-    elseif snapshot ~= nil then function_diff, ferr = Functions.CompareDiscovery(state.functions, snapshot)
+    for _,root in ipairs(dependencies.safe_roots) do
+        local proof=result.by_root[root.root_id]
+        if proof.blocked then result.blocked_roots[#result.blocked_roots+1]={root_id=root.root_id,reason=proof.blocked} end
     end
-    if not function_diff then return nil, ferr end
-    local discovery, derr = discover(content, state, snapshot)
-    if not discovery then return nil, derr end
-    local pending_classes,wiring_changed,file_facts={}
-    if file_location then
-        for class,layout in next,state.layout do
-            if not discovery.layout[class] or not fixed_layout({[class]=layout},
-                {[class]=discovery.layout[class]}) then pending_classes[class]=true end
-        end
-        for class in next,discovery.layout do
-            if not state.layout[class] then pending_classes[class]=true end
-        end
-        local loaded,lerr=Source.Inspect(state.loaded_source)
-        if not loaded then return nil,lerr end
-        for _,name in ipairs({"_tmp_sc","_sc_table","_editor_class","boss","table"}) do
-            if function_diff.scan.bindings.by_name[name] or loaded.bindings.by_name[name] then
-                return fail("unsupported","generated wiring name is shadowed: "..name,state)
-            end
-        end
-        file_facts={before=card_file_facts(state,loaded,pending_classes),
-            after=card_file_facts(state,function_diff.scan,pending_classes)}
-        wiring_changed=file_facts.before.wiring~=file_facts.after.wiring
-        for _,name in ipairs(state.functions.names) do
-            local item=function_diff.by_name[name]
-            if item.changed and not item.blocked then
-                local safe,err=class_binding(item.item.definition.syntax,file_location.classes,state,"local:"..name,
-                    pending_classes,wiring_changed)
-                if not safe then item.blocked=err;item.action="binding-blocked"
-                else for _,read in ipairs(safe) do class_reads[#class_reads+1]=read end end
-            end
-        end
-    end
-    local report = { kind = M.Kind .. ".Diff", version = M.Version, base = state,
-        content = content, discovery = snapshot, functions = function_diff, by_key = {}, changed = {},
-        affected = {}, read_set = {}, capture_reads = {}, class_reads=class_reads }
-    local claimed = {}
-    if location or file_location then
-        report.location, report.unmapped, report.unowned, report.tombstones = location, {}, {}, {}
-    end
-    report.file_location,report.file_facts=file_location,file_facts
-    local changed_functions = {}
-    for _, name in ipairs(function_diff.affected) do changed_functions[name] = true end
-    for _, key in ipairs(state.order) do
-        local old, source = state.units[key], discovery.descriptors[key]
-        if file_location then
-            local proof=file_location.by_key[key]
-            source=proof.status=="located" and discovery.descriptors[key_of(old.class_key,proof.candidate_slot)] or nil
-            if source and source.descriptor~=proof.descriptor then
-                return fail("ownership","file descriptor disagrees with full discovery",state,key)
-            end
-        elseif location then
-            local before, after = state.layout[old.class_key], discovery.layout[old.class_key]
-            -- Snapshot slot keys are lookup coordinates, not cross-version identity.
-            if key == location.key then
-                source = discovery.descriptors[key_of(old.class_key, location.candidate_slot)]
-                if not source or source.descriptor ~= location.descriptor then
-                    return fail("ownership", "located descriptor disagrees with full discovery", state, key)
-                end
-            elseif not after or not fixed_layout({[old.class_key]=before}, {[old.class_key]=after}) then
-                source = nil
-            end
-        end
-        local descriptor = source and source.descriptor
-        local item = { key = key, previous = old, callbacks = {}, changed = false }
-        if location or file_location then
-            item.source_slot = source and source.slot
-            item.source_key = source and ("card:" .. source.class_key)
-            if source then
-                local source_key = key_of(source.class_key, source.slot)
-                if claimed[source_key] then
-                    return fail("ownership", "candidate card has multiple published owners", state, key)
-                end
-                claimed[source_key] = key
-            else
-                item.pending = true
-                item.source_status = file_location and file_location.by_key[key].status
-                    or (discovery.layout[old.class_key] and "unmapped" or "source-absent")
-                item.reason=file_location and file_location.by_key[key].reason
-                report.unmapped[#report.unmapped + 1] = key
-                if item.source_status == "source-absent" then
-                    report.tombstones[#report.tombstones + 1] = { key=key, previous=old,
-                        definition_version=old.definition_version, action="restart-required",
-                        reason="class absent from candidate; live owner retained" }
-                end
-            end
-        end
-        for _, name in ipairs(CALLBACKS) do
-            local previous = old.callbacks[name]
-            if rawget(old.card, name) ~= previous.fn then
-                return fail("stale", "published raw callback was externally replaced", state, key)
-            end
-            report.read_set[#report.read_set + 1] = { target = old.card, key = name, value = previous.fn }
-            local actual, aerr = captures(previous, state.entry, state, key)
-            if not actual then return nil, aerr end
-            for _, read in ipairs(actual) do report.capture_reads[#report.capture_reads + 1] = read end
-            local candidate, cerr
-            if descriptor then
-                candidate, cerr = prepare(discovery, descriptor, name, state.entry, state.defaults, state, key)
-                if not candidate then
-                    if not file_location then return nil,cerr end
-                    item.blocked=item.blocked or cerr;candidate=copy(previous)
-                end
-            else
-                -- Keep real published captures for impact/observations; no guessed Inject.
-                candidate = copy(previous)
-            end
-            if previous.body~=nil and candidate.body==nil then
-                local deletion,err=require("SpellHotReload.Adapters.Card.CardReconcile").Deletion(
-                    state,snapshot,key,name,source.slot,descriptor,reconciliation)
-                if not deletion then
-                    item.blocked=item.blocked or err
-                else candidate.deletion=deletion end
-            end
-            if previous.body and candidate.body and not same(previous.visible, candidate.visible) then
-                local _,err=fail("unsupported","callback definition-point binding changed",state,key)
-                if not file_location then return nil,err end
-                item.blocked=item.blocked or err
-            end
-            candidate.changed = candidate.signature ~= previous.signature
-            if file_location and candidate.changed then
-                local safe,err=class_binding(candidate.syntax,file_location.classes,state,key,
-                    pending_classes,wiring_changed)
-                if not safe then item.blocked=item.blocked or err
-                else for _,read in ipairs(safe) do class_reads[#class_reads+1]=read end end
-            end
-            candidate.previous = previous
-            item.callbacks[name] = candidate
-            item.changed = item.changed or candidate.changed
-        end
-        if item.blocked then
-            item.pending,item.changed,item.source_status=true,false,"binding-blocked"
-            item.reason=item.blocked.message
-            for _,name in ipairs(CALLBACKS) do
-                item.callbacks[name]=copy(old.callbacks[name])
-                item.callbacks[name].previous=old.callbacks[name]
-                item.callbacks[name].changed=false
-            end
-        end
-        local impacted = item.changed
-        for _, name in ipairs(CALLBACKS) do
-            for _, graph in ipairs({ old.callbacks[name], item.callbacks[name] }) do
-                for _, dep in ipairs(graph.dependencies) do
-                    if changed_functions[dep] then impacted = true end
-                end
-            end
-        end
-        item.action = item.source_status or (item.changed and "compile-publish"
-            or (impacted and "shared-impact" or "keep-definition"))
-        report.by_key[key] = item
-        if item.changed then report.changed[#report.changed + 1] = key end
-        if impacted then report.affected[#report.affected + 1] = key end
-    end
-    if location or file_location then
-        for _, source_key in ipairs(discovery.order) do
-            if not claimed[source_key] then
-                local source = discovery.descriptors[source_key]
-                report.unowned[#report.unowned + 1] = { source_key="card:" .. source.class_key,
-                    candidate_slot=source.slot, descriptor=source.descriptor,
-                    action="restart-required", reason="no proven captured owner" }
-            end
-        end
-    end
-    if file_location then
-        report.structural_pending={}
-        if wiring_changed then
-            report.structural_pending[#report.structural_pending+1]={source_key="file:"..state.file,
-                reason="generated card/list/registration wiring is not published; live wiring retained"}
-        end
-        local seen={}
-        for _,owner in ipairs(file_location.capture.ownership) do
-            local class=owner.class_key;seen[class]=true
-            if not discovery.layout[class] or not fixed_layout({[class]=state.layout[class]},
-                {[class]=discovery.layout[class]}) then
-                report.structural_pending[#report.structural_pending+1]={source_key="card:"..class,
-                    reason="card layout/constructor metadata is not published; live list retained"}
-            end
-        end
-        for _,entry in ipairs(file_location.discovery.entries) do
-            if entry.adapter==Card and not seen[entry.unit.context.class_key] then
-                report.structural_pending[#report.structural_pending+1]={source_key=entry.unit.key,
-                    reason="new class/list is not registered or published"}
-            end
-        end
-    end
-    if location then
-        local deletes=false
-        for _,key in ipairs({location.key}) do
-            for _,name in ipairs(CALLBACKS) do
-                if report.by_key[key].callbacks[name].deletion then deletes=true end
-            end
-        end
-        if deletes then
-            -- Current's normal update scope is unchanged. Removing a callback
-            -- additionally requires the complete file's effect/remainder policy.
-            local pending={}
-            for class,layout in next,state.layout do
-                if not discovery.layout[class] or not fixed_layout({[class]=layout},
-                    {[class]=discovery.layout[class]}) then pending[class]=true end
-            end
-            for class in next,discovery.layout do
-                if not state.layout[class] then pending[class]=true end
-            end
-            local loaded,err=Source.Inspect(state.loaded_source)
-            if not loaded then return nil,err end
-            for _,name in ipairs({"_tmp_sc","_sc_table","_editor_class","boss","table"}) do
-                if discovery.scan.bindings.by_name[name] or loaded.bindings.by_name[name] then
-                    return fail("unsupported","generated wiring name is shadowed: "..name,state)
-                end
-            end
-            report.file_facts={before=card_file_facts(state,loaded,pending),
-                after=card_file_facts(state,discovery.scan,pending)}
-            local safe,why=require("SpellHotReload.Apply.FileApply").CheckTopLevel(report)
-            if not safe then return nil,why end
-        end
-    end
-    return report
+    return result
 end
-
----Explicit proven cards; SelectFile supplies all safe file roots in one call.
-function M.Select(report, keys, function_keys)
-    if not plain(report) or report.kind ~= M.Kind .. ".Diff" or report.version ~= M.Version
-        or not valid(report.base) or not plain(report.by_key) or dense(keys) == nil then
-        return fail("unsupported", "card diff and dense card keys required")
+-- Called after ALL owner constraints have removed roots. Return only surviving
+-- registry proofs; a rejected root cannot leave a stale read blocking another.
+function M.RetainConstraints(view,constraints,dependencies)
+    if not plain(constraints) or constraints.view~=view or not plain(dependencies)
+        or dependencies.operation~=constraints.dependencies.operation or dependencies.stable~=true
+        or not dense(dependencies.safe_roots) or not dense(dependencies.source_facts) then
+        return fail("ownership","exact pruned Card constraints required",view.base)
     end
-    local selected, root_set = {}, {}
-    for _, key in ipairs(keys) do
-        if type(key) ~= "string" or not report.by_key[key] or selected[key] then
-            return fail("unsupported", "unknown or duplicate current card", report.base, key)
+    local expected,reads,seen={},{},{}
+    for _,root in ipairs(dependencies.safe_roots) do
+        local proof=constraints.by_root[root.root_id]
+        if not proof or proof.blocked or expected[root.root_id] then
+            return fail("ownership","blocked or foreign root survived",view.base)
         end
-        if report.location and (key ~= report.location.key or report.by_key[key].pending) then
-            if key==report.location.key and report.by_key[key].blocked then
-                return nil,report.by_key[key].blocked
+        expected[root.root_id]={}
+        for _,fact in ipairs(proof.facts) do expected[root.root_id][fact]=true end
+        for _,read in ipairs(proof.reads) do
+            seen[read.registry]=seen[read.registry] or {}
+            local old=seen[read.registry][read.key]
+            if old and old.value~=read.value then return fail("stale","registry observations disagree",view.base) end
+            if not old then seen[read.registry][read.key]=read;reads[#reads+1]=read end
+        end
+    end
+    for _,fact in ipairs(dependencies.source_facts) do
+        if not plain(fact) or not expected[fact.root_id] or not expected[fact.root_id][fact] then
+            return fail("ownership","pruned source fact changed",view.base)
+        end
+        expected[fact.root_id][fact]=nil
+    end
+    for _,facts in next,expected do
+        if next(facts) then return fail("ownership","surviving root lost source facts",view.base) end
+    end
+    return reads
+end
+-- The Card adapter's two final Guards call this, including when it has no raw
+-- writes. Registry identity is checked again after invalidation, never inferred
+-- from an analysis/probe hit. Full layout/Current positioning belongs to Target.
+function M.Guard(plan,classes)
+    if not plain(plan) or not plain(plan.view) or not plan.view.initial.empty and classes~=plan.view.initial.classes
+        or not dense(plan.registry_reads) then return fail("ownership","Card final read proof required",plan and plan.view and plan.view.base) end
+    local reads,err=M.Reads(plan.view.base)
+    if not reads then return nil,err end
+    for _,read in ipairs(plan.registry_reads) do
+        if not plain(read) or read.registry~=classes or rawget(classes,read.key)~=read.value then
+            return fail("stale","candidate class registry identity changed",plan.view.base)
+        end
+    end
+    return true
+end
+-- Scalar display derives from the ONE actual file snapshot. In particular,
+-- helper-only publication leaves Card group/definition/callback identity intact.
+function M.Observations(snapshot,group,key)
+    if not plain(snapshot) or not dense(snapshot.owners) or not dense(snapshot.graph)
+        or not plain(group) or not plain(group.state) or not group.state.units[key] then
+        return fail("ownership","actual complete file snapshot and Card key required")
+    end
+    local found,refs,records,edges=false,{},{},{}
+    for _,owner in ipairs(snapshot.owners) do
+        if owner==group then found=true end
+        for _,unit in ipairs(owner.units) do refs[unit.unit_ref]=true end
+        for _,record in ipairs(owner.records) do
+            local ref=record.definition.unit_ref
+            if ref and record.kind=="function" then
+                records[ref]=records[ref] or {};records[ref][#records[ref]+1]=record
             end
-            return fail("ambiguous", "only the proven current root may be selected", report.base, key)
         end
-        if report.file_location and report.by_key[key].pending then
-            return nil,report.by_key[key].blocked or {phase="inject",code="ambiguous",file=report.base.file,
-                unit_key=key,message=report.by_key[key].reason or "file card has no safe correspondence"}
+    end
+    if not found then return fail("stale","Card group is not the actual snapshot group",group.state,key) end
+    for _,edge in ipairs(snapshot.graph) do
+        if not refs[edge.consumer] or not refs[edge.provider] then return fail("ownership","foreign actual graph endpoint",group.state,key) end
+        edges[edge.consumer]=edges[edge.consumer] or {};edges[edge.consumer][#edges[edge.consumer]+1]=edge.provider
+    end
+    local queue,seen,result,n={},{},{},1
+    local function enqueue(ref)
+        if not refs[ref] then return false end
+        if not seen[ref] then seen[ref]=true;queue[#queue+1]=ref end
+        return true
+    end
+    for _,name in ipairs(CALLBACKS) do
+        local cb=group.state.units[key].callbacks[name]
+        for _,dep in ipairs(cb.dependencies) do
+            if not enqueue(cb.providers[dep]) then return fail("ownership","actual callback provider unavailable",group.state,key) end
         end
-        selected[key] = true
-        local item = report.by_key[key]
-        for _, name in ipairs(CALLBACKS) do
-            local cb = item.callbacks[name]
-            local effective = cb.changed and cb or cb.previous
-            for _, dep in ipairs(effective.dependencies) do
-                if report.functions.by_name[dep] then root_set[dep] = true end
+    end
+    while n<=#queue do
+        local ref=queue[n];n=n+1
+        for _,record in ipairs(records[ref] or {}) do
+            local name=record.name or record.key
+            if result[name] and result[name]~=record.definition_version then
+                return fail("ownership","ambiguous provider display name",group.state,key)
+            end
+            result[name]=record.definition_version
+        end
+        for _,provider in ipairs(edges[ref] or {}) do enqueue(provider) end
+    end
+    local names,out={},{}
+    for name in next,result do names[#names+1]=name end;table.sort(names)
+    for _,name in ipairs(names) do out[#out+1]={name=name,version=result[name]} end
+    return out
+end
+-- Card supplies only its own exact callback coverage and retained wiring facts.
+-- Local definitions/initializers are never hidden by this owner's class ranges.
+function M.Coverage(view,plan)
+    if not plain(view) or not plain(plan) or plan.view~=view or not plain(view.initial)
+        or not plain(view.initial.source) or not plain(view.before_facts) or not plain(view.after_facts) then
+        return fail("ownership","actual Card comparison and prepared domain scope required",view and view.base)
+    end
+    local function side(facts)
+        return {scan=facts.source,claims={},excluded=copy(facts.excluded),
+            structures=copy(facts.structures),binding_reads=copy(facts.binding_reads),wiring=facts.wiring}
+    end
+    local result={kind="SpellHotReload.FileCoverage",version=1,owner=view.base.owner,base_group=view.base_group,source=view.source,
+        initial_source=view.initial.source,before=side(view.before_facts),after=side(view.after_facts),
+        function_names={},pending={},scope=plan,requires_top_level=plan.requires_file_check==true}
+    local function claim(side,node,name,key)
+        if not node then return true end
+        local site=side.scan.sites[node];local statement=site and side.scan.analysis.statements[site.statement]
+        local callback,fn
+        if statement then callback,fn=Tree.Callback(statement.syntax) end
+        if callback~=name or fn~=node or side.claims[site.statement] then
+            return fail("ownership","Card coverage requires one whole owned callback statement",view.base,key)
+        end
+        side.claims[site.statement]=key;return true
+    end
+    local originals={}
+    for _,class in ipairs(view.initial.match.units) do originals[class.context.class_key]=class.context.layout end
+    for _,key in ipairs(view.base.order) do
+        local old,item=view.base.units[key],view.by_key[key]
+        local initial=originals[old.class_key] and originals[old.class_key][old.slot]
+        if not item or not initial then return fail("ownership","complete original Card coverage unavailable",view.base,key) end
+        local reason=view.blocked or item.blocked
+        if reason then result.pending[#result.pending+1]={kind="identity",key=key,reason=reason.message} end
+        for _,name in ipairs(CALLBACKS) do
+            local member=key..":"..name
+            local ok,err=claim(result.before,initial.callback_syntax[name],name,member)
+            if not ok then return nil,err end
+            local descriptor=item.descriptor
+            local node=descriptor and descriptor.callback_syntax[name]
+            if item.callbacks[name].changed then
+                local point=descriptor.callback_points[name]
+                local previous=initial.callback_points[name]
+                result.pending[#result.pending+1]={kind="callback",key=member,reason="callback definition not published",
+                    first=point and point.first,last=point and point.last,
+                    previous_first=previous and previous.first,previous_last=previous and previous.last}
+            end
+            if node then
+                ok,err=claim(result.after,node,name,member);if not ok then return nil,err end
             end
         end
     end
-    -- File Apply may explicitly include every captured function, including
-    -- helpers not currently referenced by a card. Located/current-root callers
-    -- cannot use this to expand their proven publication scope.
-    if function_keys ~= nil then
-        if report.location or dense(function_keys) == nil then
-            return fail("unsupported", "file-scope function keys required", report.base)
-        end
-        local seen = {}
-        for _, name in ipairs(function_keys) do
-            if type(name)~="string" or not report.functions.by_name[name] or seen[name] then
-                return fail("unsupported", "unknown or duplicate file function", report.base)
-            end
-            seen[name], root_set[name] = true, true
-        end
-    end
-    local roots = {}
-    for _, name in ipairs(report.base.functions.names) do
-        if root_set[name] then roots[#roots + 1] = name end
-    end
-    local functions, ferr = Functions.Select(report.functions, roots)
-    if not functions then return nil, ferr end
-    local result = { kind = M.Kind .. ".Selection", version = M.Version,
-        base = report.base, base_revision = report.base.revision, report = report,
-        discovery = report.discovery,
-        content = report.content, entry = report.base.entry, anchor = report.base.anchor,
-        session_id = report.base.session_id, roots = copy(keys), function_roots = roots,
-        functions = functions, selected = {}, pending = {}, publications = {},
-        joins = copy(functions.joins), writes = copy(functions.writes),
-        read_set = copy(functions.read_set), capture_reads = copy(functions.capture_reads),
-        }
-    if report.location then
-        result.location = report.location
-        result.pending_sources = copy(report.unowned)
-        result.tombstones = copy(report.tombstones)
-    end
-    if report.file_location then
-        result.file_location=report.file_location
-        result.file_class_reads=copy(report.class_reads)
-        result.pending_sources=copy(report.unowned)
-        result.tombstones=copy(report.tombstones)
-        result.structural_pending=copy(report.structural_pending)
-    end
-    for _, read in ipairs(report.read_set) do result.read_set[#result.read_set + 1] = read end
-    for _, read in ipairs(report.capture_reads) do result.capture_reads[#result.capture_reads + 1] = read end
-    for _, key in ipairs(report.base.order) do
-        local item = report.by_key[key]
-        if selected[key] then
-            result.selected[#result.selected + 1] = key
-            for _, name in ipairs(CALLBACKS) do
-                local cb = item.callbacks[name]
-                if cb.changed then
-                    if cb.join_plan then
-                        for _, join in ipairs(cb.join_plan.joins) do result.joins[#result.joins + 1] = join end
-                    end
-                    result.publications[#result.publications + 1] = {
-                        unit_key = key, target = item.previous.card, key = name,
-                        before = cb.previous.fn, value = cb.fn, callback = cb, deletion=cb.deletion,
-                    }
-                end
-            end
-        elseif item.changed or item.pending then result.pending[#result.pending + 1] = key end
-    end
-    -- Compute actual observations under this selection, not pending graph edges.
-    local next_functions, nerr = Functions.Next(functions)
-    if not next_functions then return nil, nerr end
-    result.affected = {}
-    local written = {}
-    for _, name in ipairs(functions.selected) do written[name] = true end
-    for _, key in ipairs(report.base.order) do
-        local item = report.by_key[key]
-        local unit = { callbacks = {} }
-        for _, name in ipairs(CALLBACKS) do
-            local cb = item.callbacks[name]
-            unit.callbacks[name] = selected[key] and cb.changed and cb or cb.previous
-        end
-        local impacted = selected[key] and item.changed
-        for dep in next, observed(unit, next_functions) do
-            if written[dep] then impacted = true end
-        end
-        if impacted then result.affected[#result.affected + 1] = key end
+    for _,row in ipairs(view.locations.unowned) do
+        local point=row.descriptor.callback_points.init
+        result.pending[#result.pending+1]={kind="identity",key=row.source_key..":"..row.candidate_slot,
+            reason=row.reason,first=point and point.first,last=point and point.last}
     end
     return result
 end
 
----Propose versions only. Never install/reseed or read live as a new baseline.
-function M.Next(selection)
-    if not plain(selection) or selection.kind ~= M.Kind .. ".Selection"
-        or selection.version ~= M.Version or not valid(selection.base)
-        or dense(selection.publications) == nil or not plain(selection.functions) then
-        return fail("unsupported", "a card selection is required")
-    end
-    local base = selection.base
-    if #selection.publications == 0 and #selection.writes == 0 then return base end
-    local functions, err = Functions.Next(selection.functions)
-    if not functions then return nil, err end
-    local result = copy(base)
-    result.functions, result.revision, result.order = functions, base.revision + 1, copy(base.order)
-    result.units = {}
-    for _, key in ipairs(base.order) do
-        local unit = copy(base.units[key])
-        unit.callbacks = {}
-        for _, name in ipairs(CALLBACKS) do
-            unit.callbacks[name] = copy(base.units[key].callbacks[name])
-            unit.callbacks[name].dependencies = copy(unit.callbacks[name].dependencies)
-            unit.callbacks[name].visible = copy(unit.callbacks[name].visible)
-        end
-        result.units[key] = unit
-    end
-    local advanced = {}
-    for _, publication in ipairs(selection.publications) do
-        local key, name = publication.unit_key, publication.key
-        local unit, cb = result.units[key], publication.callback
-        unit.callbacks[name] = { body = cb.body, signature = cb.signature, fn = cb.fn,
-            visible = copy(cb.visible), dependencies = copy(cb.dependencies),
-            definition_version = base.units[key].callbacks[name].definition_version + 1 }
-        if not advanced[key] then
-            unit.definition_version = base.units[key].definition_version + 1
-            advanced[key] = true
-        end
-    end
-    for _, key in ipairs(result.order) do result.units[key].observed = observed(result.units[key], functions) end
-    return result
-end
 
----Detached scalar-only presentation of a trusted current-root selection.
----No live/source read, compilation, proposed versions, commit or authorization.
-function M.Describe(selection)
-    if not plain(selection) or selection.kind ~= M.Kind .. ".Selection"
-        or selection.version ~= M.Version or not valid(selection.base)
-        or not plain(selection.report) or selection.report.base ~= selection.base
-        or not plain(selection.functions) or dense(selection.selected) == nil
-        or dense(selection.pending) == nil or dense(selection.affected) == nil then
-        return fail("unsupported", "a prepared card selection is required")
+-- Card-only scalar projection. A public class unit can contain several slots;
+-- refine final impact using this slot's effective callback provider references.
+function M.Describe(plan,snapshot,impact,dependencies)
+    local view=plain(plan) and plan.view
+    if not plain(view) or view.kind~=M.Kind..".View" or view.version~=M.Version
+        or not plain(snapshot) or not dense(snapshot.owners) or not plain(impact)
+        or not plain(impact.affected) or not plain(plan.selected) or not dense(plan.publications)
+        or not plain(dependencies) or not dense(dependencies.blocked_roots) then
+        return fail("unsupported","prepared Card owner and actual inspection snapshot required")
     end
-    local function set(list)
-        local result = {};for _, key in ipairs(list or {}) do result[key] = true end
-        return result
+    local found=false;for _,group in ipairs(snapshot.owners) do if group==view.base_group then found=true end end
+    if not found then return fail("stale","Card description must use its actual snapshot group",view.base) end
+    local direct={};for _,pub in ipairs(plan.publications) do direct[pub.unit_key]=true end
+    local root_blocks={}
+    for _,block in ipairs(dependencies.blocked_roots) do
+        if view.base.units[block.root_id] then root_blocks[block.root_id]=block.reason end
     end
-    local function observations(values)
-        local names, result = {}, {}
-        for name in next, values do names[#names + 1] = name end
-        table.sort(names)
-        for _, name in ipairs(names) do
-            result[#result + 1] = {name=name, version=values[name]}
+    local result={cards={},pending_sources={},tombstones={}}
+    for _,key in ipairs(view.base.order) do
+        local unit,item=view.base.units[key],view.by_key[key]
+        local selected=plan.selected[key]
+        local affected=direct[key]==true
+        for _,name in ipairs(CALLBACKS) do
+            local cb=selected and selected.callbacks[name] or unit.callbacks[name]
+            for _,dep in ipairs(cb.dependencies) do
+                if impact.affected[cb.providers[dep]] then affected=true end
+            end
         end
-        return result
-    end
-    local base, report = selection.base, selection.report
-    local selected, pending, affected = set(selection.selected), set(selection.pending), set(selection.affected)
-    local result = {kind=M.Kind .. ".Description", version=M.Version, file=base.file,
-        session_id=base.session_id, revision=base.revision, cards={}, functions={},
-        initializers={}, pending_sources={}, tombstones={}}
-    local common = selection.discovery and selection.discovery.common
-    result.generation = common and common.candidate_generation
-    if selection.location then
-        local location, target = selection.location, selection.location.target
-        result.target = {key=target.key, class_key=target.class_key, live_slot=target.slot,
-            source_slot=location.candidate_slot, name=target.name, match=location.match}
-    end
-    for _, key in ipairs(base.order) do
-        local unit, item = base.units[key], report.by_key[key]
-        local row = {key=key, class_key=unit.class_key, slot=unit.slot,
-            definition_version=unit.definition_version, action=item.action,
-            selected=selected[key]==true, pending=pending[key]==true, affected=affected[key]==true,
-            observed=observations(unit.observed), callbacks={}}
-        for _, name in ipairs(CALLBACKS) do
-            row.callbacks[#row.callbacks + 1] = {name=name,
-                definition_version=unit.callbacks[name].definition_version,
+        local observed,err=M.Observations(snapshot,view.base_group,key)
+        if not observed then return nil,err end
+        local blocked=view.blocked or item.blocked or root_blocks[key]
+        local row={key=key,class_key=unit.class_key,slot=unit.slot,definition_version=unit.definition_version,
+            action=item.location.status~="located" and item.location.status or blocked and "binding-blocked"
+                or item.changed and "compile-publish" or affected and "shared-impact" or "keep-definition",
+            selected=selected~=nil,pending=(item.changed or blocked~=nil) and selected==nil,
+            affected=affected,observed=observed,callbacks={}}
+        for _,name in ipairs(CALLBACKS) do
+            row.callbacks[#row.callbacks+1]={name=name,definition_version=unit.callbacks[name].definition_version,
                 changed=item.callbacks[name].changed==true}
         end
-        result.cards[#result.cards + 1] = row
+        result.cards[#result.cards+1]=row
+        if item.location.status=="source-absent" then
+            result.tombstones[#result.tombstones+1]={key=key,definition_version=unit.definition_version,
+                action="restart-required",reason="class absent from candidate; live owner retained"}
+        end
     end
-    selected, pending, affected = set(selection.functions.selected),
-        set(selection.functions.pending), set(selection.functions.affected)
-    for _, name in ipairs(base.functions.names) do
-        local unit, item = base.functions.units[name], report.functions.by_name[name]
-        result.functions[#result.functions + 1] = {key="local:" .. name,
-            definition_version=unit.definition_version, action=item.action,
-            selected=selected[name]==true, pending=pending[name]==true, affected=affected[name]==true,
-            observed=observations(unit.observed)}
-    end
-    for _, item in ipairs(report.functions.initializers) do
-        result.initializers[#result.initializers + 1] = {
-            name=item.name, action=item.action, requires_restart=item.requires_restart==true}
-    end
-    for _, item in ipairs(selection.pending_sources or {}) do
-        result.pending_sources[#result.pending_sources + 1] = {
-            source_key=item.source_key, candidate_slot=item.candidate_slot,
-            action=item.action, reason=item.reason}
-    end
-    for _, item in ipairs(selection.tombstones or {}) do
-        result.tombstones[#result.tombstones + 1] = {key=item.key,
-            definition_version=item.definition_version, action=item.action, reason=item.reason}
+    for _,item in ipairs(view.locations.unowned) do
+        result.pending_sources[#result.pending_sources+1]={source_key=item.source_key,
+            candidate_slot=item.candidate_slot,action="restart-required",reason=item.reason}
     end
     return result
-end
-
----Adapter-owned statement coverage and pending definitions against actual
----publications. No unknown-statement comparison, Include policy, complete flag
----or candidate removal authority. FileApply owns full-file remainder accounting.
-function M.Coverage(report)
-    if not plain(report) or report.kind ~= M.Kind .. ".Diff"
-        or report.version ~= M.Version or not valid(report.base)
-        or not plain(report.functions) or report.functions.base ~= report.base.functions
-        or not plain(report.by_key) or type(report.content) ~= "string" then
-        return fail("unsupported", "a checked card diff against actual publications is required")
-    end
-    local state = report.base
-    local loaded, lerr = discover(state.loaded_source, state)
-    if not loaded then return nil, lerr end
-    local candidate, cerr = discover(report.content, state, report.discovery)
-    if not candidate then return nil, cerr end
-    local result = {kind=M.Kind .. ".Coverage", version=M.Version, file=state.file,
-        session_id=state.session_id, revision=state.revision, content=report.content,
-        generation=report.discovery and report.discovery.common.candidate_generation,
-        pending={},function_names={}}
-    local function pending(kind, key, reason, point, previous)
-        result.pending[#result.pending + 1] = {kind=kind, key=key, reason=reason,
-            first=point and point.first, last=point and point.last,
-            previous_first=previous and previous.first, previous_last=previous and previous.last}
-    end
-    local old_claims, new_claims = {}, {}
-    local function claim(scan, claims, point, key)
-        for index, statement in ipairs(scan.analysis.statements) do
-            local tokens, last = scan.analysis.tokens, statement.syntax.content_last
-            local token = tokens[last]
-            if statement.source_range.first == point.first and token
-                and token.pos + #token.value - 1 + scan.analysis.source_offset == point.last then
-                if claims[index] then
-                    return fail("ownership", "definition statement has multiple coverage owners", state, key)
-                end
-                claims[index] = key
-                return true
-            end
-        end
-        return fail("unsupported", "definition does not occupy a whole source statement", state, key)
-    end
-    local function function_claim(scan, claims, definition, key)
-        local statement = scan.analysis.statements[definition.statement]
-        if not statement then return fail("unsupported", "definition statement unavailable", state, key) end
-        local last, tokens = statement.syntax.content_last, scan.analysis.tokens
-        return claim(scan, claims, {first=statement.source_range.first,
-            last=tokens[last].pos + #tokens[last].value - 1 + scan.analysis.source_offset}, key)
-    end
-    for _, name in ipairs(state.functions.names) do
-        local key, item = "local:" .. name, report.functions.by_name[name]
-        result.function_names[name]=true
-        local old = loaded.scan.definitions[name]
-        if not old or #old ~= 1 then return fail("ownership", "loaded function definition unavailable", state, key) end
-        local ok, err = function_claim(loaded.scan, old_claims, old[1], key)
-        if not ok then return nil, err end
-        if item.blocked or item.changed then
-            pending("function", key, item.blocked and item.blocked.message or "function definition not published")
-        end
-        -- Only a successfully prepared unique literal can claim its statement.
-        -- Blocked/multiple/dynamic writes otherwise remain in the token remainder.
-        if item.item then
-            local definitions = candidate.scan.definitions[name]
-            if not definitions or #definitions ~= 1
-                or definitions[1].body ~= item.item.definition.body then
-                return fail("ownership", "prepared function disagrees with candidate definition", state, key)
-            end
-            ok, err = function_claim(candidate.scan, new_claims, definitions[1], key)
-            if not ok then return nil, err end
-        end
-    end
-    for _, key in ipairs(state.order) do
-        local unit, item = state.units[key], report.by_key[key]
-        local old = loaded.descriptors[key]
-        if not old then return fail("ownership", "loaded callback owner unavailable", state, key) end
-        local source_slot = item.source_slot or unit.slot
-        local newer = not item.pending and candidate.descriptors[key_of(unit.class_key, source_slot)]
-        if item.pending then
-            pending("identity", key, item.reason or "source has no proven safe published correspondence")
-        end
-        for _, name in ipairs(CALLBACKS) do
-            local old_point = old.descriptor.callback_points and old.descriptor.callback_points[name]
-            if old_point then
-                local ok, err = claim(loaded.scan, old_claims, old_point, key .. ":" .. name)
-                if not ok then return nil, err end
-            end
-            local cb = item.callbacks[name]
-            if cb.changed then
-                local point = newer and newer.descriptor.callback_points
-                    and newer.descriptor.callback_points[name]
-                pending("callback", key .. ":" .. name, "callback definition not published", point, old_point)
-            end
-            local point = newer and newer.descriptor.callback_points and newer.descriptor.callback_points[name]
-            if point then
-                if newer.descriptor.callbacks[name] ~= cb.body then
-                    return fail("ownership", "callback disagrees with candidate definition", state, key)
-                end
-                local ok, err = claim(candidate.scan, new_claims, point, key .. ":" .. name)
-                if not ok then return nil, err end
-            end
-        end
-    end
-    for _, row in ipairs(report.unowned or {}) do
-        pending("identity", row.source_key .. ":" .. row.candidate_slot, row.reason,
-            row.descriptor.callback_points and row.descriptor.callback_points.init)
-    end
-    result.before={scan=loaded.scan,claims=old_claims,
-        structures=card_file_facts(state,loaded.scan,{}).structures}
-    result.after={scan=candidate.scan,claims=new_claims,
-        structures=card_file_facts(state,candidate.scan,{}).structures}
-    return result
-end
-
----Fresh reads are supplied by trusted orchestration; this is not an I/O proof.
-function M.CompareLocated(state, location, binding, capture, live)
-    if not valid(state) then return fail("unsupported", "a valid card snapshot is required", state) end
-    local checked, err = Target.CheckDiscovery(location, binding, capture, live)
-    if not checked then return nil, err end
-    if location.target.snapshot ~= state then
-        return fail("stale", "located publication baseline disagrees", state)
-    end
-    return compare(state, location.content, location.discovery, location)
-end
----Card-only file comparison. Does NOT gate other top-level effects.
----Production file callers must use FileApply.CompareCards before selecting.
----File correspondence remains a distinct permission scope from current-root.
-function M.CompareFileLocated(state,location,capture,live)
-    if not valid(state) then return fail("unsupported","a valid card snapshot is required",state) end
-    local checked,err=Target.CheckFileDiscovery(location,capture,live)
-    if not checked then return nil,err end
-    if location.snapshot~=state then return fail("stale","file publication baseline disagrees",state) end
-    return compare(state,location.content,location.discovery,nil,location)
-end
----Select all individually safe roots, then build ONE aggregate. Singleton
----selections are read-only graph checks, never separate commits/versions.
-function M.SelectFile(report)
-    if not plain(report) or not plain(report.file_location) or not valid(report.base) then
-        return fail("unsupported","file-located card report required")
-    end
-    local keys,names,blocked={},{},{}
-    for _,key in ipairs(report.base.order) do
-        local selected,err=M.Select(report,{key})
-        if selected then keys[#keys+1]=key
-        else blocked[#blocked+1]={key=key,reason=err.message,code=err.code} end
-    end
-    for _,name in ipairs(report.base.functions.names) do
-        local selected,err=M.Select(report,{}, {name})
-        if selected then names[#names+1]=name
-        else blocked[#blocked+1]={key="local:"..name,reason=err.message,code=err.code} end
-    end
-    local selection,err=M.Select(report,keys,names)
-    if not selection then return nil,err end
-    selection.blocked=blocked
-    return selection
-end
-
----Actual published definitions, not the last scanned/accepted candidate.
----The original adapter is captured by Seed and copied unchanged by Next.
-function M.Publication(state)
-    if not valid(state) then return fail("unsupported", "published Card snapshot required", state) end
-    local records = {}
-    local function record(key, kind, definition, extra)
-        local row = {key=key, kind=kind, definition=definition,
-            definition_version=definition.definition_version}
-        for k,v in next,extra or {} do row[k]=v end
-        records[#records+1]=row
-    end
-    for _,key in ipairs(state.order) do
-        local unit=state.units[key]
-        record(key,"card",unit,{class_key=unit.class_key,slot=unit.slot})
-        for _,name in ipairs(CALLBACKS) do
-            record(key..":"..name,"callback",unit.callbacks[name],
-                {class_key=unit.class_key,slot=unit.slot,card_key=key,callback=name})
-        end
-    end
-    for _,name in ipairs(state.functions.names) do
-        record("local:"..name,"function",state.functions.units[name],{name=name})
-    end
-    return {kind="SpellHotReload.Publication",version=1,file=state.file,
-        session_id=state.session_id,revision=state.revision,entry=state.entry,
-        loaded_source=state.loaded_source,groups={{owner=state.owner,owner_id=state.owner_id,
-            state=state,records=records}}}
 end
 
 return M

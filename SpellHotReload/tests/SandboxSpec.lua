@@ -143,7 +143,8 @@ local function test_scanner()
     truthy(r.ok, "scanner accepts valid generated source: " .. tostring(r.error))
     check(r.sc_debug == false, "scanner does not flag valid source as SC Debug")
 
-    local keys = Scanner.ClassKeys(VALID)
+    local facts = assert(require("SpellHotReload.Source.FileAnalysis").Build(VALID))
+    local keys = assert(Scanner.ClassKeys(facts))
     truthy(keys["TestBoss:Easy"], "ClassKeys finds string class key")
     check(keys["Nope"] == nil, "ClassKeys does not invent keys")
 

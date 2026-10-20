@@ -1,14 +1,20 @@
--- Current-root correspondence only, miniature first-load fixtures only.
--- No real generated chunk, engine or candidate initializer executes.
+-- Current-root correspondence with real common captures and shared analysis.
+-- Miniature genuine first loads only; no candidate chunk, publication or engine.
 local M={}
 function M.run(opts)
     opts=opts or {}
     local Target=opts.target or require("SpellHotReload.Adapters.Card.CardTarget")
-    local Driver=require("SpellHotReload.Pipeline.Driver")
+    local Planning=require("SpellHotReload.tests.PlanningFixture")
+    local Files=require("SpellHotReload.Pipeline.FileVersions")
+    local Source=require("SpellHotReload.Source.FileAnalysis")
+    local Evidence=require("SpellHotReload.Adapters.Card.CardReconcile")
+    local IR=require("SpellHotReload.Source.TopLevelIR")
+    local Binding=require("SpellHotReload.Source.Binding")
+    local Lexer=require("SpellHotReload.Source.Lexer")
+    local Compose=require("SpellHotReload.Source.Compose")
     local Card=require("SpellHotReload.Adapters.Card.Card")
     local Callbacks=require("SpellHotReload.Adapters.Card.CardCallbacks")
     local Load=require("SpellHotReload.Load.AnchorLoad")
-    local Capture=require("SpellHotReload.Adapters.Card.Card")
     local Cards=require("SpellHotReload.Adapters.Card.CardVersions")
     local passed,failed,failures=0,0,{}
     local function eq(a,b,label)
@@ -16,6 +22,19 @@ function M.run(opts)
     end
     local function must(v,e) assert(v,type(e)=="table" and e.message or e);return v end
     local function copy(v) local r={};for k,x in next,v do r[k]=x end;return r end
+    -- Preserve every unrelated owner/entry while corrupting ONE Card proof.
+    local function replace_entry(snapshot,key,change)
+        local old=assert(snapshot.by_key[key]);local entry=copy(old);change(entry)
+        local entries={};for i,item in ipairs(snapshot.entries) do entries[i]=item==old and entry or item end
+        snapshot.entries=entries;snapshot.by_key=copy(snapshot.by_key);snapshot.by_key[key]=entry
+    end
+    local function corrupt_analysis(snapshot,field,value)
+        snapshot.common=copy(snapshot.common)
+        local facts=copy(snapshot.common.source);local analysis=copy(facts.analysis)
+        facts.analysis=analysis;facts.bindings=copy(facts.bindings);facts.bindings.analysis=analysis
+        facts.sites=copy(facts.sites);facts.sites.analysis=analysis
+        analysis[field]=value;snapshot.common.source=facts
+    end
     local function refusal(v,e,code,label)
         eq(v,nil,label.." refused");eq(type(e),"table",label.." structured")
         eq(e and e.phase,"locate",label.." phase");eq(e and e.code,code,label.." code")
@@ -23,8 +42,13 @@ function M.run(opts)
     end
     local saved={}
     for _,n in ipairs({"boss","_editor_class","_tmp_sc","REMAPPING_EFFECT"}) do saved[n]=rawget(_G,n) end
-    local join=debug.upvaluejoin
-    if not join then debug.upvaluejoin=function() error("presence fixture only") end end
+    local saved_apis={read=Callbacks.Read,match=Card.Match,build=Source.Build,analyze=IR.Analyze,
+        bind=Binding.Analyze,tokenize=Lexer.Tokenize,create=Compose.Create}
+    local function restore_apis()
+        Callbacks.Read,Card.Match= saved_apis.read,saved_apis.match
+        Source.Build,IR.Analyze,Binding.Analyze,Lexer.Tokenize,Compose.Create=
+            saved_apis.build,saved_apis.analyze,saved_apis.bind,saved_apis.tokenize,saved_apis.create
+    end
     local callbacks={"before","init","frame","render","beforedel","del","after"}
     local defaults={};for _,n in ipairs(callbacks) do defaults[n]=function() end end
     local effects,serial=0,0
@@ -49,24 +73,20 @@ function M.run(opts)
         end},move={New=function() return {is_combat=false} end}}
         serial=serial+1
         local bytes=source(labels,move)
-        local entry=must(Load.Capture(bytes,{name="Remapping_Boss.lua",
-            capability={getupvalue=true,setupvalue=true,upvaluejoin=true}}))
+        local entry=must(Load.Capture(bytes,{name="Remapping_Boss.lua"}))
         entry.file="Remapping_Boss.lua"
-        local capture=must(Capture.SeedVersions(entry,"remapping:"..serial,_editor_class,defaults))
+        local f=must(Planning.Capture(entry,"remapping:"..serial,_editor_class,defaults))
+        local capture=f.capture
         local list=_editor_class.K.cards
         local names={};for i,card in ipairs(list) do names[i]=card.name or "" end
         local binding={class_key="K",slot=slot,card=list[slot],name=list[slot].name,
             names=names,mode=move and "debug" or "practice",include_previous=false}
         local live={capture=capture,snapshot=capture.snapshot,entry=entry,
-            classes=_editor_class,session_id=capture.snapshot.session_id}
+            classes=_editor_class,session_id=f.session,generation=7}
         local target=must(Target.Resolve(binding,capture,live))
-        local driver=Driver.New();assert(driver:RegisterDiscovery(Card))
         local function discovery(candidate)
-            local base=capture.snapshot
-            live.content=candidate
-            return must(driver:DiscoverPublished(entry.file,candidate,assert(require("SpellHotReload.Adapters.Card.CardVersions").Publication(base)),{session_id=base.session_id,
-                registry_entry=entry,loaded_source=base.loaded_source,published_units=base,
-                base_revision=base.revision,candidate_generation=7})).snapshot
+            live.snapshot,live.content=capture.snapshot,candidate
+            return must(Planning.Discover(f,must(Source.Build(candidate)),7)).snapshot
         end
         return binding,capture,live,target,discovery
     end
@@ -108,7 +128,9 @@ function M.run(opts)
             eq(Target.CheckDiscovery(location,b,c,l),true,case[7].." recheck")
             eq(c.snapshot,prior,case[7].." no version install")
             eq(effects,effect,case[7].." no candidate initializer")
-            eq(#snapshot.entries,2,case[7].." full unrelated class retained")
+            eq(#snapshot.entries,3,case[7].." Local declaration and both Card classes retained")
+            eq(snapshot.by_key["local:state"].adapter.Id,"local",case[7].." real Local entry retained")
+            eq(snapshot.by_key["card:L"].adapter,Card,case[7].." unrelated class retained")
         end
         local rejected={
             {{"Same","Same"},2,false,{"Same"},false,"duplicate lost slot"},
@@ -131,32 +153,32 @@ function M.run(opts)
         snapshot=discover(source({"A","B"}));location=must(Target.LocateDiscovery(t,snapshot,b,c,l))
         -- The entire Match context must be present even for one selected root.
         for _,field in ipairs({"file","session_id","registry_entry","loaded_source",
-            "base_revision","published_units","content"}) do
+            "base_revision","capture","source","generation"}) do
             local bad=copy(snapshot);bad.common=copy(snapshot.common);bad.common[field]=false
             local v,e=Target.LocateDiscovery(t,bad,b,c,l);refusal(v,e,"stale","scope "..field)
         end
         local malformed={
             {"missing Card context",function(s) s.adapter_contexts={} end,"unsupported"},
-            {"filtered entries",function(s) s.entries={snapshot.entries[1]};s.by_key={["card:K"]=snapshot.entries[1]} end,"unsupported"},
+            {"filtered entries",function(s)
+                s.entries={};s.by_key=copy(snapshot.by_key);s.by_key["card:L"]=nil
+                for _,e in ipairs(snapshot.entries) do if e.unit.key~="card:L" then s.entries[#s.entries+1]=e end end
+            end,"unsupported"},
             {"wrong index",function(s) s.by_key={} end,"ownership"},
             {"wrong Card owner",function(s)
-                local e=copy(snapshot.entries[1]);e.adapter={}
-                s.entries={e,snapshot.entries[2]};s.by_key=copy(snapshot.by_key);s.by_key["card:K"]=e
+                replace_entry(s,"card:K",function(e) e.adapter={} end)
             end,"ownership"},
             {"unselected context",function(s)
-                local e=copy(snapshot.entries[2]);e.context=copy(e.context);e.context.common={}
-                s.entries={snapshot.entries[1],e};s.by_key=copy(snapshot.by_key);s.by_key["card:L"]=e
+                replace_entry(s,"card:L",function(e) e.context=copy(e.context);e.context.common={} end)
             end,"ownership"},
             {"sparse layout",function(s)
-                local e=copy(snapshot.entries[1]);e.unit=copy(e.unit);e.unit.context=copy(e.unit.context)
-                e.unit.context.layout={[2]=e.unit.context.layout[2]}
-                s.entries={e,snapshot.entries[2]};s.by_key=copy(snapshot.by_key);s.by_key["card:K"]=e
+                replace_entry(s,"card:K",function(e)
+                    e.unit=copy(e.unit);e.unit.context=copy(e.unit.context)
+                    e.unit.context.layout={[2]=e.unit.context.layout[2]}
+                end)
             end,"ownership"},
             {"extra index",function(s) s.by_key=copy(snapshot.by_key);s.by_key.extra={} end,"ownership"},
-            {"bytes analysis",function(s) s.analysis=copy(snapshot.analysis);s.analysis.source="wrong";
-                s.common=copy(snapshot.common);s.common.analysis=s.analysis end,"unsupported"},
-            {"offset",function(s) s.analysis=copy(snapshot.analysis);s.analysis.source_offset=3;
-                s.common=copy(snapshot.common);s.common.analysis=s.analysis end,"unsupported"},
+            {"bytes analysis",function(s) corrupt_analysis(s,"source","wrong") end,"unsupported"},
+            {"offset",function(s) corrupt_analysis(s,"source_offset",3) end,"unsupported"},
         }
         for _,case in ipairs(malformed) do
             local bad=copy(snapshot);case[2](bad)
@@ -170,10 +192,19 @@ function M.run(opts)
         location=must(Target.LocateDiscovery(t,renamed,b,c,l))
         eq(location.candidate_name,"Renamed","candidate name kept separate")
         eq(t.name,"B","live name not published")
-        local report=must(Cards.CompareLocated(c.snapshot,location,b,c,l))
-        eq(report.location,location,"comparison consumes the explicit remap proof")
+        local group,initial=Files.Owner(c,Card);must(group,initial)
+        local rows=must(Evidence.Index(c,renamed))
+        local file_location=must(Target.LocateFileDiscovery(renamed,c,l))
+        local match
+        for _,owner in ipairs(renamed.reconciliation.groups) do
+            if owner.owner==Card then match=owner.view.match end
+        end
+        local report=must(Cards.Compare(group,initial.evidence,renamed.common.source,match,file_location,rows))
+        eq(report.locations,file_location,"comparison consumes explicit complete file correspondence")
+        eq(report.by_key[t.key].location,file_location.by_key[t.key],"private version comparison keeps original file row")
+        eq(report.by_key[t.key].descriptor,location.descriptor,"current and file mapping agree on descriptor")
+        eq(report.by_key[t.key].location.candidate_slot,location.candidate_slot,"current and file source slots agree")
         -- No parser, compiler, mutator or old selection path runs during Locate.
-        local read,match=Callbacks.Read,Card.Match
         local chunk=assert(loadfile(assert(opts.module_path,"module_path required")))
         local traps=0
         setfenv(chunk,setmetatable({loadstring=function() traps=traps+1;error("compile") end,
@@ -184,11 +215,16 @@ function M.run(opts)
         local pure=chunk()
         Callbacks.Read=function() error("re-read forbidden") end
         Card.Match=function() error("re-match forbidden") end
+        Source.Build=function() error("source rebuild forbidden") end
+        IR.Analyze=function() error("IR rebuild forbidden") end
+        Binding.Analyze=function() error("binding rebuild forbidden") end
+        Lexer.Tokenize=function() error("lexing forbidden") end
+        Compose.Create=function() error("callback construction forbidden") end
         local ran,value=pcall(function()
             local found=must(pure.LocateDiscovery(t,renamed,b,c,l))
             return pure.CheckDiscovery(found,b,c,l)
         end)
-        Callbacks.Read,Card.Match=read,match
+        restore_apis()
         eq(ran,true,"no hidden re-read/re-match");eq(value,true,"pure gate succeeds");eq(traps,0,"no forbidden primitives")
         -- Every failed recheck leaves the old capture and live callbacks alone.
         for _,field in ipairs({"content","generation","key","source_key","entry","descriptor",
@@ -220,7 +256,7 @@ function M.run(opts)
         eq(handlers,0,"no hostile handlers")
         eq(b.card.name,"B","metadata untouched");eq(b.card.init(),2,"old callback still live")
     end)
-    debug.upvaluejoin=join
+    restore_apis()
     -- Restore nil globals too.
     for _,n in ipairs({"boss","_editor_class","_tmp_sc","REMAPPING_EFFECT"}) do rawset(_G,n,saved[n]) end
     assert(ok,problem)

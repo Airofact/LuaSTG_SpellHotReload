@@ -168,8 +168,6 @@ function Session:Load(file, content, options)
 
     local entry, err, stage = Anchor.Capture(content, {
         name = file,
-        analysis = options.analysis,
-        bindings = options.bindings,
         ir_options = options.ir_options or self._ir_options,
         limit = options.limit or self._limit,
         capability = options.capability or self._capability,

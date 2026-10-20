@@ -3,8 +3,7 @@
 local M={}
 function M.run()
     local FileApply=require("SpellHotReload.Apply.FileApply")
-    local IR=require("SpellHotReload.Source.TopLevelIR")
-    local Binding=require("SpellHotReload.Source.Binding")
+    local Source=require("SpellHotReload.Source.FileAnalysis")
     local passed,failed,failures=0,0,{}
     local function check(v,label)
         if v then passed=passed+1 else failed=failed+1;failures[#failures+1]=label end
@@ -13,9 +12,7 @@ function M.run()
     local function has(s,p,label) check(type(s)=="string" and s:find(p,1,true),label..": "..tostring(s)) end
     local function must(v,e) assert(v,type(e)=="table" and e.message or e);return v end
     local function scan(bytes)
-        local nodes,err,analysis=IR.Analyze(bytes)
-        assert(nodes,err)
-        return {analysis=analysis,bindings=must(Binding.Analyze(analysis))}
+        return must(Source.Build(bytes))
     end
     local function side(bytes)
         return {scan=scan(bytes),excluded={},wiring="",binding_reads={}}
@@ -136,6 +133,13 @@ function M.run()
         value,err=FileApply.CheckTopLevel(r)
         eq(value,nil,"missing exclusions are not an empty proof")
         has(err and err.message,"statement evidence unavailable","missing evidence reason")
+        r=report("OWNED()\nKEEP()","OWNED()\nKEEP()")
+        r.file_facts.before.excluded[1]=true
+        r.file_facts.after.excluded[1]=true
+        r.file_facts.before.scan.analysis.statements[1].tok.last=0
+        value,err=FileApply.CheckTopLevel(r)
+        eq(value,nil,"excluded statement still requires complete token partition")
+        has(err and err.message,"source token partition is incomplete","excluded partition refusal")
         eq(calls,0,"no Include or candidate chunk execution")
         eq(card_requires,0,"file policy independent of Card version implementation")
         eq(r.base.revision,nil,"policy does not invent a publication revision")

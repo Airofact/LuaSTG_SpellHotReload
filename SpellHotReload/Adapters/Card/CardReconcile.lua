@@ -35,7 +35,7 @@ local function class_signature(keys)
     end
     return table.concat(pieces)
 end
-function M.Run(previous,candidate,context)
+local function rows_for(previous,candidate,context)
     local Card=require("SpellHotReload.Adapters.Card.Card")
     local base=previous.state
     local entries={}
@@ -62,7 +62,7 @@ function M.Run(previous,candidate,context)
     local function unmodeled(statement)
         if not hazard then hazard=statement.source_range end
     end
-    for _,statement in ipairs(candidate.analysis.statements) do
+    for _,statement in ipairs(candidate.common.source.analysis.statements) do
         local ast=statement.syntax
         local modeled=callback_points[statement.source_range.first]
             or perform_points[statement.source_range.first]==1
@@ -107,7 +107,7 @@ function M.Run(previous,candidate,context)
         end
         return rows
     end
-    if base.owner~=Card or context.publication.revision~=base.revision then return nil end
+    if base.owner~=Card then return nil end
     -- Only uniquely named, shape-preserving correspondence is proposed here.
     -- Ambiguous/reused source never wins by traversal order or equal keys.
     for _,record in ipairs(previous.records) do
@@ -197,66 +197,89 @@ function M.Run(previous,candidate,context)
     end
     return rows
 end
--- Resolve one exact reconciliation against the current publication. No parsing,
--- compilation or live writes. Source evidence never replaces the final Guard.
-function M.Index(state,snapshot)
+-- Reconcile keeps source-only Card member rules private. Public graph nodes
+-- remain original class units; no Local records or versions appear here.
+function M.Run(previous,candidate,context)
     local Card=require("SpellHotReload.Adapters.Card.Card")
-    local Cards=require("SpellHotReload.Adapters.Card.CardVersions")
-    local Reconciliation=require("SpellHotReload.Pipeline.Reconciliation")
-    local function fail(reason)
-        return nil,{phase="reconcile",code="stale",message=reason,file=state.file}
+    local Files=require("SpellHotReload.Pipeline.FileVersions")
+    local source=candidate.common.source
+    if not plain(context.adapter) or context.adapter.source~=source or not plain(context.adapter.units) then return nil end
+    local group,initial=Files.Owner(candidate.common.capture,Card)
+    local owned=group and previous.owner==Card and previous.state==group.state and previous.records==group.records
+    if not owned and (#previous.records~=0 or #previous.units~=0) then return nil end
+    local rows=rows_for(previous,candidate,context)
+    if not rows then return nil end
+    local view={kind="SpellHotReload.Card.View",version=1,source=source,discovery=candidate,
+        base_group=owned and group or nil,base=owned and group.state or nil,
+        initial=owned and initial.evidence or nil,match={units=context.adapter.units},
+        units={},by_ref={},by_key={},selectors={},choices={},rows={}}
+    for _,row in ipairs(rows) do if row.previous then view.rows[row.previous.key]=row end end
+    local entries={}
+    for _,entry in ipairs(candidate.entries) do
+        if entry.adapter==Card then entries[entry.unit.context.class_key]=entry end
     end
+    local exports,matched={},{}
+    if owned then
+        for _,class in ipairs(group.state.classes) do
+            local ref=group.state.class_refs[class];local entry=entries[class]
+            local item={class_key=class,unit_ref=ref,keys={},selectors={}}
+            local records={}
+            for _,record in ipairs(previous.records) do
+                if record.class_key==class then records[#records+1]=record end
+            end
+            local unit={unit_ref=ref,candidate_entry=entry,previous_records=records,
+                status=entry and "corresponding" or "old-only",private_ref=item}
+            item.unit=unit;view.units[#view.units+1]=unit;view.by_ref[ref]=item
+            for _,key in ipairs(group.state.order) do
+                if group.state.units[key].class_key==class then
+                    local selector={};item.keys[#item.keys+1]=key;item.selectors[selector]=key
+                    view.by_key[key]=item;view.selectors[key]=selector
+                end
+            end
+            if entry then matched[entry]=true end
+            exports[#exports+1]={unit_ref=ref,conditions={}}
+        end
+    end
+    for _,entry in ipairs(candidate.entries) do
+        if entry.adapter==Card and not matched[entry] then
+            view.units[#view.units+1]={candidate_entry=entry,previous_records={},status="candidate-only",private_ref=entry.unit.context}
+        end
+    end
+    return {rows=rows,view=view,units=view.units,exports=exports}
+end
+-- Resolve the CURRENT exact original Card records against the common snapshot.
+-- No Card-only publication facade, nested ledger or old revision is accepted.
+function M.Index(capture,snapshot)
+    local Card=require("SpellHotReload.Adapters.Card.Card")
+    local Files=require("SpellHotReload.Pipeline.FileVersions")
+    local Reconciliation=require("SpellHotReload.Pipeline.Reconciliation")
+    local group,initial=Files.Owner(capture,Card)
+    local function fail(reason) return nil,{phase="reconcile",code="stale",message=reason,file=capture and capture.entry and capture.entry.file} end
     local report=plain(snapshot) and snapshot.reconciliation
     local publication=plain(report) and report.publication
-    if not plain(report) or report.kind~=Reconciliation.Kind or report.version~=Reconciliation.Version
+    if not group or not plain(report) or report.kind~=Reconciliation.Kind or report.version~=Reconciliation.Version
         or report.snapshot~=snapshot or report.published~=false or report.problem~=nil
-        or report.revision~=state.revision or report.file~=state.file
-        or not Reconciliation.ValidatePublication(publication)
-        or publication.revision~=state.revision or publication.file~=state.file
-        or publication.session_id~=state.session_id or publication.entry~=state.entry
-        or publication.loaded_source~=state.loaded_source then
-        return fail("current publication reconciliation required")
+        or report.revision~=capture.snapshot.revision or snapshot.common.capture~=capture
+        or not Reconciliation.ValidatePublication(publication) or publication.file~=capture.snapshot.file
+        or publication.revision~=capture.snapshot.revision or publication.entry~=capture.entry
+        or publication.session_id~=capture.snapshot.session_id or publication.loaded_source~=capture.snapshot.loaded_source then
+        return fail("current common publication reconciliation required")
     end
-    local expected,err=Cards.Publication(state)
-    if not expected then return nil,err end
-    local originals={}
-    for _,record in ipairs(expected.groups[1].records) do originals[record.key]=record end
-    local group,output
-    for _,g in ipairs(publication.groups) do
-        if g.owner==Card then group=g end
-    end
-    for _,g in ipairs(report.groups) do
-        if g.owner==Card then output=g end
-    end
-    if not group or group.owner_id~=state.owner_id or group.state~=state
-        or not output or output.previous~=group or output.owner_id~=group.owner_id or output.reason then
-        return fail("original Card owner reconciliation unavailable")
-    end
-    local records,rows={},{}
-    for _,record in ipairs(group.records) do
-        local old=originals[record.key]
-        if not old or records[record.key] or record.definition~=old.definition
-            or record.kind~=old.kind or record.definition_version~=old.definition_version then
-            return fail("reconciliation publication definition changed")
-        end
-        records[record.key]=record
-    end
-    for key in next,originals do
-        if not records[key] then return fail("reconciliation omitted a publication") end
-    end
+    local output
+    for _,candidate in ipairs(report.groups) do if candidate.owner==Card then output=candidate end end
+    if not output or output.reason or output.previous.state~=group.state or output.previous.records~=group.records
+        or not plain(output.view) or output.view.base_group~=group then return fail("original Card reconciliation unavailable") end
+    local originals,rows={},{}
+    for _,record in ipairs(group.records) do originals[record.key]=record end
     for _,row in ipairs(output.rows) do
         local record=row.previous
         if record then
-            if records[record.key]~=record or rows[record.key] then
-                return fail("reconciliation publication row changed")
-            end
+            if originals[record.key]~=record or rows[record.key] then return fail("Card record correspondence replaced or duplicated") end
             rows[record.key]=row
         end
     end
-    for key in next,records do
-        if not rows[key] then return fail("reconciliation omitted a publication row") end
-    end
-    return rows
+    for key in next,originals do if not rows[key] then return fail("Card publication row omitted") end end
+    return rows,group,initial.evidence
 end
 
 -- A callback absence is executable only with the exact old-owner/version
@@ -284,26 +307,28 @@ end
 
 -- Called by Card's final preflight, both before and after cache invalidation.
 -- No new publication, default identity or old version may enter through absence.
-function M.CheckPublications(selection,capture,live)
-    local state,rows,checked_classes,card_tables=selection.base,nil,{},nil
-    for _,pub in ipairs(selection.publications) do
+function M.CheckPublications(plan,capture,live,discovery)
+    local state,rows,checked_classes,card_tables=plan.view.base,nil,{},nil
+    local group,initial=require("SpellHotReload.Pipeline.FileVersions").Owner(capture,state.owner)
+    if group~=plan.view.base_group or not initial then return nil,{phase="commit",code="stale",message="Card actual group changed"} end
+    initial=initial.evidence
+    for _,pub in ipairs(plan.publications) do
         local unit=state.units[pub.unit_key]
         local old=plain(unit) and unit.callbacks[pub.key]
         local cb=plain(pub.callback) and pub.callback
         if old and cb and old.body~=nil and cb.body==nil then
             if not rows then
-                local err;rows,err=M.Index(state,selection.discovery)
+                local err;rows,err=M.Index(capture,discovery)
                 if not rows then return nil,err end
             end
-            local item=selection.report.by_key[pub.unit_key]
-            local entry=selection.discovery.by_key[item.source_key]
-            local descriptor=entry and entry.unit.context.layout[item.source_slot]
-            local tomb,err=M.Deletion(state,selection.discovery,pub.unit_key,pub.key,item.source_slot,descriptor,rows)
+            local item=plan.view.by_key[pub.unit_key]
+            local descriptor=item.descriptor
+            local tomb,err=M.Deletion(state,discovery,pub.unit_key,pub.key,item.location.candidate_slot,descriptor,rows)
             if not tomb then return nil,err end
             for _,key in ipairs(tomb.class_keys) do
                 if not checked_classes[key] then
-                    local expected=plain(capture) and plain(capture.class_bindings) and capture.class_bindings[key]
-                    local valid=plain(expected) and plain(live) and live.classes==capture.classes
+                    local expected=plain(initial.class_bindings) and initial.class_bindings[key]
+                    local valid=plain(expected) and plain(live) and live.classes==initial.classes
                         and plain(live.classes) and rawget(live.classes,key)==expected
                     -- A class alias to ANY published Card is not an unrelated
                     -- class implementation, even if its assignment text is unchanged.

@@ -20,6 +20,7 @@
 
 local AnchorSession = require("SpellHotReload.Load.AnchorSession")
 local Anchor = require("SpellHotReload.Load.Anchor")
+local Source = require("SpellHotReload.Source.FileAnalysis")
 
 local M = {}
 local passed, failed = 0, 0
@@ -248,16 +249,33 @@ function M.run()
     end
 
     ----------------------------------------------------------------------------
-    -- Load forwards analysis/bindings and chunk args, and its own options guard
+    -- Policy refusal and chunk arguments through the real session Load path
     ----------------------------------------------------------------------------
-    local opaque = session:Load("D.lua", "local a = 1\n", {
-        analysis = { nodes = {}, statements = {} },
-        bindings = { names = { "a" }, duplicates = {}, opaque = true },
-    })
-    check(opaque ~= nil, "opaque: a doctored snapshot still loads")
+    -- Inject a marker into real facts; this is not parser classification.
+    local original_build, calls = Source.Build, 0
+    Source.Build = function(content, options)
+        calls = calls + 1
+        local facts, reason = original_build(content, options)
+        if facts then
+            falsy(facts.bindings.opaque, "opaque: real fixture is not opaque")
+            facts.bindings.opaque = true
+            truthy(Source.Validate(facts), "opaque: fault keeps source provenance")
+        end
+        return facts, reason
+    end
+    local called, opaque = pcall(session.Load, session, "D.lua", "local a = 1\n")
+    Source.Build = original_build
+    assert(called, opaque)
+    eq(calls, 1, "opaque: one targeted public-source fault")
+    check(opaque ~= nil, "opaque: a policy-refused file still loads")
     if opaque ~= nil then
         falsy(opaque.captured, "opaque: not captured")
+        falsy(opaque.reloadable, "opaque: not reloadable")
+        truthy(opaque.policy.opaque, "opaque: policy observes injected marker")
         contains(opaque.reason, "unparsed", "opaque: the reason")
+        truthy(session:Has("D.lua"), "opaque: session remembers refused first load")
+        eq(session:Anchor("D.lua"), nil, "opaque: no anchor accessor")
+        falsy(session:Store():Has("D.lua"), "opaque: no anchor store registration")
     end
 
     local vararg = session:Load("E.lua", VARARG, { args = { n = 1, "hello" } })

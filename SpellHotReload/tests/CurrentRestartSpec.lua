@@ -1,4 +1,5 @@
--- Workflow request/receipt/engine protocol; synthetic objects only.
+-- Workflow state/receipt/engine protocol with genuine common first-load capture.
+-- No-op receipts below are synthetic contract inputs; PluginEntrySpec exercises real receipts.
 local M={}
 function M.run()
     local R=require("SpellHotReload.Runtime.CurrentRestart")
@@ -10,22 +11,41 @@ function M.run()
     end
     local function eq(a,b,label) check(rawequal(a,b),label) end
     local handoff,replay=R.Handoff,Binding.IsReplay
-    local globals={"_sc_table","lstg","stage","ext"}
+    local globals={"_sc_table","lstg","stage","ext","boss","_editor_class","_tmp_sc"}
     local saved={};for _,k in ipairs(globals) do saved[k]=rawget(_G,k) end
-    local card={name="Live",init=function() end}
-    local list={card};local class={cards=list};local classes={K=class}
-    local anchor=function() end;local entry={anchor=anchor,reloadable=true}
-    local snapshot={units={one={callbacks={init={fn=card.init}}}}}
-    local capture={snapshot=snapshot,ownership={{class_key="K",class=class,list=list,slots={card}}}}
-    local target={file="Request_Boss.lua",session_id="request:1",entry=entry,classes=classes,
-        class_key="K",class=class,list=list,card=card,slot=1,name="Live",include_previous=true,key="one"}
-    local live={entry=entry,classes=classes,session_id=target.session_id}
-    local receipt={snapshot=snapshot,changed=false}
+    local ok,problem=pcall(function()
+    local Files=require("SpellHotReload.Pipeline.FileVersions")
+    local Local=require("SpellHotReload.Adapters.Local.Local")
+    local Target=require("SpellHotReload.Adapters.Card.CardTarget")
+    local Load=require("SpellHotReload.Load.AnchorLoad")
+    local callbacks={"before","init","frame","render","beforedel","del","after"}
+    local defaults={};for _,n in ipairs(callbacks) do defaults[n]=function() end end
+    _editor_class={K={}}
+    boss={card={New=function(n)
+        local c={name=n,is_combat=true};for _,cb in ipairs(callbacks) do c[cb]=defaults[cb] end;return c
+    end}}
+    local source=table.concat({"local counter=3","local function helper(n) return counter+n end",
+        "_editor_class['K'].cards={}","_tmp_sc=boss.card.New('Live')",
+        "function _tmp_sc:init(n) return helper(n) end",
+        "table.insert(_editor_class['K'].cards,_tmp_sc)"},"\n")
+    local entry=assert(Load.Capture(source,{name="Request_Boss.lua"}));entry.file="Request_Boss.lua"
+    local lg=assert(Local.Capture(entry,"request:1"))
+    local cg=assert(Card.Capture(entry,"request:1",lg,_editor_class,defaults))
+    local capture=assert(Files.Capture(entry,"request:1",{lg,cg}))
+    local snapshot=capture.snapshot
+    local classes=_editor_class;local class=classes.K;local list=class.cards;local card=list[1]
+    local live={entry=entry,classes=classes,session_id="request:1",capture=capture,snapshot=snapshot}
+    local target=assert(Target.Resolve({class_key="K",card=card,slot=1,name="Live",
+        mode="practice",names={"Live"},include_previous=true},capture,live))
+    local deltas={};for i,g in ipairs(snapshot.owners) do
+        deltas[i]={owner=g.owner,owner_id=g.owner_id,changed=false,unit_refs={}}
+    end
+    local receipt={kind="SpellHotReload.FileCommit.Receipt",version=1,file=entry.file,
+        snapshot=snapshot,changed=false,owner_deltas=deltas}
     local calls=0
     local function frozen()
         local run=R.Freeze(target,capture);assert(R.BindReceipt(run,receipt,capture));return run
     end
-    local ok,problem=pcall(function()
         Binding.IsReplay=function() return false end
         R.Handoff=function() calls=calls+1 end
         local run=R.Freeze(target,capture)
@@ -35,6 +55,15 @@ function M.run()
         eq(calls,0,"uncommitted no engine")
         eq(R.BindReceipt(run,{snapshot={}},capture),nil,"foreign snapshot receipt refused")
         eq(run.state,"prepared","failed receipt does not bind")
+        local wrong={};for k,v in pairs(receipt) do wrong[k]=v end
+        wrong.kind="CardReceipt"
+        eq(R.BindReceipt(run,wrong,capture),nil,"old owner-only receipt refused")
+        wrong.kind=receipt.kind;wrong.owner_deltas={}
+        eq(R.BindReceipt(run,wrong,capture),nil,"filtered owner deltas refused")
+        wrong.owner_deltas={{owner=Card,owner_id="card",changed=false,unit_refs={}},deltas[2]}
+        eq(R.BindReceipt(run,wrong,capture),nil,"foreign owner order refused")
+        wrong.owner_deltas=deltas;wrong.changed=true
+        eq(R.BindReceipt(run,wrong,capture),nil,"unchanged snapshot cannot claim changed")
         eq(R.BindReceipt(run,receipt,capture),true,"no-op receipt accepted")
         eq(run.snapshot,snapshot,"installed snapshot identity")
         eq(R.BindReceipt(run,receipt,capture),nil,"cannot rebind a request")
@@ -63,6 +92,22 @@ function M.run()
         eq(capture.snapshot,snapshot,"retry no version advance")
         eq(run.selection,nil,"no prepared selection in run")
         eq(run.discovery,nil,"no candidate discovery in run")
+        local original_name=run.name;run.name="candidate name"
+        eq(R.Request(run,live),nil,"frozen scalar tamper refused even after acceptance")
+        run.name=original_name
+        for _,flag in ipairs({"released","poisoned","publication_error"}) do
+            live[flag]=true;eq(R.Request(run,live),nil,"accepted request checks "..flag);live[flag]=nil
+        end
+        local fn=card.init;card.init=function() end
+        eq(R.Request(run,live),nil,"accepted callback drift refused");card.init=fn
+        local extra={};list[2]=extra
+        eq(R.Request(run,live),nil,"accepted whole-list ownership drift refused");list[2]=nil
+        Binding.IsReplay=function() return true end
+        eq(R.Request(run,live),nil,"accepted replay refused")
+        Binding.IsReplay=function() return false end
+        entry.missing,entry.reloadable=true,false
+        eq(R.Request(run,live),true,"Missing retains accepted frozen proof without versions lookup")
+        entry.missing,entry.reloadable=nil,true
         eq(Card.FreezeRestart,nil,"adapter no freeze API")
         eq(Card.RestartVersioned,nil,"adapter no versioned restart API")
         eq(Card.Restart,nil,"adapter has no restart hook")

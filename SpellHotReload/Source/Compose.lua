@@ -52,6 +52,10 @@ M.Version = 1
 
 local compile = loadstring or load
 
+-- Identity of the actual compiler captured by Create, not the current global.
+-- Syntax evidence from a different compiler cannot authorize closure reuse.
+function M.CompilerIdentity() return compile end
+
 local KEYWORDS = {
     ["and"] = true, ["break"] = true, ["do"] = true, ["else"] = true,
     ["elseif"] = true, ["end"] = true, ["false"] = true, ["for"] = true,

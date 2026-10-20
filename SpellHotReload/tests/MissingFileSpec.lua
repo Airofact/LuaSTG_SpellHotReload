@@ -339,6 +339,11 @@ _missing_runs = _missing_runs + 1]]
         Scanner.ClassKeys = function() return {["Test:Normal"]=true} end
         w.ReadFile = function() error("Missing file reread in Apply") end
         p._sandbox_ok = true -- the Missing gate is orthogonal to runtime capability
+        eq(p:Apply(), "definitions already committed; retry restart first",
+            "pending committed restart precedes Missing gate")
+        eq(p._pending_restart_run, committed, "new Apply retains committed restart")
+        -- The retention probe is complete; isolate the Missing Apply path.
+        p._pending_restart_run = nil
         has(p:Apply(), "loaded file cannot reload: loaded file missing", "production Apply Missing gate")
         check(p:GetStore():GetCandidate("A_Boss.lua") ~= nil, "denied Apply retains reappeared candidate")
         w.ReadFile = nil

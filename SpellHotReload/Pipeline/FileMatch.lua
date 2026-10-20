@@ -2,9 +2,8 @@
 --- Inputs/outputs are read-only by contract, not protected Lua tables.
 --- Every snapshot also carries the shared TopLevelIR analysis and the Binding
 --- declaration/visibility model; neither is a binding-safety proof.
-local IR = require("SpellHotReload.Source.TopLevelIR")
+local Source = require("SpellHotReload.Source.FileAnalysis")
 local Adapter = require("SpellHotReload.Pipeline.Adapter")
-local Binding = require("SpellHotReload.Source.Binding")
 local M = {}
 
 local function plain(value)
@@ -58,20 +57,20 @@ local function claim_key(claim)
     return claim.kind .. ":" .. #claim.key .. ":" .. claim.key
 end
 
----Discover(registry, content, common?, options?) -> snapshot | nil, error.
+---Discover(registry, source, common?) -> snapshot | nil, error.
 ---common is shallow-copied; file/session/generation/version references survive.
----Each Match sees the same full analysis, including unchanged/unselected units.
+---Each Match sees the same full source facts, including unchanged/unselected units.
 ---unit.key is snapshot-local only; context/deps stay adapter-owned, while
----snapshot.bindings is the shared lexical declaration/visibility model.
-function M.Discover(registry, content, supplied, options)
+---source.bindings is the shared lexical declaration/visibility model.
+function M.Discover(registry, source, supplied)
     if supplied ~= nil and not plain(supplied) then
         return failure("analyze", "unsupported", "common must be a plain table")
     end
     local common = {}
     for key, value in next, supplied or {} do common[key] = value end
     local file = common.file
-    if not text(file) or type(content) ~= "string" then
-        return failure("analyze", "unsupported", "file/content must be strings", file)
+    if not text(file) or not Source.Validate(source) then
+        return failure("analyze", "unsupported", "file and complete shared source required", file)
     end
     if type(registry) ~= "table" then
         return failure("match", "unsupported", "discovery registry required", file)
@@ -92,22 +91,18 @@ function M.Discover(registry, content, supplied, options)
         ids[id] = true
     end
 
-    local analyzed, nodes, reason, analysis = pcall(IR.Analyze, content, options)
-    if not analyzed or nodes == nil or analysis == nil then
-        return failure("analyze", "unsupported", analyzed and reason or nodes, file)
+    if common.source~=nil and common.source~=source then
+        return failure("analyze","ownership","common source disagrees",file)
     end
-    common.content, common.analysis = content, analysis
-    local bindings, binding_error = Binding.Analyze(analysis)
-    if bindings == nil then
-        return failure("analyze", "unsupported", binding_error or "binding analysis failed", file)
-    end
+    common.source=source
+    local content=source.content
     local snapshot = {
-        common = common, analysis = analysis, bindings = bindings, units = {},
-        entries = {}, by_key = {}, adapter_contexts = {}, claims = {}, claim_owners = {},
+        common = common, units = {}, entries = {}, by_key = {},
+        adapter_contexts = {}, claims = {}, claim_owners = {},
     }
     for _, adapter in ipairs(adapters) do
         local id = rawget(adapter, "Id")
-        local matched, result, err = pcall(rawget(adapter, "Match"), analysis, common)
+        local matched, result, err = pcall(rawget(adapter, "Match"), source, common)
         if not matched then
             return failure("match", "unsupported", result, file)
         end

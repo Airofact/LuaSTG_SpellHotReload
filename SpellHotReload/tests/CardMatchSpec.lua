@@ -7,6 +7,10 @@ local CardCallbacks = require("SpellHotReload.Adapters.Card.CardCallbacks")
 local Driver = require("SpellHotReload.Pipeline.Driver")
 local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
 local IR = require("SpellHotReload.Source.TopLevelIR")
+local Source = require("SpellHotReload.Source.FileAnalysis")
+local Bindings = require("SpellHotReload.Source.Binding")
+local Lexer = require("SpellHotReload.Source.Lexer")
+local Compose = require("SpellHotReload.Source.Compose")
 
 local M = {}
 local passed, failed = 0, 0
@@ -36,6 +40,7 @@ local GLOBALS = { "boss", "task", "_editor_class", "_sc_table", "_tmp_sc",
     "MOVE_NORMAL", "IsValid" }
 
 function M.run()
+    passed,failed,failures=0,0,{}
     local saved = {}
     for _, key in ipairs(GLOBALS) do saved[key] = rawget(_G, key) end
 
@@ -122,7 +127,7 @@ function M.run()
         -- contract + discovery registration
         ------------------------------------------------------------------------
         eq(Card.Id, "card", "card: carries the discovery Id")
-        eq(Card.ContractVersion, 4, "card: declares ContractVersion 4")
+        eq(Card.ContractVersion, 5, "card: declares ContractVersion 5")
         eq(Adapter.ValidateDiscovery(Card), true, "card: satisfies the discovery contract")
         local registry = NodeRegistry.New()
         eq(registry:RegisterDiscovery(Card), true, "card: registers for discovery")
@@ -135,7 +140,9 @@ function M.run()
         eq(discovered[1], Card, "card: enumeration returns the adapter reference")
 
         local function discover(content, common)
-            return FileMatch.Discover(registry, content, common or { file = "Test_Boss.lua" })
+            local facts,err=Source.Build(content)
+            if not facts then return nil,err end
+            return FileMatch.Discover(registry,facts,common or {file="Test_Boss.lua"})
         end
 
         ------------------------------------------------------------------------
@@ -159,7 +166,9 @@ function M.run()
         eq(untouched.by_key["card:Boss:Enemy"], nil, "match: a class without a card list is skipped")
         eq(untouched.adapter_contexts.card.carrier, "card", "match: file context carrier")
         eq(untouched.adapter_contexts.card.classes, 2, "match: file context class count")
-        eq(untouched.common.analysis, untouched.analysis, "match: the shared analysis is reused")
+        eq(Source.Validate(untouched.common.source),true,"match: complete shared source retained")
+        eq(untouched.common.source.content,new,"match: exact complete bytes retained")
+        eq(untouched.adapter_contexts.card.source,untouched.common.source,"match: Card reuses same complete source")
 
         local normal = untouched.by_key["card:Boss:Normal"]
         local hard = untouched.by_key["card:Boss:Hard"]
@@ -234,7 +243,7 @@ function M.run()
             '_editor_class["Boss:Syntax"] = Class(boss)',
             '_editor_class["Boss:Syntax"].cards = {}',
             'this is not lua',
-        }, "\n"), "a syntax error fails the file", "unsupported", "analyze")
+        }, "\n"), "a syntax error fails the file", "compile", "analyze")
         reject(table.concat({
             '_editor_class["A"] = Class(boss)',
             '_editor_class["A"].cards = {}',
@@ -245,10 +254,86 @@ function M.run()
         reject('_editor_class[""].cards = {}', "an empty class key is rejected", "unsupported")
         local no_lists = assert(discover("G = 1"))
         eq(#no_lists.units, 0, "a file without card lists is an empty success")
-        local _, no_input = Card.Match(nil, { content = "G = 1" })
-        eq(no_input.code, "unsupported", "Match needs the shared analysis")
-        local _, no_content = Card.Match(assert(IR.Analyze("G = 1")), {})
-        eq(no_content.code, "unsupported", "Match needs common.content")
+        local _,no_input=Card.Match(nil,{})
+        eq(no_input.code,"unsupported","Match needs complete shared source")
+        eq(no_input.phase,"analyze","incomplete source rejected at input boundary")
+        local facts=assert(Source.Build("G = 1"))
+        local _,no_common=Card.Match(facts,{})
+        eq(no_common.code,"ownership","Match needs original common.source")
+        eq(no_common.phase,"match","common source mismatch is owner boundary")
+        local other=assert(Source.Build("G = 1"))
+        local _,foreign=Card.Match(facts,{source=other})
+        eq(foreign.code,"ownership","same bytes cannot replace source identity")
+        local _,raw_source=Card.Match("G = 1",{source=facts})
+        eq(raw_source.code,"unsupported","raw text does not replace complete source")
+
+        ------------------------------------------------------------------------
+        -- Existing full facts are consumed without analysis or closure creation.
+        ------------------------------------------------------------------------
+        do
+            local facts=assert(Source.Build(new))
+            local slots={{Source,"Build"},{IR,"Analyze"},{Bindings,"Analyze"},
+                {Lexer,"Tokenize"},{Compose,"Create"}}
+            local saved,calls={},{}
+            for i,slot in ipairs(slots) do
+                local index=i;saved[i]=slot[1][slot[2]];calls[i]=0
+                slot[1][slot[2]]=function() calls[index]=calls[index]+1;error("Match repeated source work") end
+            end
+            local ran,snapshot,problem=pcall(FileMatch.Discover,registry,facts,{file="Test_Boss.lua"})
+            for i,slot in ipairs(slots) do slot[1][slot[2]]=saved[i] end
+            check(ran,"match reuse: no unexpected throw")
+            check(ran and snapshot~=nil,"match reuse: complete source accepted ("..tostring(problem)..")")
+            for i,slot in ipairs(slots) do eq(calls[i],0,"match reuse: zero "..slot[2]) end
+            if ran and snapshot then
+                eq(snapshot.common.source,facts,"match reuse: exact source object")
+                eq(snapshot.adapter_contexts.card.source,facts,"match reuse: owner retains same facts")
+                eq(#snapshot.units,2,"match reuse: complete class set retained")
+                eq(#snapshot.claims,10,"match reuse: complete claims retained")
+            end
+        end
+
+        ------------------------------------------------------------------------
+        -- Refusal and throw keep Card's class diagnostic without a partial result.
+        ------------------------------------------------------------------------
+        do
+            local facts=assert(Source.Build(new))
+            local read=CardCallbacks.Read
+            local metamethods=0
+            local hostile=setmetatable({},{__tostring=function() metamethods=metamethods+1;error("unsafe diagnostic") end})
+            for _,fault in ipairs({"refuse-string","throw-string","refuse-object","throw-object"}) do
+                local seen={}
+                CardCallbacks.Read=function(input,class_key)
+                    eq(input,facts,"layout fault: exact complete source")
+                    seen[#seen+1]=class_key
+                    if class_key~="Boss:Hard" then return read(input,class_key) end
+                    if fault=="throw-string" then error("layout fixture throw") end
+                    if fault=="throw-object" then error(hostile) end
+                    if fault=="refuse-string" then return nil,"layout fixture refusal" end
+                    return nil,hostile
+                end
+                local ran,result,problem=pcall(FileMatch.Discover,registry,facts,{file="Test_Boss.lua"})
+                CardCallbacks.Read=read
+                check(ran,"layout fault: exceptions contained")
+                eq(result,nil,"layout fault: earlier successful class cannot escape as partial snapshot")
+                if ran and problem then
+                    eq(problem.code,"unsupported","layout fault: refusal category")
+                    eq(problem.phase,"match","layout fault: owner phase")
+                    eq(problem.file,"Test_Boss.lua","layout fault: physical file retained")
+                    eq(problem.unit_key,"Boss:Hard","layout fault: failing class retained")
+                    contains(problem.message,"card parse failed:","layout fault: parse diagnostic category")
+                    if fault=="refuse-string" then contains(problem.message,"layout fixture refusal","layout refusal reason")
+                    elseif fault=="throw-string" then contains(problem.message,"layout fixture throw","layout throw reason")
+                    else contains(problem.message,"non-string callback layout error","opaque layout reason") end
+                else check(false,"layout fault: structured failure required") end
+                eq(table.concat(seen,","),"Boss:Normal,Boss:Hard","layout fault: class boundary retained")
+            end
+            eq(metamethods,0,"layout fault: diagnostic never coerces hostile errors")
+        end
+        eq(card_news,0,"all matching: no card constructor execution")
+        eq(class_news,0,"all matching: no class construction")
+        eq(side_effects,0,"all matching: no top-level effects")
+        eq(_editor_class,nil,"all matching: no live registry created")
+        eq(_sc_table,nil,"all matching: no practice registry created")
 
         ------------------------------------------------------------------------
         -- real generated file (skipped when the runtime mod is absent)

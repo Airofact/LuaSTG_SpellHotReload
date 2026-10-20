@@ -1,6 +1,6 @@
 -- End-to-end versioned Plugin Apply fixtures. Only synthetic first-load chunks
 -- execute; candidate top-level, card construction, and callback bodies never do.
--- Lua5.1 checks real missing-join refusal; only LuaJIT performs shared commits.
+-- Target: genuine LuaJIT shared cells. No engine/readiness/performance claim.
 local M = {}
 function M.run()
     local globals={"lstg","boss","_editor_class","_tmp_sc","_sc_table","ext","_va_runs","_va_api","jit","IsValid"}
@@ -19,6 +19,10 @@ function M.run()
     local Restart=require("SpellHotReload.Runtime.CurrentRestart")
     local Compose=require("SpellHotReload.Source.Compose")
     local Card=require("SpellHotReload.Adapters.Card.Card")
+    local Local=require("SpellHotReload.Adapters.Local.Local")
+    local Files=require("SpellHotReload.Pipeline.FileVersions")
+    local Versions=require("SpellHotReload.Adapters.Card.CardVersions")
+    local Commit=require("SpellHotReload.Apply.FileCommit")
     local passed,failed,failures=0,0,{}
     local function check(v,label)
         if v then passed=passed+1 else failed=failed+1;failures[#failures+1]=label end
@@ -27,7 +31,7 @@ function M.run()
     local function has(s,p,label) check(type(s)=="string" and s:find(p,1,true)~=nil,label.." ("..tostring(s)..")") end
     local function must(v,err) assert(v,type(err)=="table" and err.message or err);return v end
     local get,set,join=debug.getupvalue,debug.setupvalue,debug.upvaluejoin
-    local old_restart,old_create=Restart.Handoff,Compose.Create
+    local old_restart,old_create,old_freeze=Restart.Handoff,Compose.Create,Restart.Freeze
     local plugins,current={},nil
     local callbacks={"before","init","frame","render","beforedel","del","after"}
     local defaults={}
@@ -69,6 +73,36 @@ function M.run()
         must(f.p._store:RecordFirstRead(FILE,c.generation,content,1))
         return must(f.p._store:VerifyStable(FILE,c.generation,content,2,1))
     end
+    local function state_at(snapshot,owner)
+        for _,group in ipairs(snapshot.owners) do if group.owner==owner then return group.state end end
+        error("original owner missing from actual snapshot")
+    end
+    local function local_state(f,snapshot)
+        return snapshot and state_at(snapshot,Local) or must(Files.Owner(f.capture,Local)).state
+    end
+    local function card_state(f,snapshot)
+        return snapshot and state_at(snapshot,Card) or must(Files.Owner(f.capture,Card)).state
+    end
+    local function observed(f,key,name)
+        local rows=must(Versions.Observations(f.capture.snapshot,must(Files.Owner(f.capture,Card)),key))
+        for _,row in ipairs(rows) do if row.name==name then return row.version end end
+    end
+    local function receipt(f,index,changed,revision,label)
+        local record=must(f.receipts[index]);local r=record.receipt
+        eq(r.kind,"SpellHotReload.FileCommit.Receipt",label.." genuine common receipt")
+        eq(r.version,1,label.." receipt contract")
+        eq(r.changed,changed,label.." actual changed flag")
+        eq(r.snapshot.revision,revision,label.." actual revision")
+        eq(r.snapshot,f.capture.snapshot,label.." receipt actually installed")
+        eq(#r.owner_deltas,2,label.." both owner deltas")
+        eq(#record.fragments,2,label.." both owners registered once")
+        if not changed then eq(r.snapshot,record.base,label.." exact no-op snapshot") end
+        local last=must(f.discovered[#f.discovered])
+        check(last.discovery~=f.prepared.driver_prepared.discovery,label.." new postreceipt discovery")
+        eq(last.snapshot,r.snapshot,label.." postreceipt actual snapshot")
+        eq(last.source,record.source,label.." same complete candidate source")
+        return record
+    end
     local function fixture()
         debug.getupvalue,debug.setupvalue,debug.upvaluejoin=get,set,join
         _G.jit=saved.jit
@@ -78,7 +112,8 @@ function M.run()
         _sc_table={}
         ext={replay={IsReplay=function() return current and current.replay==true end}}
         lstg={var={},Log=function() end,FileManager={EnumFiles=function() return {{FILE,false}} end}}
-        local f={constructions=0,restarts=0,reads=0,discoveries=0,creates=0,classes=_editor_class}
+        local f={constructions=0,restarts=0,reads=0,discoveries=0,creates=0,classes=_editor_class,
+            kernels=0,freezes=0,receipts={},discovered={}}
         current=f
         boss={card={_default_card=defaults,New=function(name)
             f.constructions=f.constructions+1
@@ -89,9 +124,11 @@ function M.run()
         f.p=Plugin.New();plugins[#plugins+1]=f.p
         f.entry=must(Load.Capture(SOURCE,{name=FILE}))
         must(f.p:AdoptLoad(FILE,f.entry))
-        f.capture=f.p:GetVersions(FILE)
+        f.capture=must(f.p:GetVersions(FILE))
+        must(Files.Validate(f.capture));eq(#f.capture.snapshot.owners,2,"real complete first-load owners")
         f.p._activated,f.p._supported=true,true
-        f.p._sandbox_ok=join~=nil
+        f.p._activation_attempted=true
+        f.p._sandbox_ok=true
         f.p._sandbox_error="shared-cell debug APIs unavailable"
         f.disk=EDIT
         f.p._store:SetAccepted(FILE,SOURCE,"baseline")
@@ -105,11 +142,36 @@ function M.run()
         candidate(f,EDIT)
         enter(f,2)
         local driver=f.p._driver
+        local discover_versioned=f.p._DiscoverVersioned
+        f.p._DiscoverVersioned=function(self,file,candidate,capture,source)
+            local base=type(capture)=="table" and capture.snapshot
+            local d,e=discover_versioned(self,file,candidate,capture,source)
+            if d then f.discovered[#f.discovered+1]={discovery=d,source=source,snapshot=base} end
+            return d,e
+        end
+        local prepare=f.p._PrepareVersioned
+        f.p._PrepareVersioned=function(self,...)
+            local prepared,err=prepare(self,...)
+            if prepared then f.prepared=prepared end
+            return prepared,err
+        end
+        local kernel=f.p._commit.Commit
+        f.p._commit.Commit=function(self,token,operation,fragments,...)
+            f.kernels=f.kernels+1
+            local capture=type(operation)=="table" and operation.capture
+            local base=type(capture)=="table" and capture.snapshot
+            local r,e=kernel(self,token,operation,fragments,...)
+            if r then f.receipts[#f.receipts+1]={receipt=r,base=base,source=operation.source,fragments=fragments} end
+            return r,e
+        end
         local discover=driver.Discover
         driver.Discover=function(self,...)
             f.discoveries=f.discoveries+1
             if f.on_discover then f.on_discover(f) end
             return discover(self,...)
+        end
+        Restart.Freeze=function(...)
+            f.freezes=f.freezes+1;return old_freeze(...)
         end
         Restart.Handoff=function(class_key,name,card,slot,include_previous)
             f.restarts=f.restarts+1
@@ -126,15 +188,16 @@ function M.run()
     end
     local function unchanged(f,base,label)
         eq(f.capture.snapshot,base,label.." snapshot unchanged")
-        eq(Anchor.Get(f.entry,"helper"),base.functions.units.helper.fn,label.." cell unchanged")
-        for _,key in ipairs(base.order) do
-            local unit=base.units[key]
+        eq(Anchor.Get(f.entry,"helper"),local_state(f,base).by_name.helper.fn,label.." cell unchanged")
+        for _,key in ipairs(card_state(f,base).order) do
+            local unit=card_state(f,base).units[key]
             for _,name in ipairs(callbacks) do eq(rawget(unit.card,name),unit.callbacks[name].fn,label.." raw "..key..name) end
         end
         eq(f.p._store:HasPartialPublication(FILE),false,label.." no partial record")
         eq(f.restarts,0,label.." no restart")
     end
     local ok,problem=pcall(function()
+        must(Anchor.Supported(Compose.Capability(debug)),"real shared-cell capability required")
         local f=fixture()
         eq(_va_runs,1,"real synthetic normal load once")
         eq(f.constructions,3,"first-load card constructors once")
@@ -153,21 +216,18 @@ function M.run()
             eq(coroutine.resume(thread),true,"scope coroutine fixture completed")
             value,why=tx:Commit(t,{},nil,{session_id=f.p._session_id},false)
             eq(value,nil,"invalid refresh type refused")
-            eq(why.code,"unsupported","invalid refresh type reason")
+            eq(why.code,"ownership","invalid refresh type reason")
+            eq(why.message,"trusted refresh required","exact common boundary refusal")
+            eq(tx:Check(t),true,"invalid refresh cannot consume UI token")
         end)
         eq(scoped,true,"scope Check action returned")
+        eq(f.kernels,1,"malformed refresh reached real common boundary")
+        eq(#f.receipts,0,"malformed refresh produced no receipt")
         local value,why=tx:Check(token)
         eq(value,nil,"Check token expires outside UI action")
         eq(why.code,"stale","expired Check reason")
-        if not join then
-            eq(f.entry.reloadable,false,"real Lua5.1 entry is non-reloadable")
-            eq(f.capture,nil,"no manufactured first-load history without join")
-            has(f.p:ApplyFromUI(),"patch capability unavailable","Lua5.1 production refusal")
-            f.p._sandbox_ok=true -- bypass only outer boolean to test sticky entry refusal
-            has(f.p:ApplyFromUI(),"loaded file cannot reload","Lua5.1 entry cannot fall back")
-            eq(f.restarts,0,"missing join zero restart")
-            print("VersionedApplySpec: real shared commits not run (Lua5.1 missing join)")
-        else
+        f=fixture() -- scope probes above have their own kernel invocation
+        do
             local base=f.capture.snapshot
             local a,b,c=f.classes.K.cards[2],f.classes.K.cards[3],f.classes.L.cards[1]
             local old_a,old_b=a.init,b.init
@@ -178,6 +238,13 @@ function M.run()
             local after=f.capture.snapshot
             eq(f.p:GetVersions(FILE),f.capture,"same genuine capture retained")
             eq(after.revision,1,"aggregate revision advances once")
+            receipt(f,1,true,1,"first Current")
+            eq(f.kernels,1,"one actual common transaction")
+            eq(f.freezes,1,"one genuine Current freeze")
+            eq(#f.prepared.driver_prepared.dependencies.safe_roots,1,"exact Current root survived constraints")
+            eq(local_state(f).by_name.helper.definition_version,2,"selected shared helper version")
+            eq(local_state(f).by_name.idle.definition_version,1,"independent helper version retained")
+            eq(local_state(f).by_name.state.definition_version,1,"state initializer remains first-load definition")
             eq(after.loaded_source,SOURCE,"first-load source never overwritten")
             eq(after.anchor,base.anchor,"unique anchor retained")
             eq(a.init,old_a,"helper-only root keeps callback identity")
@@ -186,9 +253,9 @@ function M.run()
             eq(b:init(1),120,"old sibling wrapper reads shared new helper")
             eq(c:init(1),320,"other class shares updated helper")
             eq(Anchor.Get(f.entry,"state"),9,"candidate state initializer never executed")
-            eq(Anchor.Get(f.entry,"idle"),base.functions.units.idle.fn,"unselected independent helper kept")
-            eq(after.units["card:1:K:3"].definition_version,1,"sibling source version not advanced by propagation")
-            eq(after.units["card:1:K:3"].observed.helper,2,"sibling dependency observation advances")
+            eq(Anchor.Get(f.entry,"idle"),local_state(f,base).by_name.idle.fn,"unselected independent helper kept")
+            eq(card_state(f,after).units["card:1:K:3"].definition_version,1,"sibling source version not advanced by propagation")
+            eq(observed(f,"card:1:K:3","helper"),2,"sibling actual dependency observation advances")
             eq(f.p._store:GetAccepted(FILE).content,SOURCE,"no whole-file accepted ACK")
             eq(f.p._store:GetCandidate(FILE).first_content,EDIT,"whole candidate retained")
             eq(f.p._store:GetPartialPublication(FILE).revision,1,"actual committed revision recorded")
@@ -199,15 +266,22 @@ function M.run()
             enter(f,3)
             has(f.p:ApplyFromUI(),"applied","second current root Apply")
             eq(f.capture.snapshot.revision,2,"second actual definition transaction")
+            receipt(f,2,true,2,"second Current")
+            eq(f.kernels,2,"one kernel per selected root")
+            eq(local_state(f).by_name.helper.definition_version,2,"shared helper not republished for sibling")
+            eq(card_state(f).units["card:1:K:3"].definition_version,2,"selected sibling wrapper version advances")
             eq(a.init,old_a,"first root still not recompiled")
             check(b.init~=old_b,"second root publishes pending wrapper")
             eq(b:init(1),220,"pending sibling edit now takes effect")
             eq(f.p._store:GetPartialPublication(FILE).revision,2,"second partial record")
-            eq(Anchor.Get(f.entry,"idle"),base.functions.units.idle.fn,"idle stays unselected after both cards")
+            eq(Anchor.Get(f.entry,"idle"),local_state(f,base).by_name.idle.fn,"idle stays unselected after both cards")
             eq(_va_runs,1,"two Apply operations do not replay wiring")
             local revision=f.capture.snapshot.revision
             has(f.p:ApplyFromUI(),"no definition changes","same selected source no-op")
             eq(f.capture.snapshot.revision,revision,"no-op does not fabricate revision")
+            receipt(f,3,false,2,"safe unchanged Current")
+            eq(f.kernels,3,"unchanged Current has a real no-op transaction")
+            eq(f.restarts,3,"unchanged safe root still restarts normally")
             eq(f.p._store:GetPartialPublication(FILE).revision,revision,"no-op does not re-record revision")
             -- The existing candidate changes back to original bytes; after Cancel
             -- even equality with accepted must still be detected via periodic drift.
@@ -216,25 +290,36 @@ function M.run()
             check(f.p._store:GetCandidate(FILE) and f.p._store:GetCandidate(FILE).stable,"real watcher detects original-byte revert")
             enter(f,2)
             has(f.p:ApplyFromUI(),"applied","reverted source compared to actual publication")
+            receipt(f,4,true,3,"helper revert")
+            eq(local_state(f).by_name.helper.definition_version,3,"revert advances actual helper definition")
+            eq(observed(f,"card:1:K:3","helper"),3,"unselected wrapper observes reverted helper version")
             eq(a:init(1),10,"shared helper restored from original bytes, state preserved")
             eq(b:init(1),210,"unselected edited wrapper survives helper rollback")
             enter(f,3)
             has(f.p:ApplyFromUI(),"applied","pending original sibling wrapper selected next")
+            receipt(f,5,true,4,"wrapper revert")
+            eq(card_state(f).units["card:1:K:3"].definition_version,3,"wrapper revert is a new actual version")
             eq(b:init(1),110,"both selected definitions restored without state reset")
 
             f=fixture();base=f.capture.snapshot
             f.disk="changed after snapshot"
             has(f.p:ApplyFromUI(),"candidate generation or bytes changed","stale physical bytes before commit")
             unchanged(f,base,"stale disk")
+            eq(f.kernels,0,"stale disk rejected before common transaction")
+            eq(#f.receipts,0,"stale disk no receipt")
             f=fixture();base=f.capture.snapshot
             f.on_discover=function() enter(f,3) end
             has(f.p:ApplyFromUI(),"current target or restart context changed","binding changed during discovery")
             unchanged(f,base,"stale binding")
+            eq(f.kernels,0,"changed discovery binding rejected before common transaction")
+            eq(f.freezes,0,"changed discovery binding never freezes restart")
             -- Flush executes before the last actual read/capture. Each fault must
             -- be refused without writing/versioning/restarting or legacy fallback.
             for _,fault in ipairs({"disk","generation","binding","replay","api","throw","refresh-throw","owner","capture","missing","release"}) do
                 f=fixture();base=f.capture.snapshot
+                local flush_hits,release_hits=0,0
                 _G.jit={flush=function()
+                    flush_hits=flush_hits+1
                     if fault=="disk" then f.disk=SOURCE
                     elseif fault=="generation" then candidate(f,EDIT)
                     elseif fault=="binding" then enter(f,3)
@@ -248,6 +333,7 @@ function M.run()
                     elseif fault=="capture" then f.p._versions[FILE].capture=nil
                     elseif fault=="missing" then f.p:Missing(FILE,"gone")
                     elseif fault=="release" then
+                        release_hits=release_hits+1
                         local released,why=f.p:Release()
                         eq(released,nil,"Release refused inside commit")
                         eq(why.code,"phase","Release busy reason")
@@ -256,8 +342,22 @@ function M.run()
                 end}
                 local result=f.p:ApplyFromUI()
                 check(not result:match("^applied"),"flush "..fault.." refused")
-                check(f.reads>=2 or fault=="throw" or fault=="capture" or fault=="missing" or fault=="replay",
-                    "flush "..fault.." fresh disk path reached")
+                eq(flush_hits,1,"flush "..fault.." intended fault reached exactly once")
+                eq(f.kernels,1,"flush "..fault.." actual kernel reached")
+                eq(#f.receipts,0,"flush "..fault.." no successful receipt")
+                eq(f.freezes,1,"flush "..fault.." real frozen proof prepared before kernel")
+                eq(#must(f.prepared).driver_prepared.dependencies.safe_roots,1,"flush "..fault.." real Current root was safe")
+                local locals,cards
+                for _,record in ipairs(f.prepared.driver_prepared.entries) do
+                    if record.owner==Local then locals=record.fragment
+                    elseif record.owner==Card then cards=record.fragment end
+                end
+                eq(#must(locals).cell_writes,1,"flush "..fault.." shared helper write actually prepared")
+                eq(#must(cards).raw_writes,0,"flush "..fault.." unchanged Current wrapper")
+                eq(f.p._pending_restart_run,nil,"flush "..fault.." failed commit creates no Retry")
+                eq(f.p._completion_checks[FILE],nil,"flush "..fault.." no completion witness")
+                eq(f.p._commit:Poisoned(),false,"flush "..fault.." prewrite refusal is not poison")
+                if fault=="release" then eq(release_hits,1,"active Release refusal really exercised") end
                 eq(f.p:IsReleased(),false,"flush "..fault.." no hidden session release")
                 unchanged(f,base,"flush "..fault)
             end
@@ -287,7 +387,7 @@ function M.run()
             candidate(f,EDIT:sub(1,#EDIT-#SIDE-1))
             -- SIDE differs only in helper body elsewhere, so this cuts the exact suffix.
             has(f.p:ApplyFromUI(),"applied","absent non-current class is source tombstone")
-            check(f.capture.snapshot.units["card:1:L:1"]~=nil,"source tombstone keeps live owner/version")
+            check(card_state(f).units["card:1:L:1"]~=nil,"source tombstone keeps live owner/version")
             eq(f.classes.L.cards[1]:init(1),315,"absent wrapper still sees shared helper")
             check(f.p._store:GetCandidate(FILE)~=nil,"tombstone candidate retained")
 
@@ -301,9 +401,9 @@ function M.run()
             check(f.p._store:GetCandidate(other)~=nil,"unloaded unrelated candidate retained")
 
             f=fixture()
-            f.p._loads[FILE]=nil -- a legacy map cannot be upgraded by production UI
-            has(f.p:ApplyFromUI(),"first-load entry unavailable","missing genuine load never enters UI legacy path")
-            eq(f.restarts,0,"old map UI never restarts")
+            f.p._loads[FILE]=nil -- a missing genuine entry cannot grant production authority
+            has(f.p:ApplyFromUI(),"first-load entry unavailable","missing genuine load never gains publication authority")
+            eq(f.restarts,0,"missing entry never restarts")
 
             f=fixture();base=f.capture.snapshot
             f.p._versions[FILE].capture=nil;f.p._versions[FILE].reason="synthetic seed refusal"
@@ -314,9 +414,14 @@ function M.run()
             f.on_restart=function() error("restart fault") end
             has(f.p:ApplyFromUI(),"definitions committed; restart failed","restart error preserves successful transaction")
             eq(f.capture.snapshot.revision,1,"restart failure does not undo committed versions")
+            receipt(f,1,true,1,"definitions committed before failed handoff")
             eq(f.p:HasRestartPending(),true,"frozen run retained")
             has(f.p:ApplyFromUI(),"retry restart first","new Apply cannot overwrite pending frozen target")
             local frozen=f.p._pending_restart_run
+            eq(frozen.receipt,f.receipts[1].receipt,"Retry retains genuine common receipt")
+            eq(frozen.snapshot,f.capture.snapshot,"Retry retains actual committed snapshot")
+            eq(frozen.state,"failed","failed handoff is retryable")
+            eq(frozen.attempts,1,"one actual failed request")
             local reads,creates,discovers=f.reads,f.creates,f.discoveries
             f.disk="unreadable unrelated bytes"
             f.p:Dismiss(FILE)
@@ -335,6 +440,11 @@ function M.run()
             eq(f.creates,creates,"retry no compile")
             eq(f.discoveries,discovers,"retry no discovery")
             eq(f.capture.snapshot.revision,1,"retry no republish")
+            eq(f.kernels,1,"retry never enters a second kernel")
+            eq(#f.receipts,1,"retry reuses original common receipt")
+            eq(frozen.receipt,f.receipts[1].receipt,"retry keeps receipt identity")
+            eq(frozen.state,"accepted","retry only records accepted handoff")
+            eq(frozen.attempts,2,"one additional actual request")
             eq(f.p:HasRestartPending(),false,"successful retry releases pending run")
 
             for _,fault in ipairs({"owner","sibling","replay","released"}) do
@@ -342,6 +452,9 @@ function M.run()
                 f.on_restart=function() error("retry fixture") end
                 has(f.p:ApplyFromUI(),"restart failed","frozen "..fault.." fixture committed")
                 local reads=f.reads
+                local frozen=must(f.p._pending_restart_run)
+                local committed=frozen.receipt
+                eq(frozen.attempts,1,"frozen "..fault.." first request attempted")
                 if fault=="owner" then f.classes.K.cards={}
                 elseif fault=="sibling" then f.classes.K.cards[1]={is_combat=false}
                 elseif fault=="replay" then f.replay=true
@@ -350,6 +463,9 @@ function M.run()
                 check(f.p:RetryRestartFromUI()~="restart requested","frozen "..fault.." retry refused")
                 eq(f.restarts,1,"frozen "..fault.." no second restart")
                 eq(f.reads,reads,"frozen "..fault.." retry no IO")
+                eq(frozen.attempts,1,"frozen "..fault.." rejection happens before another request")
+                eq(frozen.receipt,committed,"frozen "..fault.." original receipt retained")
+                eq(f.kernels,1,"frozen "..fault.." rejection does not republish")
             end
             f=fixture()
             _sc_table[1][5]=true
@@ -366,6 +482,7 @@ function M.run()
             boss.GetCurrentCard=function(live) return live.cards[live.card_num] end
             eq(Binding.CaptureCurrent().mode,"debug","synthetic SC Debug binding fixture")
             has(f.p:ApplyFromUI(),"applied","synthetic debug current root uses versioned pipeline")
+            receipt(f,1,true,1,"synthetic SC Debug Current")
             eq(f.restart_args[4],2,"debug restart keeps genuine live slot")
             eq(f.restart_args[5],false,"debug freezes no previous flag")
             eq(lstg.var.sc_index,"EXT_POS","debug restart normal practice handoff protocol")
@@ -375,26 +492,56 @@ function M.run()
             -- this exact session; a new controller cannot silently bypass it.
             for _,poison in ipairs({false,true}) do
                 f=fixture();base=f.capture.snapshot
+                local old_helper=local_state(f,base).by_name.helper.fn
+                local helper_slot=must(Anchor.Slot(f.entry,"helper"))
+                local forward,restore=0,0
                 debug.setupvalue=function(fn,index,value)
-                    if fn==f.entry.anchor then
-                        set(fn,index,value)
-                        if poison or value~=base.functions.units.helper.fn then error("setter fault") end
+                    local name=set(fn,index,value)
+                    if fn==f.entry.anchor and index==helper_slot then
+                        if value~=old_helper then forward=forward+1;error("setter fault after write") end
+                        restore=restore+1
+                        if poison then error("rollback setter fault after write") end
                     end
-                    return set(fn,index,value)
+                    return name
                 end
                 has(f.p:ApplyFromUI(),poison and "rollback failed" or "live writes restored","production cell fault surfaced")
+                eq(forward,1,"exact helper installation failed after real write")
+                eq(restore,1,"exact helper rollback actually attempted")
+                eq(f.kernels,1,"setter fault reaches real common kernel")
+                eq(#f.receipts,0,"setter fault cannot return successful receipt")
+                eq(f.freezes,1,"setter fault has actual precommit frozen proof")
                 eq(f.p._commit:Poisoned(),poison,"production poison status")
                 eq(f.restarts,0,"cell fault no restart")
+                eq(f.p._pending_restart_run,nil,"cell fault has no committed Retry")
+                eq(f.p._completion_checks[FILE],nil,"cell fault no completion witness")
                 eq(f.p._store:HasPartialPublication(FILE),false,"cell fault no ACK/partial revision")
+                local locals,cards
+                for _,record in ipairs(must(f.prepared).driver_prepared.entries) do
+                    if record.owner==Local then locals=record.fragment
+                    elseif record.owner==Card then cards=record.fragment end
+                end
+                eq(#must(locals).cell_writes,1,"setter fixture actually selected shared helper")
+                eq(#must(cards).raw_writes,0,"setter fixture keeps unchanged Current callback")
                 debug.setupvalue=set
+                eq(f.capture.snapshot,base,"failed setter does not install common snapshot")
+                eq(Anchor.Get(f.entry,"helper"),old_helper,"real restoration wrote original helper")
                 if poison then
+                    -- A throw after restoration still prevents a trusted success.
+                    local newer,err=Commit.New(f.p._session_id)
+                    eq(newer,nil,"another controller cannot bypass poisoned session")
+                    eq(err.code,"poisoned","poison survives controller construction")
                     has(f.p:ApplyFromUI(),"session requires restart","poisoned production refuses later Apply")
+                    eq(f.kernels,1,"poison refusal does not enter another kernel")
                 else unchanged(f,base,"cell restored") end
             end
             f=fixture()
             f.p._store.RecordPartialPublication=function() return nil,"postcommit bookkeeping fault" end
             has(f.p:ApplyFromUI(),"definitions committed; partial publication bookkeeping failed","postcommit bookkeeping refusal explicit")
             eq(f.capture.snapshot.revision,1,"bookkeeping fault never rewrites actual history")
+            eq(f.kernels,1,"bookkeeping fails only after real common kernel")
+            eq(#f.receipts,1,"bookkeeping keeps actual changed receipt")
+            eq(f.receipts[1].receipt.changed,true,"bookkeeping failure follows changed definitions")
+            eq(f.receipts[1].receipt.snapshot,f.capture.snapshot,"bookkeeping keeps installed receipt snapshot")
             eq(f.p:HasRestartPending(),true,"bookkeeping fault retains committed run")
             check(f.p._store:GetCandidate(FILE)~=nil,"bookkeeping fault never cancels candidate")
             eq(f.p._store:GetAccepted(FILE).content,SOURCE,"bookkeeping fault never ACKs")
@@ -404,7 +551,7 @@ function M.run()
         end
     end)
     debug.getupvalue,debug.setupvalue,debug.upvaluejoin=get,set,join
-    Restart.Handoff,Compose.Create=old_restart,old_create
+    Restart.Handoff,Compose.Create,Restart.Freeze=old_restart,old_create,old_freeze
     for _,p in ipairs(plugins) do p:Release() end
     for _,name in ipairs(modules) do package.loaded[name]=loaded[name] end
     for _,name in ipairs(globals) do rawset(_G,name,saved[name]) end

@@ -6,10 +6,12 @@
 --   * the view installing on the mod's first `afterMod` dispatch, with
 --     scdebugger's own second dispatch staying a no-op
 --   * debug-side card capture (no `lstg.var.sc_index`)
---   * an Apply transaction whose candidate bytes are the already-loaded source,
---     so nothing is re-executed
+--   * a no-change Apply whose candidate bytes are the already-loaded source:
+--     callback references and the publication snapshot stay unchanged
 --   * the handoff to normal Spell Practice, with the current card identity kept
 --   * scdebugger wiring staying untouched (no re-entered SC Debugger group)
+-- Calls the integration entry from layout; does not click a native Monitor button.
+-- Does not cover changed definitions or bidirectional export conversion.
 -- Writes only userdata/spell_hot_reload_smoke/result.txt; never edits mod files.
 
 local output_root = "userdata/spell_hot_reload_smoke"
@@ -29,13 +31,15 @@ local state = {
     debugger_stages = nil,
     class_count = nil,
     sc_count = nil,
-    init_before = nil,
+    callbacks_before = nil,
+    capture = nil,
+    snapshot_before = nil,
     last_wait = nil,
 }
 
----Set by install(): reads the source the production DoFile hook captured for a
----generated file's base name.
-local live_registry_source
+---Set by install(): reads the first-load FileAnalysis the production DoFile
+---hook captured. The observer never reparses source or treats hints as ownership.
+local captured_source
 
 local function finish(ok, message)
     if finished then return end
@@ -47,9 +51,9 @@ local function finish(ok, message)
     lstg.quit_flag = true
 end
 
----Find the generated file that defines `class_key` among the sources the
----production DoFile hook captured. Returns the base name the registry is keyed
----by plus the exact bytes the engine loaded.
+---Find the generated file that mentions `class_key` in its first-load syntax.
+---Return its base name and the same FileAnalysis used by the load hook. This
+---is only observer routing; the real Apply still performs fresh Locate/Guard.
 local function find_generated_file(class_key)
     local Scanner = require("SpellHotReload.Adapters.Card.GeneratedBossScanner")
     local ok, entries = pcall(lstg.FileManager.EnumFiles, "mod/" .. tostring(setting.mod) .. "/")
@@ -61,9 +65,12 @@ local function find_generated_file(class_key)
         if not is_dir and type(name) == "string" then
             local base = name:match("([^/\\]+)$")
             if base ~= nil and base:lower():sub(-4) == ".lua" then
-                local source = live_registry_source(base)
-                if source ~= nil and Scanner.ClassKeys(source)[class_key] then
-                    return base, source
+                local source,source_error = captured_source(base)
+                if source_error then return nil,source_error end
+                if source ~= nil then
+                    local keys,why = Scanner.ClassKeys(source)
+                    if not keys then return nil,"captured analysis: " .. tostring(why and why.message) end
+                    if keys[class_key] then return base,source end
                 end
             end
         end
@@ -71,15 +78,15 @@ local function find_generated_file(class_key)
     return nil, "no captured source defines " .. tostring(class_key)
 end
 
----Run the Apply transaction against the already-loaded bytes. The candidate is
----synthetic (the file on disk is unchanged), so this never re-executes wiring.
-local function apply_loaded_source(live, Plugin)
-    local bytes = assert(live_registry_source(state.file_name),
-        "capture hook has no source for " .. tostring(state.file_name))
+---Seed a same-byte candidate, then use the trusted layout integration entry.
+---Keep the production watcher and capability/lifecycle state intact.
+local function apply_loaded_source(live)
+    local source,source_error = captured_source(state.file_name)
+    assert(source,source_error or ("capture hook has no source for " .. tostring(state.file_name)))
+    local bytes = source.content
     local p = live
-    p._activated, p._supported, p._sandbox_ok = true, true, true
-    p._root = "mod/" .. tostring(setting.mod)
-    p._watcher = { ReadFile = function() return bytes end }
+    assert(p._watcher and p._watcher:ReadFile(state.file_name) == bytes,
+        "physical source differs from the captured same-byte input")
     local candidate = p._store:BeginCandidate(state.file_name, 1, "sc debug smoke")
     assert(p._store:RecordFirstRead(state.file_name, candidate.generation, bytes, 2), "first read rejected")
     local stable = p._store:VerifyStable(state.file_name, candidate.generation, bytes, 4, 2)
@@ -112,7 +119,7 @@ local function capture_debug_binding(Binding, Card)
     return current
 end
 
-local function run_step(live, Binding, Card, Plugin)
+local function run_step(live, Binding, Card)
     state.frames = state.frames + 1
     if state.frames > MAX_FRAMES then
         finish(false, string.format("timed out in phase %s (class=%s slot=%s waiting on %s)",
@@ -139,11 +146,13 @@ local function run_step(live, Binding, Card, Plugin)
         state.debugger_stages = stage.groups["SC Debugger"].number
         state.old_boss = lstg.tmpvar.boss or _boss
         state.class_count, state.sc_count = #all_class, #_sc_table
-        state.init_before = state.card.init
-        local result = apply_loaded_source(live, Plugin)
-        assert(result:match("^applied"), "Apply from SC Debugger failed: " .. tostring(result))
-        assert(state.card.init ~= state.init_before, "Apply did not republish card callbacks")
-        state.phase = "restarted"
+        state.callbacks_before = {}
+        for _, name in ipairs({"before","init","frame","render","beforedel","del","after"}) do
+            state.callbacks_before[#state.callbacks_before+1] = {name=name, fn=rawget(state.card,name)}
+        end
+        state.capture = assert(live:GetVersions(state.file_name), "first-load versions unavailable")
+        state.snapshot_before = state.capture.snapshot
+        state.phase = "apply" -- publication is requested by layout, never update
 
     elseif state.phase == "restarted" then
         if stage.current_stage == nil or stage.current_stage.name ~= "Spell Practice@Spell Practice" then
@@ -176,18 +185,41 @@ local function install()
     local View = require("SpellHotReload.UI.View")
     local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
     local Card = require("SpellHotReload.Adapters.Card.CardCallbacks")
-    local Plugin = require("SpellHotReload.Runtime.Plugin")
     local live = assert(View.plugin, "plugin view not initialized")
-    live_registry_source = function(file_name) return (live:GetLoad(file_name) and live:GetLoad(file_name).loaded_source) end
+    captured_source = function(file_name)
+        local entry = live:GetLoad(file_name)
+        if not entry then return nil end
+        if type(entry.source) ~= "table" or entry.source.content ~= entry.loaded_source then
+            return nil,"first-load shared analysis unavailable for " .. tostring(file_name)
+        end
+        return entry.source
+    end
     local view = {}
     function view:getWindowName() return "SpellHotReload SC debug smoke" end
     function view:getMenuGroupName() return "Tool" end
-    function view:getEnable() return false end
-    function view:setEnable() end
-    function view:layout() end
+    local enabled = true
+    function view:getEnable() return enabled end
+    function view:setEnable(value) enabled = value end
+    function view:layout()
+        if finished or state.phase ~= "apply" then return end
+        local ok, err = xpcall(function()
+            local result = apply_loaded_source(live)
+            assert(result:match("^applied") and result:find("no definition changes", 1, true),
+                "same-byte Apply failed: " .. tostring(result))
+            for _, callback in ipairs(state.callbacks_before) do
+                assert(rawget(state.card,callback.name) == callback.fn,
+                    "same-byte Apply replaced callback: " .. callback.name)
+            end
+            assert(live:GetVersions(state.file_name) == state.capture
+                and state.capture.snapshot == state.snapshot_before,
+                "same-byte Apply advanced the publication snapshot")
+            state.phase = "restarted"
+        end, debug.traceback)
+        if not ok then live:StopWatching(); finish(false, err) end
+    end
     function view:update()
         if finished then return end
-        local ok, err = xpcall(function() run_step(live, Binding, Card, Plugin) end, debug.traceback)
+        local ok, err = xpcall(function() run_step(live, Binding, Card) end, debug.traceback)
         if not ok then
             live:StopWatching()
             finish(false, err)

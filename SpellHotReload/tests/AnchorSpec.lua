@@ -3,7 +3,7 @@
 ---
 --- Unit spec for the R2 anchor service. Anchor is the pure half of "one file,
 --- one anchor": a capability gate over the runtime's debug facilities, a
---- read-only capture policy over the shared TopLevelIR/Binding snapshot, the
+--- read-only capture policy over complete shared FileAnalysis facts, the
 --- `return function() return <locals> end` trailer, real slot enumeration
 --- (nil/false included), get/set-through on the anchor cell, and the
 --- first-load-wins session store.
@@ -13,14 +13,14 @@
 --- runtime is executed once and its own return arity is preserved. Nothing here
 --- asserts a live closure is joined, replaced or published - that is Apply.
 ---
---- Runs under plain Lua 5.1 and LuaJIT with no engine globals (see
---- anchor-capture/run-targeted.lua). Positive trailer-capture cases inject an
---- explicit capable capability so they run anywhere; the *default* verdict is
---- asserted separately, so a runtime without `debug.upvaluejoin` (vanilla Lua
---- 5.1) must honestly refuse to capture rather than fail the spec.
+--- Intended for real LuaJIT with no engine globals. Positive Capture cases use
+--- the actual debug facilities. Capability tables below test Supported's data
+--- contract or explicit refusal only; they never grant missing runtime support.
+--- Synthetic first-load counters are scoped to the named fixture, not game init.
 --------------------------------------------------------------------------------
 
 local Anchor = require("SpellHotReload.Load.Anchor")
+local Source = require("SpellHotReload.Source.FileAnalysis")
 
 local M = {}
 local passed, failed = 0, 0
@@ -80,6 +80,13 @@ local function runs()
 end
 
 function M.run()
+    passed,failed,failures=0,0,{}
+    local original_runs=rawget(_G,"__anchor_runs")
+    local function facts(content)
+        local value,err=Source.Build(content)
+        assert(value,type(err)=="table" and err.message or err)
+        return value
+    end
     -- Read the real runtime's facilities exactly as the module does; the spec
     -- never asks Anchor to experiment on the runtime to prove them.
     local runtime = {
@@ -119,16 +126,9 @@ function M.run()
     ----------------------------------------------------------------------------
     truthy(runtime.getupvalue, "runtime: debug.getupvalue is available")
     truthy(runtime.setupvalue, "runtime: debug.setupvalue is available")
-    if joinable then
-        truthy(can_capture, "runtime: every facility an anchor needs is present")
-        truthy(runtime.upvalueid, "runtime: debug.upvalueid is available")
-    else
-        falsy(can_capture, "runtime: a runtime without join is not supported")
-        local _, reason = Anchor.Supported(runtime)
-        check(type(reason) == "string" and reason ~= "",
-            "runtime: an unsupported runtime explains itself")
-        contains(reason, "upvaluejoin", "runtime: the missing part is named")
-    end
+    truthy(joinable,"runtime: real debug.upvaluejoin is required")
+    truthy(can_capture,"runtime: every facility an anchor needs is present")
+    truthy(runtime.upvalueid,"runtime: debug.upvalueid is available")
 
     ----------------------------------------------------------------------------
     -- Trailer
@@ -163,7 +163,8 @@ function M.run()
         "end",
     }, "\n") .. "\n"
 
-    local policy, perr = Anchor.Policy(source)
+    local shared=facts(source)
+    local policy, perr = Anchor.Policy(shared)
     check(policy ~= nil, "policy: a normal file parses (" .. tostring(perr) .. ")")
     if policy ~= nil then
         truthy(policy.reloadable, "policy: a normal file is reloadable")
@@ -177,7 +178,7 @@ function M.run()
     end
 
     do
-        local blocked = Anchor.Policy("local a = 1\nreturn a\n")
+        local blocked = Anchor.Policy(facts("local a = 1\nreturn a\n"))
         check(blocked ~= nil, "policy: a returning file still analyzes")
         if blocked ~= nil then
             falsy(blocked.reloadable, "policy: a top-level return blocks capture")
@@ -187,7 +188,7 @@ function M.run()
     end
 
     do
-        local blocked = Anchor.Policy("local a = 1\nlocal a = 2\n")
+        local blocked = Anchor.Policy(facts("local a = 1\nlocal a = 2\n"))
         check(blocked ~= nil, "policy: duplicates analyze")
         if blocked ~= nil then
             falsy(blocked.reloadable, "policy: a duplicate local blocks capture")
@@ -199,12 +200,14 @@ function M.run()
     end
 
     do
-        -- Injecting the shared snapshot proves the opaque branch independently
-        -- of whatever the lexer happens to classify today.
-        local blocked = Anchor.Policy("local a = 1\n", {
-            analysis = { nodes = {}, statements = {} },
-            bindings = { names = { "a" }, duplicates = {}, opaque = true },
-        })
+        -- A targeted opacity-marker fault over REAL complete source facts.
+        -- This exercises policy's refusal, not the parser's opaque classification.
+        local opaque=facts("local a = 1\n")
+        local old_opacity=opaque.bindings.opaque
+        opaque.bindings.opaque=true
+        truthy(Source.Validate(opaque),"policy: opacity fault keeps complete source provenance")
+        local blocked = Anchor.Policy(opaque)
+        opaque.bindings.opaque=old_opacity
         check(blocked ~= nil, "policy: an opaque snapshot analyzes")
         if blocked ~= nil then
             falsy(blocked.reloadable, "policy: an opaque statement blocks capture")
@@ -214,46 +217,74 @@ function M.run()
     end
 
     do
-        local over = Anchor.Policy("local a = 1\nlocal b = 2\n", { limit = 1 })
+        local over = Anchor.Policy(facts("local a = 1\nlocal b = 2\n"), { limit = 1 })
         falsy(over.reloadable, "policy: the slot limit blocks capture")
         contains(over.reason, "slot limit exceeded: 2 > 1", "policy: the slot limit reason")
         eq(over.limit, 1, "policy: the supplied limit is reported")
-        truthy(Anchor.Policy("local a = 1\n", { limit = 1 }).reloadable,
+        truthy(Anchor.Policy(facts("local a = 1\n"), { limit = 1 }).reloadable,
             "policy: an exact-fit limit is accepted")
-        falsy(Anchor.Policy("local a = 1\n", { limit = 0 }).reloadable,
+        falsy(Anchor.Policy(facts("local a = 1\n"), { limit = 0 }).reloadable,
             "policy: a zero limit refuses a local")
-        local fallback = Anchor.Policy("local a = 1\n", { limit = 1.5 })
+        local fallback = Anchor.Policy(facts("local a = 1\n"), { limit = 1.5 })
         truthy(fallback.reloadable, "policy: a fractional limit falls back")
         eq(fallback.limit, Anchor.DefaultSlotLimit, "policy: the fallback is the default")
     end
 
     do
-        -- The analyzer/binding pair may be injected, so a malformed one must be
-        -- rejected instead of crashing the caller.
-        local bad, reason = Anchor.Policy("local a = 1\n", {
-            analysis = { nodes = {}, statements = {} },
-            bindings = { names = { "a" } },
-        })
-        reject(bad, reason, "policy: bindings without duplicates", "duplicates")
-        bad, reason = Anchor.Policy("local a = 1\n", { analysis = "snapshot" })
-        reject(bad, reason, "policy: a non-table analysis", "nodes and statements")
-        bad, reason = Anchor.Policy("local a = 1\n", { bindings = "declarations" })
-        reject(bad, reason, "policy: a non-table bindings", "names and duplicates")
-        bad, reason = Anchor.Policy(false)
-        reject(bad, reason, "policy: a non-string content", "content must be a string")
+        -- Partial snapshots and mismatched provenance are not public inputs.
+        local function copy(value) local out={};for k,v in pairs(value) do out[k]=v end;return out end
+        local complete=facts("local a = 1\n")
+        local partial=copy(complete);partial.bindings={names={"a"}}
+        local bad,reason=Anchor.Policy(partial)
+        reject(bad,reason,"policy: a partial bindings model","components disagree")
+        partial=copy(complete);partial.analysis="snapshot"
+        bad,reason=Anchor.Policy(partial)
+        reject(bad,reason,"policy: a non-table analysis","complete FileAnalysis required")
+        partial=copy(complete);partial.bindings="declarations"
+        bad,reason=Anchor.Policy(partial)
+        reject(bad,reason,"policy: a non-table bindings","complete FileAnalysis required")
+        bad,reason=Anchor.Policy(false)
+        reject(bad,reason,"policy: a non-source value","complete FileAnalysis required")
+        bad,reason=Anchor.Policy("local a = 1\n")
+        reject(bad,reason,"policy: raw source must be analyzed first","complete FileAnalysis required")
+        partial=copy(complete);partial.content=complete.content.." "
+        bad,reason=Anchor.Policy(partial)
+        reject(bad,reason,"policy: content/AST mismatch","components disagree")
+        partial=copy(complete);partial.bindings=copy(complete.bindings)
+        partial.bindings.analysis=facts("local other=1").analysis
+        bad,reason=Anchor.Policy(partial)
+        reject(bad,reason,"policy: foreign binding provenance","components disagree")
+        partial=copy(complete);partial.sites=copy(complete.sites)
+        partial.sites.analysis=facts("local other=1").analysis
+        bad,reason=Anchor.Policy(partial)
+        reject(bad,reason,"policy: foreign site provenance","components disagree")
     end
 
     do
-        -- An injected snapshot replaces the lexer entirely, so policy and
-        -- trailer use exactly the names it reports.
-        local injected = Anchor.Policy("local x = 1\n", {
-            analysis = { nodes = {}, statements = {} },
-            bindings = { names = { "x" }, duplicates = {}, opaque = false },
-        })
-        truthy(injected.reloadable, "policy: an injected snapshot is reloadable")
-        eq(table.concat(injected.names, ","), "x", "policy: injected names are used")
-        eq(injected.statements, 0, "policy: injected statement count")
-        falsy(injected.has_return, "policy: injected nodes have no return")
+        -- Build once at the input boundary. Policy consumes the same facts and
+        -- does not scan, bind, compile or execute the source again.
+        local IR=require("SpellHotReload.Source.TopLevelIR")
+        local Binding=require("SpellHotReload.Source.Binding")
+        local Lexer=require("SpellHotReload.Source.Lexer")
+        local input=facts("local x = 1\nerror('policy executed')\n")
+        local slots={{Source,"Build"},{IR,"Analyze"},{Binding,"Analyze"},{Lexer,"Tokenize"}}
+        local saved,calls={},{}
+        for i,slot in ipairs(slots) do
+            local index=i;saved[i]=slot[1][slot[2]];calls[i]=0
+            slot[1][slot[2]]=function() calls[index]=calls[index]+1;error("policy rescanned source") end
+        end
+        local ran,verdict,reason=pcall(Anchor.Policy,input)
+        for i,slot in ipairs(slots) do slot[1][slot[2]]=saved[i] end
+        check(ran,"policy: complete-source query does not throw")
+        check(verdict~=nil,"policy: existing complete source accepted ("..tostring(reason)..")")
+        if ran and verdict then
+            truthy(verdict.reloadable,"policy: existing complete source reloadable")
+            eq(table.concat(verdict.names,","),"x","policy: existing names used")
+            eq(verdict.statements,#input.analysis.statements,"policy: actual statement count")
+            falsy(verdict.has_return,"policy: actual nodes have no return")
+        end
+        for i,slot in ipairs(slots) do eq(calls[i],0,"policy: no repeated "..slot[2]) end
+        truthy(Source.Validate(input),"policy: source retained after query")
     end
 
     ----------------------------------------------------------------------------
@@ -393,16 +424,17 @@ function M.run()
     end
 
     ----------------------------------------------------------------------------
-    -- Capture: the trailer path (an explicit capable capability, so this is
-    -- deterministic on every runtime)
+    -- Capture: the trailer path with real runtime capabilities
     ----------------------------------------------------------------------------
-    local entry = Anchor.Capture(source, { capability = caps() })
+    local entry = Anchor.Capture(source)
     check(entry ~= nil, "capture: a normal file loads")
     if entry ~= nil then
         truthy(entry.captured, "capture: the trailer produced an anchor")
         truthy(entry.reloadable, "capture: the entry is reloadable")
         eq(entry.reason, nil, "capture: a captured entry has no reason")
         eq(entry.loaded_source, source, "capture: the loaded source is recorded")
+        truthy(Source.Validate(entry.source),"capture: complete shared source retained")
+        eq(entry.source.content,source,"capture: shared source has exact loaded bytes")
         eq(table.concat(entry.names, ","), "counter,config,pattern", "capture: names")
         eq(#entry.order, 3, "capture: every slot is enumerated")
         eq(entry.ret.n, 0, "capture: the trailer chunk returns nothing else")
@@ -418,25 +450,17 @@ function M.run()
         local default_entry = Anchor.Capture(source)
         check(default_entry ~= nil, "capture: the default path loads once")
         if default_entry ~= nil then
-            if can_capture then
-                truthy(default_entry.captured, "capture: the real runtime captures")
-                truthy(Anchor.Live(default_entry), "capture: the real runtime entry is live")
-                truthy(Anchor.Set(default_entry, "counter", 11), "capture: the real cell is writable")
-                eq(Anchor.Get(default_entry, "counter"), 11, "capture: the real cell reads back")
-            else
-                falsy(default_entry.captured, "capture: an incapable runtime refuses to capture")
-                falsy(default_entry.reloadable, "capture: an incapable runtime is not reloadable")
-                contains(default_entry.reason, "capability", "capture: the runtime reason is kept")
-                contains(default_entry.reason, "upvaluejoin", "capture: the missing part is named")
-                eq(default_entry.slots, nil, "capture: no slots without an anchor")
-            end
+            truthy(default_entry.captured, "capture: the real runtime captures")
+            truthy(Anchor.Live(default_entry), "capture: the real runtime entry is live")
+            truthy(Anchor.Set(default_entry, "counter", 11), "capture: the real cell is writable")
+            eq(Anchor.Get(default_entry, "counter"), 11, "capture: the real cell reads back")
         end
     end
 
     do
-        local nil_entry = Anchor.Capture("local empty = nil\nlocal flag = false\n",
-            { capability = caps() })
+        local nil_entry = Anchor.Capture("local empty = nil\nlocal flag = false\n")
         check(nil_entry ~= nil, "capture: nil/false locals load")
+        truthy(nil_entry and nil_entry.captured==true,"capture: real runtime captures nil/false")
         if nil_entry ~= nil and nil_entry.captured then
             truthy(nil_entry.captured, "capture: nils and falses are still captured")
             eq(#nil_entry.order, 2, "capture: nil/false slots are enumerated")
@@ -491,15 +515,27 @@ function M.run()
     eq(runs(), 1, "capability: executed exactly once")
 
     do
-        -- The splitter can miss a return; the trailer then cannot compile and
-        -- the file must fall back to a plain single load, not run twice.
+        -- Simulate a missed-return POLICY verdict at its real seam, preserving
+        -- genuine full-source analysis. Natural trailer compilation must fail,
+        -- then the original first-load chunk executes once with its return arity.
         _G.__anchor_runs = 0
-        local doctored = Anchor.Capture(
-            "local x = 1\n__anchor_runs = __anchor_runs + 1\nreturn 5\n", {
-                capability = caps(),
-                analysis = { nodes = {}, statements = {} },
-                bindings = { names = { "x" }, duplicates = {}, opaque = false },
-            })
+        local original_policy=Anchor.Policy
+        local calls=0
+        Anchor.Policy=function(input,options)
+            calls=calls+1
+            truthy(Source.Validate(input),"trailer: fault receives complete source")
+            local verdict,reason=original_policy(input,options)
+            if verdict then
+                truthy(verdict.has_return,"trailer: real policy finds the return")
+                verdict.reloadable,verdict.has_return,verdict.reason=true,false,nil
+            end
+            return verdict,reason
+        end
+        local ran,doctored,reason=pcall(Anchor.Capture,
+            "local x = 1\n__anchor_runs = __anchor_runs + 1\nreturn 5\n")
+        Anchor.Policy=original_policy
+        assert(ran,doctored)
+        eq(calls,1,"trailer: one targeted policy fault")
         check(doctored ~= nil, "trailer: the fallback loads")
         falsy(doctored.captured, "trailer: not captured")
         contains(doctored.reason, "trailer compile failed", "trailer: the fallback reason")
@@ -510,7 +546,7 @@ function M.run()
 
     do
         local loaded = Anchor.Capture("local who = ...\n",
-            { capability = caps(), args = { n = 1, "world" } })
+            { args = { n = 1, "world" } })
         check(loaded ~= nil, "args: a vararg file loads")
         truthy(loaded.captured, "args: captured")
         eq(Anchor.Get(loaded, "who"), "world", "args: the call arguments reach the file")
@@ -519,14 +555,21 @@ function M.run()
     do
         local bad, reason, stage = Anchor.Capture("local x = (1\n")
         eq(bad, nil, "compile: a bad file fails")
-        contains(reason, "Lua syntax:", "syntax: analysis reason")
-        eq(stage, "analyze", "syntax: refused before compilation")
+        local _,syntax_error=Source.Build("local x = (1\n")
+        eq(syntax_error.code,"compile","syntax: full-source compiler rejects input")
+        eq(reason,syntax_error.message,"syntax: native compiler diagnostic retained")
+        eq(stage, "analyze", "syntax: refused at public input boundary")
         local parameters={}
         for i=1,201 do parameters[i]="p"..i end
-        bad,reason,stage=Anchor.Capture("function LIMIT("..table.concat(parameters,",")..") end")
+        local limited="function LIMIT("..table.concat(parameters,",")..") end"
+        local original_limit=rawget(_G,"LIMIT")
+        local _,limit_error=Source.Build(limited)
+        eq(limit_error.code,"compile","compiler restriction rejected by full-source check")
+        bad,reason,stage=Anchor.Capture(limited)
         eq(bad,nil,"compiler limit has no result")
-        contains(reason,"compile failed","compiler restriction still enforced")
-        eq(stage,"compile","compiler limit remains compile failure")
+        eq(reason,limit_error.message,"compiler restriction diagnostic retained")
+        eq(stage,"analyze","compiler limit refused before first-load execution")
+        eq(rawget(_G,"LIMIT"),original_limit,"compiler limit never installs global function")
         bad, reason, stage = Anchor.Capture("error('boom')\n")
         eq(bad, nil, "run: a failing file fails")
         contains(reason, "run failed", "run: the stage reason")
@@ -542,7 +585,7 @@ function M.run()
     -- Session store: one anchor per file, first load wins
     ----------------------------------------------------------------------------
     do
-        local second = Anchor.Capture("local other = 1\n", { capability = caps() })
+        local second = Anchor.Capture("local other = 1\n")
         check(second ~= nil and second.captured == true, "store: a second file captures")
         local store = Anchor.NewStore()
         eq(store:Size(), 0, "store: starts empty")
@@ -591,7 +634,7 @@ function M.run()
         eq(store:Has("B.lua"), false, "store: released has")
     end
 
-    _G.__anchor_runs = nil
+    _G.__anchor_runs = original_runs
 
     print(string.format("[SpellHotReload anchor] %d passed, %d failed", passed, failed))
     for _, label in ipairs(failures) do

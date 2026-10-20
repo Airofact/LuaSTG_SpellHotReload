@@ -2,6 +2,7 @@ local FileMatch = require("SpellHotReload.Pipeline.FileMatch")
 local Registry = require("SpellHotReload.Pipeline.NodeRegistry")
 local Lexer = require("SpellHotReload.Source.Lexer")
 local IR = require("SpellHotReload.Source.TopLevelIR")
+local Source = require("SpellHotReload.Source.FileAnalysis")
 local M = {}
 
 function M.run()
@@ -13,7 +14,7 @@ function M.run()
     local function hook() error("execution hooks must not run") end
     local function adapter(id, match)
         return {
-            ContractVersion = 4, Id = id, Match = match, Reconcile = function() error("unexpected reconciliation") end,
+            ContractVersion = 5, Id = id, Match = match, Reconcile = function() error("unexpected reconciliation") end,
             Locate = hook, Inject = hook, Commit = hook, Restart = hook,
         }
     end
@@ -35,7 +36,10 @@ function M.run()
         return { kind = kind or "callback", key = key, unit_key = owner }
     end
     local function discover(r, content, common, options)
-        return FileMatch.Discover(r, content or "G = 1", common or { file = "F.lua" }, options)
+        if content == nil then content = "G = 1" end
+        local source,err = Source.Build(content,options)
+        if not source then return nil,err end
+        return FileMatch.Discover(r, source, common or { file = "F.lua" })
     end
     local function reject(r, code, phase, label, content, common, options)
         local snapshot, err = discover(r, content, common, options)
@@ -50,11 +54,12 @@ function M.run()
     local seen, calls = nil, {}
     local first, second = unit("a", 18, 33), unit("b", 18, 33)
     local fc, uc = { layout = "full" }, second.context
-    local function match_a(analysis, common)
-        seen = analysis
+    local function match_a(facts, common)
+        seen = facts
+        local analysis = facts.analysis
         calls[#calls + 1] = "a"
-        eq(analysis, common.analysis, "common shares analysis")
-        eq(common.content, source, "Match gets exact complete bytes")
+        eq(facts, common.source, "common shares complete source")
+        eq(facts.content, source, "Match gets exact complete bytes")
         eq(#analysis.statements, 3, "full-file statements include effect")
         eq(#analysis.nodes, 4, "multi-local keeps two legacy nodes")
         eq(analysis.tokens[1].value, "local", "comment does not become trigger")
@@ -68,9 +73,9 @@ function M.run()
         return result({ second }, { claim("slot-b", "b") })
     end
     local supplied = {
-        file = "F.lua", session_id = "session", candidate_generation = 7,
+        file = "F.lua", session_id = "session", generation = 7,
         loaded_source = "loaded", registry_entry = {}, base_revision = 2,
-        published_units = {}, analysis = "old", content = "old",
+        capture = {}, trace_context = "caller marker",
     }
     local old_tokenize, lex_count = Lexer.Tokenize, 0
     Lexer.Tokenize = function(content)
@@ -93,12 +98,12 @@ function M.run()
     eq(snapshot.adapter_contexts.a, fc, "per-adapter full-file context")
     eq(snapshot.by_key.a.context.common, snapshot.common, "one shared common")
     eq(snapshot.common == supplied, false, "caller common is not reused")
-    eq(supplied.analysis, "old", "caller analysis not overwritten")
-    eq(supplied.content, "old", "caller content not overwritten")
+    eq(supplied.trace_context, "caller marker", "caller metadata not overwritten")
+    eq(supplied.source, nil, "authoritative source not written into caller common")
     eq(snapshot.common.registry_entry, supplied.registry_entry, "registry reference retained")
-    eq(snapshot.common.published_units, supplied.published_units, "versions retained")
+    eq(snapshot.common.capture, supplied.capture, "capture identity retained")
     eq(snapshot.common.session_id, "session", "session retained")
-    eq(snapshot.common.candidate_generation, 7, "generation retained")
+    eq(snapshot.common.generation, 7, "generation retained")
     eq(snapshot.common.loaded_source, "loaded", "loaded baseline retained")
     eq(snapshot.common.base_revision, 2, "revision retained")
     eq(#snapshot.claims, 2, "claims aggregated")
@@ -116,14 +121,15 @@ function M.run()
     eq(analysis.statements[1].tok.first, nodes[2].tok.first, "multi-local statement shared")
     local bom = "\239\187\191G=2"
     local bom_snapshot = assert(discover(registry(adapter("bom", function(a, c)
-        eq(c.content, bom, "common preserves BOM")
-        local range = a.statements[1].source_range
+        eq(a.content, bom, "source preserves BOM")
+        eq(c.source,a,"same complete BOM source")
+        local range = a.analysis.statements[1].source_range
         return result({ unit("bom", range.first, range.last) })
     end)), bom))
     eq(bom_snapshot.by_key.bom.unit.source_ranges[1].last, #bom, "raw-byte bounds")
 
     eq(#assert(discover(registry())).units, 0, "empty registry succeeds")
-    eq(#assert(discover(registry(), "")).analysis.statements, 0, "empty file succeeds")
+    eq(#assert(discover(registry(), "")).common.source.analysis.statements, 0, "empty file succeeds")
     local blank_nodes, blank_err, blank = IR.Analyze("")
     eq(#blank_nodes, 0, "empty legacy nodes")
     eq(blank_err, nil, "empty legacy error")
@@ -131,11 +137,11 @@ function M.run()
     local empty = assert(discover(registry(adapter("empty", function()
         return result()
     end)), " -- comment only"))
-    eq(#empty.analysis.tokens, 0, "comment-only file has no tokens")
+    eq(#empty.common.source.analysis.tokens, 0, "comment-only file has no tokens")
     eq(empty.adapter_contexts.empty.all, true, "empty Match retains context")
     eq(#empty.units, 0, "empty Match is not an error")
     local host = assert(discover(registry(), "Call()", nil, { host_calls = { Call = true } }))
-    eq(host.analysis.nodes[1].carrier, "host", "analysis options forwarded")
+    eq(host.common.source.analysis.nodes[1].carrier, "host", "analysis options forwarded")
 
     reject(nil, "unsupported", "match", "registry required")
     reject({}, "unsupported", "match", "enumeration missing")
@@ -151,7 +157,9 @@ function M.run()
     reject({ Discoveries = function() return { invalid } end },
         "unsupported", "match", "contract rechecked")
     reject(registry(), "unsupported", "analyze", "common file required", "G=1", {})
-    reject(registry(), "unsupported", "analyze", "content type", 42)
+    local bad_source,bad_error=FileMatch.Discover(registry(),42,{file="F.lua"})
+    eq(bad_source,nil,"complete source type required")
+    eq(bad_error.phase,"analyze","source type diagnosed at Match input")
     reject(registry(), "unsupported", "analyze", "common metatable", "G=1",
         setmetatable({ file = "F.lua" }, { __index = hook }))
 
@@ -224,12 +232,17 @@ function M.run()
     reject(registry(adapter("objecterror", function()
         return nil, setmetatable({}, { __tostring = hook })
     end)), "unsupported", "match", "error conversion avoids metamethod")
-    local previous_analyze = IR.Analyze
-    IR.Analyze = function() error("analysis failed") end
-    local analysis_ok, analysis_error = pcall(reject, registry(), "unsupported",
-        "analyze", "analysis exception")
-    IR.Analyze = previous_analyze
-    assert(analysis_ok, analysis_error)
+    local shared_facts=assert(Source.Build("G=1"))
+    local previous_analyze,previous_build=IR.Analyze,Source.Build
+    IR.Analyze=function() error("Match must not analyze source") end
+    Source.Build=function() error("Match must not build source") end
+    local analysis_ok,analysis_result=pcall(FileMatch.Discover,registry(),shared_facts,{file="F.lua"})
+    IR.Analyze,Source.Build=previous_analyze,previous_build
+    assert(analysis_ok,analysis_result);assert(analysis_result)
+    eq(analysis_result.common.source,shared_facts,"Match reuses validated source without hidden analysis")
+    local foreign,foreign_error=FileMatch.Discover(registry(),shared_facts,{file="F.lua",source={}})
+    eq(foreign,nil,"foreign common source refused")
+    eq(foreign_error.code,"ownership","source provenance diagnostic")
 
     local touched = false
     local old_effect = _G.SIDE_EFFECT

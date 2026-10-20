@@ -8,7 +8,7 @@ function M.run()
     end
     local function valid()
         return {
-            ContractVersion = 4, Id = "card",
+            ContractVersion = 5, Id = "card",
             Match = hook, Reconcile = hook, Locate = hook, Inject = hook, Commit = hook,
         }
     end
@@ -27,7 +27,7 @@ function M.run()
     local candidate = valid()
     candidate.ContractVersion = nil
     expect(candidate, false, "missing version")
-    for _, version in ipairs({ false, 1, 2, 3, "4" }) do
+    for _, version in ipairs({ false, 1, 2, 3, 4, "5" }) do
         candidate = valid()
         candidate.ContractVersion = version
         expect(candidate, false, "unsupported version")

@@ -2,7 +2,8 @@
 
 LuaSTG Editor Sharp 的 **Spell Practice（符卡练习）热重载** 调试插件。
 支持直接在符卡节点下编写逻辑，也支持回调调用同文件的具名局部函数；
-当前真实验收通过的范围是普通符卡练习；SC Debugger 有定位支持，完整切关路径仍待验收。
+普通符卡练习已有历史限定实机证据；下述共同发布路径仍待最终集成与目标引擎验收。
+SC Debugger 有定位支持，完整切关路径仍待验收。
 
 编辑器重新生成 `*_Boss.lua` 后，插件等待两次读取字节一致，再显示候选。
 点击 **Apply & Restart Current**，插件按 Boss 类名、加载时的实时槽位和捕获到的
@@ -35,8 +36,8 @@ git add game/plugin/SpellHotReload
 
 运行需要提供 `lib.Ldebug`、插件事件、ImGui、`lstg.FileSystemWatcher` 以及
 THlib 符卡练习接口的 LuaSTG 环境；已验证环境为 THDiMS 的 LuaSTG Sub
-v0.21.111 / LuaJIT 2.1.1744887079。Lua 5.1 可运行独立 spec，不能据此
-推断其它引擎包的运行兼容性。启用插件后重启游戏，使加载捕获先于 mod 执行。
+v0.21.111 / LuaJIT 2.1.1744887079。生产发布和本次共享状态回归均要求真实
+`debug.upvaluejoin` 能力。启用插件后重启游戏，使加载捕获先于 mod 执行。
 
 ## 使用
 
@@ -70,7 +71,8 @@ v0.21.111 / LuaJIT 2.1.1744887079。Lua 5.1 可运行独立 spec，不能据此
 这不是通用 Host/Value 热更；任意中间插入/重排、新类创建或非字面量构造仍不保证可隔离。
 文件级门禁与完整剩余核对由 `SpellHotReload/Apply/FileApply.lua` 负责；Card 仅提供
 卡接线/绑定影响的证据和已证明的定义语句覆盖，不比较无关语句、不决定整文件完成。
-全局/字段值及 Host 场景不在生产支持范围，文件级发布限定在 Card 事务内。
+全局/字段值及 Host 场景不在生产支持范围；Local 和 Card 的安全定义集合
+由一次共同文件事务发布，各自保存私有定义规则和版本。
 独立的全局 `Include 'path'` / `Include('path')`（含长字符串、尾随分号）不参与
 符卡热重载：增删或改路径不阻断 Apply，也不单独保留候选；不会执行 Include，
 不会加载所指文件，也不记为已发布。动态参数、别名、同名 local 遮蔽或控制块内调用
@@ -81,8 +83,10 @@ Result 和候选行显示上次核对的剩余种类、字节位置与原因，�
 名字、构造、列表、注册和状态初始化不会因定义发布而被一并接受。
 完成记忆与首载字节、部分发布、Dismiss 分开；有效的完成字节不会被 Rescan、
 周期扫描或同字节再导出复活。新字节、实际版本或活体绑定变化会作废记忆。
-提交后检查失败时保留候选，已提交的定义不会假装回滚。此检查会额外分析完整
-文件，但不再次提交；Watcher 的完成复查只读活体身份/函数值/共享单元，不编译。
+提交后检查失败时保留候选，已提交的定义不会假装回滚。此检查复用当次完整
+FileAnalysis，针对实际新快照重新发现、协调和核算，不再次提交；复用语法事实
+不省略实际版本、定位、活体或 Guard。Watcher 的完成复查只读活体身份、函数值
+和共享单元，不编译。
 定义完成与重启结果独立：候选已经移除但重启失败时，仍使用 Retry Restart，
 它只重试运行工作流冻结并关联成功 receipt 的目标，不重新读取、编译或提交。
 结果 `restart requested` 表示切关请求已发出；尚未证明异步新场景或 Boss 已就绪。
@@ -127,14 +131,13 @@ SC Debug / Test 产物可参与卡定位，候选末尾的字面量 Include 按�
   支持 `function _tmp_sc:init() ... end` 和
   `_tmp_sc.frame = function(self) ... end` 两种声明。
 - 回调内的任务、循环、匿名函数和调用参数均随回调一起更新。
-- 删除一个可选回调时恢复 `boss.card._default_card` 中的默认实现。
+- 删除一个可选回调时恢复首载保存的默认函数身份，不读取后来改写的默认表。
 - 按所选卡回调的真实捕获关系递归选择必要的顶层 `local function` 变化；
   未变化定义沿用其已发布依赖，别名和普通状态单元终止依赖遍历。
   多个难度共用 helper 时，共享单元更新可能影响其它消费者，但不算它们的
   回调定义已经发布；未选择的定义变化仍保留 pending。
 - 生产发布要求 `debug.upvaluejoin`，保留原共享 upvalue 单元。
-  缺少该能力时可正常加载文件，但禁用新版热重载；Lua 5.1 离线测试中的
-  能力替身不证明生产共享单元发布可用。
+  缺少该能力时可正常加载文件，但禁用热重载；能力替身不证明共享单元发布可用。
 
 例如以下两种 init 都支持：
 
@@ -171,7 +174,9 @@ end
   新引用了未捕获的局部变量时拒绝应用，需重启游戏。修改局部变量的初始化
   表达式也需要重启。
 - Current 只发布当前卡变化及其必要函数依赖；文件 Apply 合并安全根的变化。
-  规划可能编译更多定义用于分析，分析结果不等于发布；不重载 `require` 模块或资源。
+  完整文件只建立公共语法与绑定事实；Local 从已有节点匹配定义并按实际版本选择，
+  Source 为需要的定义探测捕获、准备闭包。探测结果不等于发布许可；不重载
+  `require` 模块或资源。
 - 不执行整个候选文件，不重建 `_editor_class`、`_sc_table` 或 `all_class`。
   重启练习仍使用 `_sc_table["EXT_POS"]` 传递当前卡。
 - 编译、结构检查、局部变量解析失败时不发布改动。发布成功但练习重启失败时，
@@ -182,30 +187,38 @@ end
 生产入口和发布流程如下；首载发生在普通 mod 加载时，Apply 不重跑顶层：
 
 1. **首载捕获**：`__init__.lua` 在 `afterTHlib` 安装 `LoadHook`，经
-   `AnchorLoad` 从一次正常文件执行取得首载源码、局部变量共享单元的锚点及
-   可重载判定。`Plugin:AdoptLoad` 留存首载记录并捕获函数/符卡版本。
-   同文件再次执行时保留首载记录并禁用热重载，不从新活体状态补建首载历史。
-2. **稳定候选**：`Watcher` / `SnapshotStore` 双读字节一致后标为 stable；
-   `Plugin` 路由候选、复读磁盘并取得新鲜活体绑定。首载拒绝不能回退旧路径。
-3. **发现与准备**：`Driver:Discover` 经 `FileMatch` 与 Card 的 `Match` 发现
-   单元；`Card.PrepareVersioned` / `PrepareFileVersioned` 经
-   `Driver:PrepareDiscovery` 调用 `Locate` / `Inject`，证明卡对应关系并按
-   实际已发布版本选择回调和必要 helper。`CardVersions` / `FunctionVersions`
-   负责版本与依赖；`FileApply` 负责文件门禁。候选顶层与回调体不执行。
-4. **原子发布**：`Driver:CommitDiscovery` 将单个准备好的 Card 聚合计划
-   交给调用方绑定的一次性事务入口，经 Card 的 `Commit` 调用 `CardCommit`。
-   事务复读并执行 `CommitCheck`，消耗 `CommitPhase` 令牌后完成闭包接线、
-   共享单元写入和回调发布，最后安装版本快照；可恢复失败按日志逆序回滚，
-   恢复失败则禁用该会话的后续发布。这不是跨适配器事务。
-5. **完成核对与重启**：`Plugin` 以真实提交 receipt 经 `FileApply` 核对整文件
-   剩余，决定保留或移除候选。文件 Apply 到此结束；Current 使用运行工作流冻结的
-   目标经 `Runtime/CurrentRestart` 请求练习切换。失败后 Retry 仅消费冻结目标，重查身份
-   并重试切关，不重读候选、编译或提交；重启与定义完成分别记账。
+   `AnchorLoad` 从一次正常文件执行取得完整 FileAnalysis、函数身份和共享单元锚点。
+   `Plugin:AdoptLoad` 收齐 Local 和 Card 的独立首载贡献，再由 `FileVersions`
+   一次建立共同文件快照。任一贡献失败都保留拒绝原因，不从后来的活体补建历史。
+   同文件再次执行时保留原首载记录并禁用热重载。
+2. **稳定候选与公共分析**：`Watcher` / `SnapshotStore` 双读字节一致后标为 stable；
+   `Plugin` 复读磁盘并取得新鲜活体绑定。`Source/FileAnalysis` 对完整候选做语法
+   编译校验、建立全文 AST、词法绑定和节点位置；不执行候选。各 owner 消费同一事实。
+3. **发现、依赖与定向准备**：`Driver:DiscoverPublished` 将公共 source 和共同实际
+   publication 交给原 owner 的 `Match / Reconcile`，保留候选零命中时的旧侧记录。
+   Local 拥有局部定义匹配、支持范围、实际版本和选择；Card 拥有回调、卡表对应及
+   业务绑定规则。公共 `Dependencies` 只以 unit 为节点路由有限需求和 root 来源，
+   细粒度映射由 owner 私有维护。各 owner 约束后，`Locate / Inject` 为最终安全集合
+   定向准备；`FunctionPlan` 保留完整词法上下文下的捕获探测、闭包准备和接线计划，
+   不再分析整文件、重建局部定义索引或选择根。`FileApply` 核对完整文件门禁。
+4. **共同原子发布**：`Driver:CommitDiscovery` 调用每个原 owner 的 `Commit`，
+   仅登记其精确 handle/fragment/context；收齐后才调用一次中立 `FileCommit`。
+   owner 的 Commit 不独立发布。公共事务封存动作、检查权限和冲突，执行两轮
+   owner Guard 与新鲜复读，消耗 `CommitPhase` 令牌后接线、写共享单元和回调，
+   最后安装唯一共同快照并返回 receipt。写后失败按日志逆序恢复；恢复失败污染
+   本会话，后续控制器也不能绕过。零动作 owner 保留原私有记录，无变化事务保留
+   原快照，不伪造版本推进。不是循环单 owner 事务。
+5. **完成核对与重启**：`Plugin` 消费真实共同 receipt，复用当次 source，针对已安装
+   快照重新发现、协调并以全 owner 无写见证核对完整剩余，再决定保留或移除候选。
+   文件 Apply 到此结束；Current 在提交前要求精确根仍安全，冻结运行目标，关联成功
+   receipt 后经 `Runtime/CurrentRestart` 请求练习切换。失败 Retry 只重验冻结目标，
+   不读候选、编译或再次提交；重启与定义完成分别记账。
 
-公共发现契约要求 `Match / Locate / Inject / Commit`；Card 的 Commit 只委托事务。
-所有提交作用域由 Monitor 的 layout 按钮打开，`View:update` → `Plugin:Tick`
-仅驱动监视。令牌验证主线程、生命周期与重入，调用时机仍由可信 UI 入口保证。
-没有旧载体发布、直接 upvalue Patch 或 map 回退路径。
+公共发现契约为5：`Match / Reconcile / Locate / Inject / Commit`，其中 Locate/Inject
+区分逐 unit 解析和逐 owner 聚合准备，Commit 只登记片段；所有 owner 由一个事务发布。
+提交作用域由 Monitor 的 layout 按钮打开，`View:update` → `Plugin:Tick` 仅驱动监视。
+令牌验证主线程、生命周期与重入，调用时机仍由可信 UI 入口保证。
+没有旧载体发布、直接 upvalue Patch、map 回退、并行版本账本或单 owner 发布路径。
 
 ## 窗口
 
@@ -219,36 +232,40 @@ end
 
 | 位置 | 职责 |
 | --- | --- |
-| `Load/LoadHook.lua`、`Load/AnchorLoad.lua` | 正常首载执行一次，保存完整 entry、原始字节、函数身份及共享 cell anchor |
+| `Load/LoadHook.lua`、`Load/AnchorLoad.lua` | 正常首载执行一次，保存完整 entry、公共 FileAnalysis、原始字节、函数身份及共享 cell anchor |
 | `Load/AnchorRegistry.lua` | 持有首载 entry，提供只读 cell 查询；Missing 保留引用至会话释放 |
-| `Pipeline/Adapter.lua`、`NodeRegistry.lua`、`FileMatch.lua`、`UnitIndex.lua`、`Driver.lua` | 唯一 Id 注册、完整候选发现、准备及调用方绑定的原子发布调度 |
-| `Adapters/Card/Card.lua`、`CardCallbacks.lua` | Card 结构解释、所有权证据、当前/文件准备和事务委托；解析器不发布定义 |
-| `Adapters/Card/CardTarget.lua`、`CardVersions.lua` | 完整对应证明、实际已发布版本和必要依赖选择 |
-| `Source/` | 词法、绑定、闭包准备及局部函数版本；不直接提交游戏对象 |
+| `Pipeline/Adapter.lua`、`NodeRegistry.lua`、`FileMatch.lua`、`UnitIndex.lua`、`Driver.lua` | 契约5注册、完整候选发现、逐 unit/owner 准备及全部片段收齐后的事务调度 |
+| `Pipeline/FileVersions.lua`、`Dependencies.lua` | 唯一文件快照/owner贡献与实际 unit 图、有限需求和 root 来源；不拥有适配器细粒度规则 |
+| `Adapters/Local/Local.lua`、`LocalDefinitions.lua`、`LocalVersions.lua` | 已有全文节点上的局部定义匹配、支持范围、私有映射、实际版本、依赖需求和最终选择 |
+| `Adapters/Card/Card.lua`、`CardCallbacks.lua` | 回调结构解释、所有权与业务绑定约束、最终回调准备和片段登记；不选择 Local 定义或独立发布 |
+| `Adapters/Card/CardTarget.lua`、`CardVersions.lua` | 精确对应/重启证明、Card 私有版本和公共实际图派生的依赖观察 |
+| `Source/` | 公共语法/绑定/节点事实、编译与选中闭包准备/接线工具；不拥有 Local 领域规则、版本或发布权限 |
 | `Apply/FileApply.lua` | 顶层效果门禁、Include 排除及完整候选剩余核对 |
-| `Apply/CardCommit.lua`、`CommitCheck.lua`、`CommitPhase.lua` | 最终 Guard、单次相位授权、日志、回滚及最后安装版本 |
+| `Apply/FileCommit.lua`、`CommitCheck.lua`、`CommitPhase.lua` | 中立共同事务、所有 owner 权限/冲突/Guard、单次相位授权、日志、回滚及最后安装共同快照 |
 | `Runtime/CurrentRestart.lua` | 冻结当前目标、关联实际 receipt、重验发布后身份、请求练习切换及重试去重 |
 | `Runtime/Plugin.lua`、`Watcher.lua`、`SnapshotStore.lua` | 会话生命周期、文件监视、候选及具体 Apply 编排 |
 | `Adapters/Card/PracticeBinding.lua`、`GeneratedBossScanner.lua` | 读取当前练习/SC Debug 绑定，格式检查及 UI 摘要 |
 | `UI/View.lua`、`UI/Tab/`、`Runtime/ChangeLog.lua` | 调试界面与日志 |
 
-两侧只读协调通过 `Driver:DiscoverPublished` 接收实际发布快照和同一次完整候选。
-即使 Card 零命中，原发布记录仍进入 Reconcile；解析/Match 失败或原适配器不可用时保留 unresolved。
-`CardVersions.Publication` 从当前发布版本提取原 owner、定义和版本，不使用上次未采用的候选。
-协调结果只提供对应/删除等证据，不能进入 SelectDiscovery 冒充候选，也不能发布或推进版本。
-本阶段只为唯一命名且保持形状的 Card 生成对应证据；重复/改名/无法对应及 helper 绑定保留未解决项。
-可选回调删除现由准备流程消费 tombstone：原 owner、实际旧定义与版本、候选卡对应必须一致，
-才能把保存的默认函数送入原有事务；最终 Guard 在缓存失效前后复验同一证据。
-成功事务才推进回调版本；再次扫描已删除定义不会重复删除，恢复源码按实际发布版本重新比较。
-无法证明的删除保持 pending；整卡或整类消失保留活体。零 Card 命中的文件只做完整剩余核对，
-不伪造候选单元、提交收据或完成记录，也不通过这条只读路径发布 helper。
-helper 的保留/更新与依赖仍由实际发布图和统一选择检查；没有绑定清空或函数删除执行器。
+两侧只读协调通过 `Driver:DiscoverPublished` 接收共同实际 publication 和同一次完整
+FileAnalysis。`FileVersions.Publication` 投影每个原 owner 的实际记录；Local/Card
+各自解释细粒度定义，候选零命中仍协调旧侧。解析/Match 失败或原 owner 不可用时
+保留 unresolved，不从缺失推断删除；协调结果本身不授予选择、发布或版本推进许可。
+本支持范围要求局部声明集合/顺序/种类及已有定义的词法支持保持；函数必须是唯一
+直接定义/写入，控制块、重复定义或捕获变化按实际规则拒绝，普通状态不重新初始化。
+可选回调删除要求原 owner、实际旧定义/版本、候选精确对应和完整文件效果 proof；
+保存的默认函数进入同一次共同事务，前后 Guard 重验原证据。成功发布才推进版本，
+重复扫描不重复删除，恢复源码按实际版本比较；整卡/整类消失保留活体。
+零 Card 命中仍有原 owner 的读集；真正无动作时可以返回共同 no-op receipt，
+以原快照核对完整剩余，不伪造回调或版本更新。Local 的独立安全定义仍按其 root
+及完整文件门禁选择，不借零 Card 命中绕过；没有绑定清空或函数删除执行器。
 
-适配器仅实现当前 `ContractVersion = 4` 的 `Match / Reconcile / Locate / Inject / Commit`。
-Driver 仅注册 discovery Id，不再提供载体路由或 `Plan / Commit / Apply / Restart`。
-Card 不再接收旧 request、平铺 env 或直接发布请求；比较必须携带当前或文件对应证明。
-`GeneratedBossLoader`、`Legacy/Functions`、`UpvalueRegistry`、`LoadVersions` 及
-旧 Host/Value 适配器已删除，所有实际发布经 CardCommit 事务。
+适配器仅实现 `ContractVersion = 5` 的 `Match / Reconcile / Locate / Inject / Commit`。
+Driver 仅注册 discovery Id，不提供旧载体路由或 `Plan / Commit / Apply / Restart`。
+Card 不接收旧 request、平铺 env 或混合聚合计划；每个 owner 只登记自己的片段。
+`GeneratedBossLoader`、`Legacy/Functions`、`UpvalueRegistry`、`LoadVersions`、
+旧 Host/Value 适配器、`Source/FunctionVersions` 与 `Apply/CardCommit` 均已退役；
+所有实际发布只经过一次 `FileCommit`，没有兼容入口或第二套账本。
 
 首载 `entry.map` 是同步采集的 revision-zero 函数身份输入；它不随 Apply 更新。
 Plugin 仅接收完整 entry，不从局部 map 重建版本历史，不提供直接 map 发布入口。
@@ -258,27 +275,38 @@ Retry 消费同一冻结目标，不重读源码、不编译、不再次发布�
 
 ## 验证
 
-从游戏目录运行快速离线回归子集：
+从游戏目录运行 LuaJIT 离线回归子集：
 
 ```powershell
-lua plugin/SpellHotReload/SpellHotReload/tests/Run.lua
 luajit plugin/SpellHotReload/SpellHotReload/tests/Run.lua
 ```
 
-`Run.lua` 运行基础源码、发现、协调、监视和重启工作流的离线子集，不代表所有 spec，也不属于引擎 smoke。
-完整回归按独立进程执行 `tests/*Spec.lua`，部分故障注入 spec 还需对应源码路径参数。
-首载/释放、事务回滚、当前/文件 Apply、候选剩余、共享 cell 和 Retry 均有独立测试。
-`PlanningFixture.lua` 只为测试组装当前发现和文件定位路径，消费真正首载 capture，
-不执行候选、重建历史或提供生产替代比较算法。
-`RetiredInterfacesSpec.lua` 检查旧导出已消失，冷加载验证还禁止加载已删除模块。
-
-LuaJIT 验证真实共享 cell 发布；Lua 5.1 验证可运行的只读/拒绝路径，
-能力替身不证明生产共享发布可用。离线测试不证明实际引擎按钮、异步切关或性能。
+`Run.lua` 保留原基础源码、发现、协调、监视和重启子集，并纳入公共依赖、Local、
+Card、共同事务、FileApply 和 Plugin 集成及退役断言。它要求真实共享 upvalue 能力，
+不代表所有 spec，也不属于引擎 smoke。完整回归将每个 `tests/*Spec.lua` 的 `run()`
+放在独立进程调用；部分故障注入 spec 还需对应源码路径参数。首载/释放、事务回滚、
+Current/文件 Apply、候选剩余、连续共享状态和冻结 Retry 各有定向测试。
+`PlanningFixture.lua` 只组装真实双 owner 首载→公共 source/协调→显式 operation→
+共同准备/事务→发布后新发现，不执行候选或提供生产替代比较算法。
+`RetiredInterfacesSpec.lua` 禁止旧导出和混合准备入口，允许 Card 私有的实际版本
+`Compare`；独立冷加载测试另禁止装载已删除模块。离线测试不证明实际引擎按钮、
+异步切关、完整视觉或性能。共同接口/事务/共享状态变更扩大相关回归，其余按影响面选择。
 
 `EngineSmoke.lua` 与 `EngineSmokeScDebug.lua` 是显式启用的引擎 harness，
-已改用生产完整 entry 和 `ApplyFromUI`，本批尚未在引擎运行。
-它们会写入 `userdata/spell_hot_reload_smoke/` 并可能切换测试场景或退出进程；
-实际执行需先核对具体启动、输入、输出与日志保护范围。
+使用生产首载 entry 和 layout 中的 `ApplyFromUI` 集成入口，保留实际能力检查；
+不据此声称点击了原生 Monitor 按钮。普通 harness 使用 userdata 人工夹具，观察
+原共享状态、两次新练习 Boss/任务以及 Dismiss 跨 drift/rescan 持续生效；其 watcher
+监视夹具目录，替换前先停止原 watcher，不改产品门禁。SC harness 消费真实首载
+FileAnalysis 和相同物理字节，检查回调/共同快照不变，再等待普通练习新 Boss；
+它不覆盖有定义变化或双向导出转换。调试 view 存活于跨 stage 的 Ldebug 注册表，
+update 只轮询，Apply 在启用窗口的 layout 发起；关闭/折叠窗口或隐藏全局调试 UI
+会使 layout 等待，超时需先区分观察器与环境，不能直接判为产品回归。
+
+这些 harness 尚未在共同发布路径执行；保留已有冻结证据，不重跑旧包或覆盖旧输出。
+实际执行前需单独核对启动、场景、observer生命周期、输入/输出和日志保护范围。
+它们会写入 `userdata/spell_hot_reload_smoke/` 并可能切关或退出进程。性能仍须相同
+输入下的真实 Apply 墙钟和帧阻塞对比，覆盖无定义变化和真实 changed receipt；
+减少全文分析或解析次数只能解释结果，不能替代计时。
 
 ### Source statement boundaries and diagnostics
 
@@ -290,9 +318,10 @@ Card policy accepts number tokens directly and still refuses arithmetic or calls
 `Source/LuaSyntax.lua` consumes those tokens directly with Lua 5.1 grammar,
 so top-level statement boundaries do not depend on line breaks. It performs
 no token coalescing, numeral rescanning, value evaluation or runtime type inference. It retains a syntax tree of nested blocks and expressions without compiling or executing the file. Lexer errors
-and unsupported syntax produce no partial analysis. Compiler limits and actual
-closure/capture checks still run in preparation; syntax boundaries are not a
-complete binding or runtime identity proof. LuaJIT-only labels/goto, cdata and
+and unsupported syntax produce no partial analysis. FileAnalysis additionally
+checks full-source compiler limits before owner discovery; selected closure/capture
+checks still run in preparation. Syntax boundaries alone are not a complete
+binding or runtime identity proof. LuaJIT-only labels/goto, cdata and
 hex-float numerals are currently unsupported; nesting over 160 analysis levels
 is refused with a diagnostic.
 
@@ -314,16 +343,18 @@ These are offline regression tests; current engine integration is still pending.
 The shared syntax tree records declarations, assignment targets/values, calls and
 arguments, members/indices, function parameters/bodies, table fields and control
 blocks. Source.SyntaxTree supplies structural queries and byte extraction, not
-another parser or runtime permission. TopLevelIR, Binding, FunctionPlan, Card
-discovery/registrations, file wiring/Include policy and closure nested-reference
+another parser or runtime permission. FileAnalysis builds the shared whole-file
+IR and binding facts; LocalDefinitions owns Local matching/support, while
+FunctionPlan prepares only owner-selected descriptors with full lexical context.
+Card discovery/registrations, file wiring/Include policy and closure nested-reference
 checks consume these nodes. Their token-position grammar matchers are removed.
 Lexer decodes string literals once without compiling them; raw spelling remains
 available for conservative signatures. Name comparisons are adapter policy,
 while signatures and source slices retain exact token/source evidence. Binding
 confidence, ownership, final guards and actual upvalue checks remain separate.
 
-Only Lua 5.1 string escapes common to both tested runtimes are decoded; runtime-
-specific or unknown escapes are refused explicitly. GeneratedBossScanner's class
+String decoding uses the supported Lua 5.1 escape subset; unknown escapes are
+refused explicitly. GeneratedBossScanner's class
 key hint also consumes index-expression nodes; header/SC Debug text checks are
 format hints and confer no structural or publication authority.
 

@@ -1,29 +1,37 @@
 local Planning=require("SpellHotReload.tests.PlanningFixture")
--- R4 preflight only. Tiny synthetic first loads; never runs the game.
-local M = {}
+-- Real dual-owner preparation and owner/native preflight; never publishes.
+local M={}
+local serial=0
 function M.run()
-    local Check = require("SpellHotReload.Apply.CommitCheck")
-    local Load = require("SpellHotReload.Load.AnchorLoad")
-    local Capture = require("SpellHotReload.Adapters.Card.Card")
-    local Cards = require("SpellHotReload.Adapters.Card.CardVersions")
-    local Anchor = require("SpellHotReload.Load.Anchor")
-    local passed, failed, failures = 0, 0, {}
-    local function test(v, label)
+    local Check=require("SpellHotReload.Apply.CommitCheck")
+    local Load=require("SpellHotReload.Load.AnchorLoad")
+    local Card=require("SpellHotReload.Adapters.Card.Card")
+    local Local=require("SpellHotReload.Adapters.Local.Local")
+    local Files=require("SpellHotReload.Pipeline.FileVersions")
+    local Source=require("SpellHotReload.Source.FileAnalysis")
+    local Compose=require("SpellHotReload.Source.Compose")
+    local Anchor=require("SpellHotReload.Load.Anchor")
+    local passed,failed,failures=0,0,{}
+    local limits={}
+    local function test(v,label)
         if v then passed=passed+1 else failed=failed+1;failures[#failures+1]=label end
     end
-    local function eq(a,b,label) test(a==b,label) end
-    local function must(v,err) assert(v,type(err)=="table" and err.message or err);return v end
-    local keys = { "boss", "_editor_class", "_tmp_sc", "_commit_runs" }
-    local saved = {}
-    for _, key in ipairs(keys) do saved[key]=rawget(_G,key) end
-    local old_join, old_set, old_get, old_id = debug.upvaluejoin, debug.setupvalue,
-        debug.getupvalue, debug.upvalueid
-    local old_jit = rawget(_G,"jit")
-    local caps = { getupvalue=true, setupvalue=true, upvaluejoin=true }
-    local names = { "before","init","frame","render","beforedel","del","after" }
-    local defaults = {}
-    for _, name in ipairs(names) do defaults[name]=function() return "default" end end
-    local source = table.concat({
+    local function eq(a,b,label) test(rawequal(a,b),label) end
+    local function must(v,e) assert(v,type(e)=="table" and e.message or e);return v,e end
+    local function copy(v) local out={};for k,x in next,v do out[k]=x end;return out end
+    local keys={"boss","_editor_class","_tmp_sc","_commit_runs"}
+    local saved={};for _,key in ipairs(keys) do saved[key]=rawget(_G,key) end
+    local old_join,old_set,old_get,old_id=debug.upvaluejoin,debug.setupvalue,debug.getupvalue,debug.upvalueid
+    local old_jit=rawget(_G,"jit")
+    local joined,written,flushed,traps=0,0,0,0
+    local mt={__index=function() traps=traps+1;error("unsafe index") end,
+        __len=function() traps=traps+1;error("unsafe length") end,
+        __pairs=function() traps=traps+1;error("unsafe pairs") end,
+        __eq=function() traps=traps+1;error("unsafe equality") end}
+    local names={"before","init","frame","render","beforedel","del","after"}
+    local defaults={};for _,name in ipairs(names) do defaults[name]=function() return "default" end end
+    local keya,keyb="card:1:K:2","card:1:K:3"
+    local source=table.concat({
         "local state=4",
         "local function helper() return state+1 end",
         "local function other() return 100 end",
@@ -41,176 +49,270 @@ function M.run()
         "function _tmp_sc:init() return helper()+100 end",
         "table.insert(_editor_class['L'].cards,_tmp_sc)",
     },"\n")
-    local candidate = source:gsub("return state%+1","return state+2")
+    local candidate=source:gsub("return state%+1","return state+2")
         :gsub("return helper%(%) end","return helper()+3 end")
         :gsub("return other%(%) end","return other()+9 end")
-    local function fixture()
-        debug.upvaluejoin=old_join or function() error("presence-only fixture") end
-        debug.setupvalue,debug.getupvalue,debug.upvalueid=old_set,old_get,old_id
-        _G.jit=old_jit
-        _commit_runs=0
-        _editor_class={K={},L={}}
-        boss={card={New=function(name)
-            local card={name=name,is_combat=true}
-            for _, cb in ipairs(names) do card[cb]=defaults[cb] end
-            return card
-        end},move={New=function() return {is_combat=false} end}}
-        local entry=must(Load.Capture(source,{capability=caps,name="Commit_Boss.lua"}))
-        entry.file="Commit_Boss.lua"
-        local capture=must(Capture.SeedVersions(entry,"session",_editor_class,defaults))
-        local report=must(Planning.Report(capture,candidate))
-        local selection=must(Cards.Select(report,{"card:1:K:2"}))
-        local live={capture=capture,snapshot=capture.snapshot,entry=entry,
-            session_id="session",classes=_editor_class,content=candidate}
-        return selection,capture,live
+    local function reset()
+        debug.upvaluejoin,debug.setupvalue,debug.getupvalue,debug.upvalueid=old_join,old_set,old_get,old_id
+        rawset(_G,"jit",old_jit)
     end
-    local function refusal(selection,capture,live,code,label)
-        local value,err=Check.Check(selection,capture,live)
-        eq(value,nil,label.." refused")
-        eq(type(err),"table",label.." structured")
-        if type(err)=="table" then
-            eq(err.phase,"commit",label.." phase")
-            eq(err.code,code,label.." code")
-            test(type(err.message)=="string",label.." safe message")
-        end
-    end
-    local function bad(change,code,label)
-        local s,c,l=fixture()
-        change(s,c,l)
-        refusal(s,c,l,code,label)
-    end
-    local ok,problem=pcall(function()
-        local s,c,l=fixture()
-        eq(Check.Kind,"SpellHotReload.CommitCheck","kind")
-        eq(Check.Version,1,"version")
-        eq(#s.writes,1,"one helper write")
-        eq(#s.publications,1,"one current raw callback")
-        eq(#s.pending,1,"unselected edited B retained")
-        eq(Check.Check(s,c,l),true,"fresh plan")
-        eq(_commit_runs,1,"one initialization")
-        local joined,written,flushed=0,0,0
+    local function forbid()
         debug.upvaluejoin=function() joined=joined+1;error("premature join") end
         debug.setupvalue=function() written=written+1;error("premature write") end
-        _G.jit={flush=function() flushed=flushed+1;error("premature flush") end}
+        rawset(_G,"jit",{flush=function() flushed=flushed+1;error("premature flush") end})
+    end
+    local function fragment(p,owner)
+        for _,r in ipairs(p.entries) do if r.owner==owner then return r.fragment end end
+        error("missing genuine owner fragment")
+    end
+    local function fragments(p)
+        local out={};for _,r in ipairs(p.entries) do out[#out+1]=r.fragment end;return out
+    end
+    local function seal(p) return Check.Seal(p.operation,fragments(p)) end
+    local function fixture(bytes,roots)
+        reset();_commit_runs=0;_editor_class={K={},L={}}
+        boss={card={New=function(name)
+            local card={name=name,is_combat=true}
+            for _,cb in ipairs(names) do card[cb]=defaults[cb] end
+            return card
+        end},move={New=function() return {is_combat=false} end}}
+        local entry=must(Load.Capture(source,{name="Commit_Boss.lua"}))
+        must(entry.reloadable,entry.reason);entry.file="Commit_Boss.lua"
+        serial=serial+1
+        local sid="CommitCheckSpec:"..serial
+        local f=must(Planning.Capture(entry,sid,_editor_class,defaults))
+        local c=f.capture
+        local l={capture=c,snapshot=c.snapshot,entry=entry,session_id=sid,
+            classes=_editor_class,content=bytes or candidate,generation=1,fixture=f}
+        f.refresh=function() return l end
+        local d=must(Planning.Discover(f,must(Source.Build(l.content)),l.generation))
+        local p=must(Planning.Prepare(f,d,{mode="file",root_ids=roots or {keya},refresh=f.refresh}))
+        eq(#p.dependencies.safe_roots,#(roots or {keya}),"all requested roots genuinely safe")
+        eq(#p.dependencies.blocked_roots,0,"no blocked root hides preflight")
+        return p,c,l
+    end
+    local function refusal(v,e,phase,code,label,message)
+        eq(v,nil,label.." refused");eq(type(e),"table",label.." structured")
+        if type(e)=="table" then
+            eq(e.phase,phase,label.." phase");eq(e.code,code,label.." code")
+            if message then eq(e.message,message,label.." exact seam")
+            else test(type(e.message)=="string",label.." safe message") end
+        end
+    end
+    local function bad(method,change,phase,code,label,message)
+        local p,c,l=fixture();local s=must(seal(p))
+        forbid();change(s,c,l,p)
+        local actual=c.snapshot
+        local card=fragment(p,Card).card_view.base.units[keya].card
+        local init=rawget(card,"init")
+        local v,e=method(s,c,l)
+        refusal(v,e,phase,code,label,message)
+        eq(c.snapshot,actual,label.." no snapshot write")
+        eq(rawget(card,"init"),init,label.." no callback write")
+        eq(_commit_runs,1,label.." no source replay")
+    end
+    local function action(s,kind)
+        for _,w in ipairs(s.journal) do if w.kind==kind then return w end end
+        error("missing genuine "..kind.." journal action")
+    end
+    local ok,problem=pcall(function()
+        must(Anchor.Supported(Compose.Capability(debug)))
+        local p,c,l=fixture();local s=must(seal(p))
+        local local_fragment,card_fragment=fragment(p,Local),fragment(p,Card)
+        eq(Check.Kind,"SpellHotReload.CommitCheck","kind");eq(Check.Version,2,"neutral preflight version")
+        eq(#local_fragment.cell_writes,1,"one actual helper cell write")
+        eq(local_fragment.cell_writes[1].name,"helper","exact selected helper")
+        eq(#card_fragment.raw_writes,1,"one exact selected callback")
+        eq(card_fragment.card_plan.keys[1],keya,"A selected, B unselected")
+        eq(#card_fragment.card_plan.keys,1,"only A selected")
+        eq(card_fragment.card_runtime.version_view.by_key[keyb].changed,true,"unselected edited B pending")
+        eq(Check.Check(s,c,l),true,"fresh complete preflight")
+        eq(_commit_runs,1,"single miniature first load")
         local before=c.snapshot
-        local init=c.classes.K.cards[2].init
-        local helper=Anchor.Get(l.entry,"helper")
-        eq(Check.Check(s,c,l),true,"check only reads despite mutator traps")
-        eq(joined,0,"zero join")
-        eq(written,0,"zero write")
-        eq(flushed,0,"zero flush")
-        eq(c.snapshot,before,"no version install")
-        eq(c.classes.K.cards[2].init,init,"no publication")
-        eq(Anchor.Get(l.entry,"helper"),helper,"helper retained")
-        eq(_commit_runs,1,"no source/wiring replay")
-        -- Ordinary state can evolve; identity/ownership reads cannot.
-        old_set(l.entry.anchor,l.entry.slots.state,42)
-        eq(Check.Check(s,c,l),true,"state setter not a stale definition")
-        eq(c.classes.K.cards[2]:init(),43,"old callback still active")
-        eq(s.base_revision,0,"no revision advance")
-        eq(#s.pending,1,"pending not swallowed")
-        bad(function(_,_,v) v.content=v.content.."\n-- different bytes" end,"stale","exact bytes")
-        bad(function(_,_,v) v.content=nil end,"stale","missing candidate")
-        bad(function(_,_,v) v.session_id="other" end,"stale","session changed")
-        bad(function(_,_,v) v.capture={} end,"stale","retired capture")
-        bad(function(_,_,v) v.snapshot={} end,"stale","installed snapshot replaced")
-        bad(function(_,_,v) v.entry={} end,"stale","entry replaced")
-        bad(function(_,_,v) v.released=true end,"stale","released")
-        bad(function(_,_,v) v.poisoned=true end,"stale","poisoned")
-        bad(function(v) v.base_revision=1 end,"stale","aggregate revision")
-        bad(function(v) v.functions.base_revision=1 end,"stale","function revision")
-        bad(function(v) v.functions.base={} end,"stale","function base identity")
-        bad(function(_,_,v) v.entry.anchor=function() end end,"stale","anchor replaced")
-        bad(function(_,_,v) v.entry.loaded_source="other" end,"stale","load bytes changed")
-        bad(function(_,_,v) v.entry.file="Other_Boss.lua" end,"stale","file changed")
-        bad(function(_,_,v) v.entry.missing=true end,"stale","missing file")
-        bad(function(_,_,v) v.entry.reloadable=false end,"stale","duplicate load disabled")
-        bad(function(_,_,v) v.classes={} end,"ownership","registry replaced")
-        bad(function(_,_,v) v.classes.K={} end,"ownership","class replaced")
-        bad(function(_,_,v) v.classes.K.cards={} end,"ownership","list replaced")
-        bad(function(_,_,v) v.classes.K.cards[1]={} end,"ownership","placeholder replaced")
-        bad(function(_,_,v) v.classes.K.cards[3]={} end,"ownership","unselected sibling replaced")
-        bad(function(_,_,v) v.classes.L.cards[1]={} end,"ownership","other class owner replaced")
-        bad(function(_,_,v) v.classes.K.cards[4]={} end,"ownership","list appended")
-        bad(function(_,_,v) v.classes.K.cards[1]=nil end,"ownership","list hole")
-        bad(function(_,_,v) v.classes.K.cards.tag={} end,"ownership","extra array key")
-        bad(function(_,_,v) v.classes.K.cards[2].is_combat=false end,"ownership","combat tag changed")
-        bad(function(_,_,v) v.classes.K.cards[2].init=function() end end,"stale","current callback replaced")
-        bad(function(_,_,v) v.classes.K.cards[3].frame=function() end end,"stale","unselected callback replaced")
-        bad(function(_,_,v) old_set(v.entry.anchor,v.entry.slots.other,function() end) end,"stale","unselected function replaced")
-        bad(function(_,_,v) old_set(v.entry.anchor,v.entry.slots.helper,function() end) end,"stale","write function replaced")
-        bad(function(v) v.writes[1].before=function() end end,"stale","write preimage independent")
-        bad(function(v) v.publications[1].before=function() end end,"stale","publish preimage independent")
-        bad(function(v) v.publications[1].target={} end,"stale","publication owner")
-        bad(function(v) v.publications[2]=v.publications[1] end,"ownership","duplicate publication")
-        bad(function(v) v.writes[2]=v.writes[1] end,"stale","duplicate write")
-        bad(function(v) v.joins[1].index=999 end,"stale","candidate index drift")
-        bad(function(v) v.joins[1].index=999;v.joins[1].name=nil end,"stale","missing candidate name")
-        bad(function(v) v.capture_reads[1].donor=999 end,"stale","saved donor drift")
-        bad(function(v) v.entry.slots.helper=999 end,"stale","anchor index drift")
-        bad(function(v) v.read_set[2]=nil end,"unsupported","read array hole")
-        bad(function(v) v.writes.extra={} end,"unsupported","extra plan key")
-        bad(function(v) v.publications[1].value=4 end,"unsupported","nonfunction publication")
-        bad(function(v) v.writes[1].value={} end,"unsupported","nonfunction write")
-        bad(function() debug.upvaluejoin=nil end,"capability","no join refusal")
-        bad(function() debug.setupvalue=nil end,"capability","no setter refusal")
-        local trap=0
-        bad(function(_,_,v)
-            setmetatable(v.classes.K.cards,{__index=function() trap=trap+1;error("index") end,
-                __len=function() trap=trap+1;error("length") end,
-                __pairs=function() trap=trap+1;error("pairs") end})
-        end,"ownership","list metatable")
-        bad(function(v) setmetatable(v,{__index=function() trap=trap+1;error("plan index") end}) end,
-            "unsupported","plan metatable")
-        bad(function(_,c,v)
-            local mt={__eq=function() trap=trap+1;return true end}
-            setmetatable(c.ownership[1].list,mt)
-            v.classes.K.cards=setmetatable({},mt)
-        end,"ownership","raw list identity never invokes equality")
-        eq(trap,0,"no table metamethod invoked")
-        s,c,l=fixture()
+        local init=l.classes.K.cards[2].init
+        local helper=must(Anchor.Get(l.entry,"helper"))
+        local local_base=must(Files.Owner(c,Local))
+        forbid()
+        eq(Check.Check(s,c,l),true,"only reads despite mutator traps")
+        eq(c.snapshot,before,"no publication");eq(c.snapshot.revision,0,"actual common revision unchanged")
+        eq(l.classes.K.cards[2].init,init,"old callback retained")
+        eq(Anchor.Get(l.entry,"helper"),helper,"old helper retained")
+        eq(Files.Owner(c,Local),local_base,"actual Local group retained")
+        -- Mutate through the real old setter, not through the reload plan.
+        must(Anchor.Get(l.entry,"setter"))(42)
+        eq(Anchor.Get(l.entry,"state"),42,"ordinary scalar evolved")
+        eq(Check.Check(s,c,l),true,"evolved scalar is not stale")
+        eq(l.classes.K.cards[2]:init(),43,"old callback reads current shared state")
+        eq(c.snapshot,before,"evolved scalar has no version publication")
+        eq(local_base.state.by_name.helper.definition_version,1,"actual helper version unchanged")
+        eq(card_fragment.card_runtime.version_view.by_key[keyb].changed,true,"B still pending after checks")
+        eq(_commit_runs,1,"no source or wiring replay")
+
+        -- Exercise common physical checks directly; earlier domain failures must
+        -- not stand in for these baseline/shape/permission assertions.
+        for _,case in ipairs({
+            {"exact bytes",function(s,c,l) l.content=l.content.."\n-- different bytes" end},
+            {"missing candidate",function(s,c,l) l.content=nil end},
+            {"session changed",function(s,c,l) l.session_id="other" end},
+            {"retired capture",function(s,c,l) l.capture={} end},
+            {"live snapshot",function(s,c,l) l.snapshot={} end},
+            {"entry replaced",function(s,c,l) l.entry={} end},
+            {"released",function(s,c,l) l.released=true end},
+            {"poisoned",function(s,c,l) l.poisoned=true end},
+            {"operation baseline",function(s) s.operation.base_snapshot={} end},
+            {"actual snapshot",function(s,c) c.snapshot={} end},
+            {"anchor replaced",function(s,c,l) l.entry.anchor=function() end end},
+            {"loaded bytes",function(s,c,l) l.entry.loaded_source="other" end},
+            {"file changed",function(s,c,l) l.entry.file="Other_Boss.lua" end},
+            {"missing file",function(s,c,l) l.entry.missing=true end},
+            {"duplicate load",function(s,c,l) l.entry.reloadable=false end},
+        }) do
+            bad(Check.Mechanical,case[2],"commit","stale",case[1],"file operation baseline changed")
+        end
+        bad(Check.Owners,function(s) s.fragments[1].base_group={} end,
+            "commit","stale","actual Local group identity","Local actual owner/session changed")
+        bad(Check.Owners,function(s)
+            s.fragments[1].proposed_group.state.by_name.helper.definition_version=99
+        end,"commit","ownership","Local proposed definition version","Local proposed definition/version changed")
+        for _,case in ipairs({
+            {"registry",function(s,c,l) l.classes={} end},
+            {"class",function(s,c,l) l.classes.K={} end},
+            {"list",function(s,c,l) l.classes.K.cards={} end},
+            {"placeholder",function(s,c,l) l.classes.K.cards[1]={} end},
+            {"unselected sibling",function(s,c,l) l.classes.K.cards[3]={} end},
+            {"other class",function(s,c,l) l.classes.L.cards[1]={} end},
+            {"list appended",function(s,c,l) l.classes.K.cards[4]={} end},
+            {"list hole",function(s,c,l) l.classes.K.cards[1]=nil end},
+            {"extra key",function(s,c,l) l.classes.K.cards.tag={} end},
+            {"combat tag",function(s,c,l) l.classes.K.cards[2].is_combat=false end},
+        }) do bad(Check.Check,case[2],"locate","ownership","Card ownership "..case[1]) end
+        for _,case in ipairs({
+            {"selected callback",function(s,c,l) l.classes.K.cards[2].init=function() end end},
+            {"unselected callback",function(s,c,l) l.classes.K.cards[3].frame=function() end end},
+            {"unselected function",function(s,c,l) old_set(l.entry.anchor,l.entry.slots.other,function() end) end},
+            {"selected function",function(s,c,l) old_set(l.entry.anchor,l.entry.slots.helper,function() end) end},
+        }) do bad(Check.Check,case[2],"inject","stale",case[1]) end
+
+        bad(Check.Mechanical,function(s) action(s,"cell").before=function() end end,
+            "commit","conflict","independent cell preimage","function write authority, position or preimage changed")
+        bad(Check.Mechanical,function(s) action(s,"raw").before=function() end end,
+            "commit","ownership","independent raw preimage","raw write authority or preimage changed")
+        bad(Check.Mechanical,function(s) action(s,"raw").target={} end,
+            "commit","ownership","raw target permission","raw write authority or preimage changed")
+        for _,case in ipairs({
+            {"join index",function(s) s.joins[1].index=999 end},
+            {"join missing name",function(s) s.joins[1].index=999;s.joins[1].name=nil end},
+        }) do bad(Check.Mechanical,case[2],"commit","ownership",case[1],"join destination is published or invalid") end
+        bad(Check.Mechanical,function(s) s.capture_reads[1].donor=999 end,
+            "commit","stale","capture donor","published capture slot changed")
+        bad(Check.Mechanical,function(s,c,l) l.entry.slots.helper=999 end,
+            "commit","stale","anchor slot","function read ownership or value changed")
+        bad(Check.Mechanical,function(s) action(s,"raw").value=4 end,
+            "commit","ownership","nonfunction raw write","raw write authority or preimage changed")
+        bad(Check.Mechanical,function(s) action(s,"cell").value={} end,
+            "commit","conflict","nonfunction cell write","function write authority, position or preimage changed")
+        bad(Check.Mechanical,function(s)
+            table.insert(s.journal,#s.journal,copy(action(s,"cell")))
+        end,"commit","conflict","sealed duplicate cell position","function write authority, position or preimage changed")
+        -- Identical actions before Seal are deliberately deduplicated. Semantic
+        -- duplicate Card publications remain a separate owner rejection.
+        p,c,l=fixture();local f=fragment(p,Local)
+        f.cell_writes[2]=copy(f.cell_writes[1]);s=must(seal(p));forbid()
+        local cell_count=0;for _,w in ipairs(s.journal) do if w.kind=="cell" then cell_count=cell_count+1 end end
+        eq(cell_count,1,"identical cell action deduplicated")
+        eq(Check.Check(s,c,l),true,"deduplicated genuine plan remains valid")
+        p,c,l=fixture();f=fragment(p,Card)
+        f.raw_writes[2]=copy(f.raw_writes[1]);f.card_plan.publications[2]=copy(f.card_plan.publications[1])
+        s=must(seal(p));forbid()
+        local v,e=Check.Check(s,c,l)
+        refusal(v,e,"commit","ownership","duplicate semantic publication","duplicate Card callback action")
+        for _,case in ipairs({
+            {"cell extra key","versions",function(p) fragment(p,Local).cell_writes.extra={} end},
+            {"raw extra key","versions",function(p) fragment(p,Card).raw_writes.extra={} end},
+            {"join extra key","versions",function(p) fragment(p,Local).joins.extra={} end},
+            {"read hole","commit",function(p)
+                local reads=fragment(p,Local).read_set;test(#reads>=3,"three real function reads")
+                reads[2]=nil
+            end},
+            {"capture extra key","commit",function(p) fragment(p,Local).capture_reads.extra={} end},
+        }) do
+            p,c,l=fixture();case[3](p);forbid()
+            v,e=seal(p);refusal(v,e,case[2],"ownership","Seal "..case[1])
+            eq(c.snapshot,p.operation.base_snapshot,"Seal rejection keeps actual snapshot")
+        end
+        for _,case in ipairs({
+            {"read hole",function(s) s.read_set[2]=nil end},
+            {"journal extra key",function(s) s.journal.extra={} end},
+            {"join extra key",function(s) s.joins.extra={} end},
+            {"capture extra key",function(s) s.capture_reads.extra={} end},
+        }) do bad(Check.Mechanical,case[2],"commit","ownership","sealed "..case[1],"dense sealed arrays required") end
+        bad(Check.Check,function() debug.upvaluejoin=nil end,"commit","capability","no join")
+        bad(Check.Check,function() debug.setupvalue=nil end,"commit","capability","no setter")
+        bad(Check.Check,function(s,c,l) setmetatable(l.classes.K.cards,mt) end,
+            "locate","ownership","list metatable")
+        bad(Check.Mechanical,function(s) setmetatable(s,mt) end,
+            "commit","stale","sealed plan metatable","file operation baseline changed")
+        p,c,l=fixture();setmetatable(p.operation,mt);forbid()
+        v,e=seal(p);refusal(v,e,"commit","ownership","operation metatable","operation and fragments required")
+        bad(Check.Check,function(s,c,l)
+            local evidence=select(2,Files.Owner(c,Card)).evidence
+            setmetatable(evidence.ownership[1].list,mt)
+            l.classes.K.cards=setmetatable({},mt)
+        end,"locate","ownership","hostile lists never invoke equality")
+        eq(traps,0,"no table metamethod invoked")
         local error_object=setmetatable({},{
-            __tostring=function() trap=trap+1;error("error stringify") end,
-            __index=function() trap=trap+1;error("error index") end})
-        debug.getupvalue=function() error(error_object) end
-        refusal(s,c,l,"stale","getter threw unsafe object")
-        eq(trap,0,"unknown read error has no metamethod calls")
-        s,c,l=fixture()
+            __tostring=function() traps=traps+1;error("unsafe error stringify") end,
+            __index=function() traps=traps+1;error("unsafe error index") end})
+        bad(Check.Check,function() debug.getupvalue=function() error(error_object) end end,
+            "commit","stale","owner getter threw opaque object","owner guard threw")
+        bad(Check.Mechanical,function() debug.getupvalue=function() error(error_object) end end,
+            "commit","stale","native getter threw opaque object","mechanical read failed")
+        eq(traps,0,"opaque read error never inspected or stringified")
+        p,c,l=fixture();s=must(seal(p));forbid()
         local result,reason
         local thread=coroutine.create(function() result,reason=Check.Check(s,c,l) end)
-        test(coroutine.resume(thread),"coroutine returns refusal not error")
-        eq(result,nil,"coroutine refused")
-        eq(type(reason)=="table" and reason.code or nil,"unsupported","coroutine reason")
-        if old_join and old_id then
-            s,c,l=fixture()
-            local read=s.capture_reads[1]
+        test(coroutine.resume(thread),"coroutine returns without throwing")
+        refusal(result,reason,"commit","phase","coroutine","commit requires main thread")
+        if old_id then
+            p,c,l=fixture();s=must(seal(p))
+            local read;local old_helper=must(Anchor.Get(l.entry,"helper"))
+            for _,r in ipairs(s.capture_reads) do
+                if r.fn==old_helper and r.name=="state" then read=r;break end
+            end
+            must(read,"genuine old helper capture required")
             local name,value=old_get(read.fn,read.index)
             local factory=assert(loadstring("local "..name.."=...;return function() return "..name.." end"))
             local donor=factory(value)
             old_join(read.fn,read.index,donor,1)
-            eq(old_get(read.fn,read.index),name,"rejoin preserved name")
-            local _,now=old_get(read.fn,read.index)
-            eq(now,value,"rejoin preserved value")
-            refusal(s,c,l,"stale","physical external rejoin")
+            eq(old_get(read.fn,read.index),name,"external rejoin preserves name")
+            local _,now=old_get(read.fn,read.index);eq(now,value,"external rejoin preserves value")
+            test(old_id(read.fn,read.index)~=old_id(read.anchor,read.donor),"external rejoin changes physical cell")
+            forbid();v,e=Check.Mechanical(s,c,l)
+            refusal(v,e,"commit","stale","native physical rejoin","published capture was reconnected")
+            v,e=Check.Check(s,c,l)
+            refusal(v,e,"inject","stale","owner physical rejoin")
         else
-            test(true,"physical rejoin not available: Lua5.1 does not prove sharing")
+            limits[#limits+1]="physical external rejoin needs debug.upvalueid; not exercised"
         end
-        s,c,l=fixture()
-        debug.upvalueid=nil
-        eq(Check.Check(s,c,l),true,"id optional; name/value checks still apply")
-        s,c,l=fixture()
-        local unchanged=must(Planning.Report(c,source))
-        local empty=must(Cards.Select(unchanged,{}))
-        l.content=source
-        eq(Check.Check(empty,c,l),true,"empty no-op still checked")
+        p,c,l=fixture();s=must(seal(p));forbid();debug.upvalueid=nil
+        eq(Check.Check(s,c,l),true,"id optional; remaining name/slot/value checks pass")
+        -- Optional-id acceptance does not prove physical sharing without ids.
+        p,c,l=fixture(source,{});s=must(seal(p));forbid()
+        eq(s.proposed_snapshot,c.snapshot,"no-op exact actual snapshot")
+        eq(#s.journal,0,"no-op zero journal");eq(#s.joins,0,"no-op zero joins")
+        eq(Check.Check(s,c,l),true,"empty genuine plan still checked")
         l.classes.K.cards[1]={}
-        refusal(empty,c,l,"ownership","empty plan still checks all ownership")
+        v,e=Check.Check(s,c,l)
+        refusal(v,e,"locate","ownership","no-op checks all placeholder ownership")
+        eq(joined,0,"all preflights zero joins")
+        eq(written,0,"all preflights zero plan setters")
+        eq(flushed,0,"all preflights zero cache flushes")
+        eq(traps,0,"all hostile metatables untouched")
     end)
-    debug.upvaluejoin,debug.setupvalue,debug.getupvalue,debug.upvalueid=old_join,old_set,old_get,old_id
-    _G.jit=old_jit
-    for _, key in ipairs(keys) do rawset(_G,key,saved[key]) end
-    if not ok then error(problem) end
-    for _, label in ipairs(failures) do print("FAIL CommitCheckSpec: "..label) end
-    return {passed=passed,failed=failed}
+    reset()
+    for _,key in ipairs(keys) do rawset(_G,key,saved[key]) end
+    if not ok then error(problem,0) end
+    for _,label in ipairs(failures) do print("FAIL CommitCheckSpec: "..label) end
+    return {passed=passed,failed=failed,limits=limits}
 end
 return M

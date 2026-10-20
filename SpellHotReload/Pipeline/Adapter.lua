@@ -6,8 +6,8 @@ function Adapter.ValidateDiscovery(adapter)
     if type(adapter) ~= "table" then
         return false, "adapter must be a table"
     end
-    if rawget(adapter, "ContractVersion") ~= 4 then
-        return false, "discovery adapter requires ContractVersion = 4"
+    if rawget(adapter, "ContractVersion") ~= 5 then
+        return false, "discovery adapter requires ContractVersion = 5"
     end
     local id = rawget(adapter, "Id")
     if type(id) ~= "string" or not id:match("^[a-z][a-z0-9_.-]*$") then

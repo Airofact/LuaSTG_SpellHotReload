@@ -7,10 +7,16 @@ function M.run()
             assert(value[name]==nil,module.." still exports "..name);passed=passed+1
         end
     end
-    absent("Adapters.Card.Card",{"Request","Node","Signature","Bind","Plan","Restart","RestartVersioned","FreezeRestart"})
+    absent("Adapters.Card.Card",{"Request","Node","Signature","Bind","Plan","Restart","RestartVersioned","FreezeRestart",
+        "PrepareVersioned","PrepareFileVersioned","InspectPrepared","CaptureVersions","SeedVersions",
+        "CheckCommitInput","ProposeVersion","CheckOwnership","CheckCallbackRead","CheckPublications",
+        "CheckJoinDestinations","RuntimeContext"})
     absent("Adapters.Card.CardCallbacks",{"Select","Build","Publish"})
     absent("Adapters.Card.PracticeBinding",{"Patch","Restart","FlyOut"})
-    absent("Adapters.Card.CardVersions",{"Compare","CompareDiscovery"})
+    absent("Adapters.Card.CardVersions",{"CompareDiscovery","Publication"})
+    assert(type(require("SpellHotReload.Adapters.Card.CardVersions").Compare)=="function",
+        "Card private actual-version comparison missing");passed=passed+1
+    absent("Source.FunctionPlan",{"Inspect","InspectDiscovery","PrepareDiscovery","DiscoveryPreparer"})
     absent("Pipeline.Driver",{"Register","Signature","Plan","Commit","Apply","Restart","Count","Select"})
     absent("Pipeline.Adapter",{"Validate","Fallback"})
     local registry=require("SpellHotReload.Pipeline.NodeRegistry").New()

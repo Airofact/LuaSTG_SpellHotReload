@@ -2,7 +2,9 @@
 local NodeRegistry = require("SpellHotReload.Pipeline.NodeRegistry")
 local FileMatch = require("SpellHotReload.Pipeline.FileMatch")
 local UnitIndex = require("SpellHotReload.Pipeline.UnitIndex")
+local Source = require("SpellHotReload.Source.FileAnalysis")
 
+local scope_write=rawset
 local Driver = {}
 Driver.__index = Driver
 
@@ -36,10 +38,10 @@ end
 ---build the normalized/random-access index. supplied is copied, not mutated.
 ---All units (including unchanged/unselected ones) and adapter contexts survive.
 ---No cross-version identity, impact or publication decision is inferred here.
-function Driver:Discover(file, content, supplied, options)
-    if type(file) ~= "string" or file == "" or type(content) ~= "string"
+function Driver:Discover(file, source, supplied)
+    if type(file) ~= "string" or file == "" or not Source.Validate(source)
         or (supplied ~= nil and not plain(supplied)) then
-        return discovery_error("analyze", "file/content and plain common required")
+        return discovery_error("analyze", "file/shared source and plain common required")
     end
     if supplied and supplied.file ~= nil and supplied.file ~= file then
         return discovery_error("analyze", "common file disagrees with requested file", file)
@@ -47,14 +49,14 @@ function Driver:Discover(file, content, supplied, options)
     local common = {}
     for key, value in next, supplied or {} do common[key] = value end
     common.file = file
-    local snapshot, err = FileMatch.Discover(self.adapters, content, common, options)
+    local snapshot, err = FileMatch.Discover(self.adapters, source, common)
     if not snapshot then return nil, err end
     local index, reason = UnitIndex.Build(snapshot)
     if not index then
         return discovery_error("match", reason, file)
     end
     return { kind = DISCOVERY_KIND, version = 1, owner = self, file = file,
-        content = content, snapshot = snapshot, index = index }
+        source = source, snapshot = snapshot, index = index }
 end
 
 ---Explicit keys belong to ONE discovery snapshot, never to another revision.
@@ -70,7 +72,7 @@ function Driver:SelectDiscovery(discovery, keys)
         or discovery.index.kind ~= "SpellHotReload.UnitIndex"
         or discovery.index.version ~= 1 or not plain(discovery.snapshot.common)
         or discovery.snapshot.common.file ~= discovery.file
-        or discovery.snapshot.common.content ~= discovery.content
+        or discovery.snapshot.common.source ~= discovery.source
         or not plain(keys) then
         return discovery_error("locate", "owned discovery and dense explicit keys required")
     end
@@ -99,135 +101,233 @@ function Driver:SelectDiscovery(discovery, keys)
         if selected[record.key] then entries[#entries + 1] = record.entry end
     end
     return { kind = SELECTION_KIND, version = 1, discovery = discovery,
-        entries = entries, file = discovery.file, content = discovery.content }
+        entries = entries, file = discovery.file, source = discovery.source }
 end
 
----Read-only versioned preparation over explicit discovered keys, in source order.
----Optional contexts are per-call adapter extensions, never a replacement for the
----snapshot's shared common/file/unit identities. Validate ALL inputs before hooks.
----No Match replay, legacy For/Plan, mutation, transaction, publication or restart.
----Failure returns the original adapter error plus its hook phase (third result);
----throws remain throws so callers retain their existing protected boundaries.
-function Driver:PrepareDiscovery(discovery, keys, contexts)
-    if getmetatable(self) ~= Driver or (contexts ~= nil and not plain(contexts)) then
-        return discovery_error("locate", "owned driver and plain context extensions required")
+-- Contract 5 has unit resolve and owner aggregation scopes within the same
+-- five hooks. The owner envelope below is not a public dependency/claim unit.
+-- All hooks are preparation/registration only; the common kernel publishes once.
+function Driver:PrepareDiscovery(discovery,operation)
+    local Files=require("SpellHotReload.Pipeline.FileVersions")
+    local Dependencies=require("SpellHotReload.Pipeline.Dependencies")
+    local Adapter=require("SpellHotReload.Pipeline.Adapter")
+    local function refuse(phase,message)
+        return nil,{phase=phase,code="ownership",message=message,
+            file=plain(operation) and operation.file},phase
     end
-    local selected, err = self:SelectDiscovery(discovery, keys)
-    if not selected then return nil, err, "locate" end
-    local requested, prepared = {}, {}
-    for _, entry in ipairs(selected.entries) do
-        if not plain(entry) or not plain(entry.unit) or type(entry.unit.key) ~= "string" then
-            return discovery_error("locate", "discovered entry/unit required", discovery.file)
+    if getmetatable(self)~=Driver then return refuse("locate","owned driver required") end
+    local owned=self:SelectDiscovery(discovery,{})
+    if not owned or not plain(operation)
+        or not Files.Validate(operation.capture) or operation.base_snapshot~=operation.capture.snapshot
+        or operation.source~=discovery.source or operation.file~=discovery.file
+        or not plain(discovery.reconciliation) or not plain(discovery.reconciliation.groups)
+        or discovery.snapshot.reconciliation~=discovery.reconciliation
+        or discovery.snapshot.common.capture~=operation.capture
+        or discovery.snapshot.common.session_id~=operation.session_id
+        or discovery.snapshot.common.registry_entry~=operation.entry
+        or discovery.snapshot.common.base_revision~=operation.base_snapshot.revision
+        or discovery.snapshot.common.generation~=operation.generation then
+        return refuse("locate","owned operation and fresh complete discovery required")
+    end
+    local report,records,by_owner=discovery.reconciliation,{},{}
+    local available={}
+    for _,owner in ipairs(self.adapters:Discoveries()) do available[owner]=true end
+    -- Validate every original owner before even the first unit Locate. No same-ID
+    -- replacement, omitted read-only owner or unregistered contributor can enter.
+    for i,group in ipairs(operation.base_snapshot.owners) do
+        local output=report.groups[i]
+        if not plain(output) or output.owner~=group.owner or output.owner_id~=group.owner_id
+            or output.reason~=nil or not available[group.owner] or rawget(group.owner,"Id")~=group.owner_id
+            or not Adapter.ValidateDiscovery(group.owner)
+            or not plain(discovery.snapshot.adapter_contexts[group.owner_id]) then
+            return refuse("locate","complete original owner set unavailable")
         end
-        requested[entry.unit.key] = true
+        local handle={kind="SpellHotReload.Driver.OwnerHandle",version=1,operation=operation,
+            owner=group.owner,base_group=group,view=output.view,located={},by_ref={}}
+        local record={owner=group.owner,base_group=group,handle=handle,output=output,
+            hooks={Locate=rawget(group.owner,"Locate"),Inject=rawget(group.owner,"Inject"),Commit=rawget(group.owner,"Commit")}}
+        records[i]=record;by_owner[group.owner]=record
     end
-    for key in next, contexts or {} do
-        if not requested[key] then
-            return discovery_error("locate", "context for unselected unit", discovery.file,
-                type(key) == "string" and key or nil)
+    local function context(record,phase,scope)
+        return {common=discovery.snapshot.common,operation=operation,view=record.output.view,
+            base_group=record.base_group,phase=phase,scope=scope,
+            adapter={file=discovery.snapshot.adapter_contexts[record.base_group.owner_id]}}
+    end
+    -- Normalize exceptions at the dispatch boundary without invoking tostring on
+    -- owner-controlled objects. Explicit refusals keep their diagnostic identity.
+    local function invoke(record,name,phase,...)
+        local called,value,err=pcall(record.hooks[name],...)
+        if not called then return nil,{phase=phase,code="ownership",message="owner "..name.." threw",
+            file=operation.file,cause=value} end
+        return value,err
+    end
+    local resolution,reason=Dependencies.Resolve(operation,report,operation.roots,function(owner,unit,request)
+        local record=by_owner[owner]
+        if not record then return refuse("resolve","foreign resolver owner") end
+        local located=record.handle.by_ref[unit.unit_ref]
+        if not located then
+            local ctx=context(record,"locate","unit");ctx.adapter.unit=unit.private_ref
+            local handle,err=invoke(record,"Locate","locate",unit,ctx)
+            if not plain(handle) then return nil,err end
+            located={unit=unit,handle=handle,context=ctx}
+            record.handle.by_ref[unit.unit_ref]=located
+            record.handle.located[#record.handle.located+1]=located
+        end
+        local ctx=context(record,"resolve","unit")
+        ctx.adapter.unit=unit.private_ref;ctx.request=request
+        return invoke(record,"Inject","resolve",located.handle,unit,ctx)
+    end)
+    if not resolution then return nil,reason,plain(reason) and reason.phase or "resolve" end
+    -- All business owners see only selected-source facts with root provenance.
+    -- Constraints return root blocks/private evidence, never dependency expansion
+    -- or writes. This also runs for a genuinely empty owner contribution.
+    local blocks,constraints={},{}
+    local roots={}
+    for _,root in ipairs(resolution.safe_roots) do roots[root.root_id]=true end
+    for i,record in ipairs(records) do
+        local ctx=context(record,"resolve","owner");ctx.dependencies=resolution
+        local result,err=invoke(record,"Inject","resolve",record.handle,nil,ctx)
+        if not plain(result) or result.operation~=operation or result.owner~=record.owner
+            or type(result.blocked_roots)~="table" or getmetatable(result.blocked_roots)~=nil then
+            return nil,err or {phase="resolve",code="ownership",message="owner constraint result required",file=operation.file},"resolve"
+        end
+        local count,max,seen=0,0,{}
+        for key in next,result.blocked_roots do
+            if type(key)~="number" or key<1 or key>=math.huge or key~=math.floor(key) then
+                return refuse("resolve","dense owner root constraints required")
+            end
+            count=count+1;max=math.max(max,key)
+        end
+        if count~=max then return refuse("resolve","dense owner root constraints required") end
+        for _,block in ipairs(result.blocked_roots) do
+            if not plain(block) or not roots[block.root_id] or seen[block.root_id]
+                or not plain(block.reason) or type(block.reason.code)~="string" or type(block.reason.message)~="string" then
+                return refuse("resolve","invalid owner root constraint")
+            end
+            seen[block.root_id]=true;blocks[#blocks+1]=block
+        end
+        constraints[i]=result
+    end
+    resolution,reason=Dependencies.Restrict(resolution,blocks)
+    if not resolution then return nil,reason,"resolve" end
+    for i,record in ipairs(records) do
+        local ctx=context(record,"prepare","owner")
+        ctx.selection=resolution.owners[i];ctx.dependencies=resolution;ctx.constraints=constraints[i]
+        local fragment,err=invoke(record,"Inject","inject",record.handle,nil,ctx)
+        if not plain(fragment) or fragment.operation~=operation or fragment.owner~=record.owner
+            or fragment.base_group~=record.base_group then
+            return nil,err or {phase="inject",code="ownership",message="exact owner fragment required",file=operation.file},"inject"
+        end
+        record.context,record.fragment=ctx,fragment
+    end
+    -- A hook cannot change the registry or dispatch target during preparation.
+    local current={}
+    for _,owner in ipairs(self.adapters:Discoveries()) do current[owner]=true end
+    for _,record in ipairs(records) do
+        if not current[record.owner] or rawget(record.owner,"Id")~=record.base_group.owner_id
+            or rawget(record.owner,"Locate")~=record.hooks.Locate
+            or rawget(record.owner,"Inject")~=record.hooks.Inject
+            or rawget(record.owner,"Commit")~=record.hooks.Commit then
+            return refuse("inject","owner dispatch changed during preparation")
         end
     end
-    local Adapter = require("SpellHotReload.Pipeline.Adapter")
-    for _, entry in ipairs(selected.entries) do
-        local unit, base = entry.unit, entry.context
-        local context = base
-        if contexts and rawget(contexts, unit.key) ~= nil then context = rawget(contexts, unit.key) end
-        local valid = Adapter.ValidateDiscovery(entry.adapter)
-        if not valid or discovery.snapshot.by_key[unit.key] ~= entry
-            or not plain(base) or not plain(base.adapter)
-            or not plain(context) or not plain(context.adapter)
-            or context.common ~= discovery.snapshot.common or context.common ~= base.common
-            or context.adapter.file ~= base.adapter.file
-            or context.adapter.unit ~= unit.context or base.adapter.unit ~= unit.context
-            or base.adapter.file ~= discovery.snapshot.adapter_contexts[rawget(entry.adapter, "Id")] then
-            return discovery_error("locate", "discovered adapter/unit/context ownership changed",
-                discovery.file, unit.key)
-        end
-        prepared[#prepared+1] = {entry=entry, adapter=entry.adapter, unit=unit, context=context}
+    if operation.capture.snapshot~=operation.base_snapshot or not Source.Validate(operation.source) then
+        return refuse("inject","publication/source changed during preparation")
     end
-    for _, record in ipairs(prepared) do
-        local handle, reason = rawget(record.adapter, "Locate")(record.unit, record.context)
-        if not handle then return nil, reason, "locate" end
-        local plan, why = rawget(record.adapter, "Inject")(handle, record.unit, record.context)
-        if not plan then return nil, why, "inject" end
-        record.handle, record.plan = handle, plan
-    end
-    return {kind="SpellHotReload.Driver.PreparedDiscovery", version=1, owner=self,
-        discovery=discovery, file=discovery.file, content=discovery.content, entries=prepared}
+    return {kind="SpellHotReload.Driver.PreparedDiscovery",version=2,owner=self,discovery=discovery,
+        operation=operation,dependencies=resolution,entries=records}
 end
 
-
----Dispatch ONE prepared aggregate through an explicit atomic writer. This is
----not a multi-unit transaction: empty/multiple aggregates fail before any hook.
----The trusted writer owns phase/Guard/Consume/journal/rollback/version install.
----No Match/Locate/Inject replay, legacy Commit, automatic Restart or cache.
----Artifacts are caller-owned/read-only by contract, not unforgeable permissions.
----The temporary exact-input writer expires on return/throw and can be used once.
-function Driver:CommitDiscovery(prepared, transaction)
-    local function refuse(code, detail, key)
-        return false, {phase="commit", code=code, message=detail,
-            file=plain(prepared) and rawget(prepared,"file") or nil, unit_key=key}
+-- Register every owner fragment, then invoke exactly one neutral transaction.
+-- A writer records only the exact tuple; it cannot consume a UI token or write.
+function Driver:CommitDiscovery(prepared,transaction)
+    local function refuse(code,detail)
+        return nil,{phase="register",code=code,message=detail,
+            file=plain(prepared) and prepared.file or nil}
     end
-    if getmetatable(self)~=Driver or not plain(prepared)
-        or prepared.kind~="SpellHotReload.Driver.PreparedDiscovery"
-        or prepared.version~=1 or prepared.owner~=self or not plain(prepared.entries)
-        or type(transaction)~="function" then
-        return refuse("ownership", "owned prepared discovery and atomic writer required")
-    end
-    -- Do not accidentally publish one root at a time and claim group atomicity.
-    local count=0
-    for key in next,prepared.entries do
-        if key~=1 then return refuse("unsupported", "single prepared aggregate required") end
-        count=count+1
-    end
-    if count~=1 then return refuse("unsupported", "single prepared aggregate required") end
-    local record=prepared.entries[1]
-    if not plain(record) or not plain(record.unit) or type(record.unit.key)~="string" then
-        return refuse("ownership", "prepared entry/unit required")
-    end
-    local unit, context, entry=record.unit,record.context,record.entry
-    local selected=self:SelectDiscovery(prepared.discovery,{unit.key})
-    if not selected or prepared.file~=selected.file or prepared.content~=selected.content
-        or selected.entries[1]~=entry or not plain(entry) or entry.unit~=unit
-        or entry.adapter~=record.adapter
-        or not require("SpellHotReload.Pipeline.Adapter").ValidateDiscovery(record.adapter)
-        or not plain(entry.context)
-        or not plain(entry.context.adapter) or not plain(context) or not plain(context.adapter)
-        or context.common~=entry.context.common or context.common~=prepared.discovery.snapshot.common
-        or context.adapter.file~=entry.context.adapter.file
-        or context.adapter.unit~=unit.context
-        or entry.context.adapter.unit~=unit.context
-        or entry.context.adapter.file~=prepared.discovery.snapshot.adapter_contexts[rawget(record.adapter,"Id")]
-        or not record.handle or not record.plan or rawget(context.adapter,"transaction")~=nil then
-        return refuse("ownership", "prepared adapter/unit/context ownership changed",unit.key)
-    end
-    local handle,plan,scope=record.handle,record.plan,context.adapter
-    local hook=rawget(record.adapter,"Commit")
-    local active,attempted=true,false
-    local writer=function(h,p,c)
-        if h~=handle or p~=plan or c~=context then
-            local _,err=refuse("ownership", "foreign prepared transaction input",unit.key)
-            return nil,err
+    local function dense(v)
+        if not plain(v) then return false end
+        local n,max=0,0
+        for k in next,v do
+            if type(k)~="number" or k<1 or k>=math.huge or k~=math.floor(k) then return false end
+            n=n+1;max=math.max(max,k)
         end
-        if not active or attempted then
-            local _,err=refuse("stale", "prepared transaction writer expired or already used",unit.key)
-            return nil,err
-        end
-        attempted=true
-        return transaction(h,p,c)
+        return n==max
     end
-    rawset(scope,"transaction",writer)
-    local called,ok,err,receipt=pcall(hook,handle,plan,context)
-    active=false
-    transaction=nil -- retained expired writers cannot retain the caller capability
-    rawset(scope,"transaction",nil)
-    if not called then error(ok,0) end
-    return ok,err,receipt
+    if getmetatable(self)~=Driver or not plain(prepared) or prepared.owner~=self
+        or prepared.kind~="SpellHotReload.Driver.PreparedDiscovery" or prepared.version~=2
+        or not plain(prepared.operation) or not dense(prepared.entries)
+        or type(transaction)~="function" or not plain(prepared.discovery)
+        or prepared.discovery.owner~=self then return refuse("ownership","owned prepared operation required") end
+    local op,discovery=prepared.operation,prepared.discovery
+    local capture=op.capture
+    if not require("SpellHotReload.Pipeline.FileVersions").Validate(capture)
+        or op.base_snapshot~=capture.snapshot or #prepared.entries~=#capture.snapshot.owners
+        or discovery.snapshot.common.source~=op.source or discovery.snapshot.common.file~=op.file then
+        return refuse("ownership","complete actual owner set required")
+    end
+    local checked,fragments={},{}
+    local available={}
+    for _,owner in ipairs(self.adapters:Discoveries()) do available[owner]=true end
+    for i,record in ipairs(prepared.entries) do
+        local group=capture.snapshot.owners[i]
+        if not plain(record) or record.owner~=group.owner or record.base_group~=group
+            or not available[group.owner] or rawget(group.owner,"Id")~=group.owner_id
+            or not require("SpellHotReload.Pipeline.Adapter").ValidateDiscovery(record.owner)
+            or not plain(record.context) or record.context.common~=discovery.snapshot.common
+            or not plain(record.context.adapter)
+            or record.context.adapter.file~=discovery.snapshot.adapter_contexts[group.owner_id]
+            or record.context.operation~=op or not record.handle or not plain(record.fragment)
+            or record.fragment.operation~=op or record.fragment.owner~=group.owner
+            or record.fragment.base_group~=group or rawget(record.context.adapter,"register")~=nil then
+            return refuse("ownership","prepared owner identity changed")
+        end
+        checked[i]={owner=record.owner,handle=record.handle,fragment=record.fragment,
+            context=record.context,scope=record.context.adapter,hook=rawget(record.owner,"Commit")}
+    end
+    -- A refusal in any later hook leaves all earlier registrations uncommitted.
+    for i,record in ipairs(checked) do
+        local h,f,c,scope,hook=record.handle,record.fragment,record.context,record.scope,record.hook
+        local active,attempted,registered,violation=true,false,false,false
+        local file=op.file
+        local function writer_error(code,message)
+            return nil,{phase="register",code=code,message=message,file=file}
+        end
+        local writer
+        writer=function(handle,fragment,context)
+            if not active then return writer_error("stale","registration writer expired") end
+            if attempted then violation=true;return writer_error("stale","registration writer already used") end
+            attempted=true
+            if handle~=h or fragment~=f or context~=c then
+                violation=true;return writer_error("ownership","foreign registration tuple")
+            end
+            registered=true;return true
+        end
+        scope_write(scope,"register",writer)
+        local function pack(...) return {n=select("#",...),...} end
+        local result=pack(pcall(hook,h,f,c))
+        local inspected,unchanged=pcall(function()
+            return rawget(scope,"register")==writer and record.owner.Commit==hook
+                and record.context==c and c.adapter==scope and c.operation==op
+                and c.common==discovery.snapshot.common and c.common.source==op.source
+        end)
+        active=false
+        scope_write(scope,"register",nil)
+        -- Retained expired closures must not keep operation/session/controller refs.
+        h,f,c,scope,hook=nil,nil,nil,nil,nil
+        if not result[1] then return refuse("ownership","owner Commit threw") end
+        if result[2]~=true or result.n~=2 or not registered or violation or not inspected or not unchanged then
+            return refuse("ownership","owner Commit must register its exact tuple once and return true")
+        end
+        fragments[i]=record.fragment
+    end
+    -- No callbacks above ever received this capability. Only one call here.
+    return transaction(op,fragments)
 end
 
 ---Complete two-sided read-only discovery. On source failure the THIRD result
 ---retains unresolved publications; nil/error stay failure, never empty success.
-function Driver:DiscoverPublished(file,content,publication,supplied,options)
+function Driver:DiscoverPublished(file,source,publication,supplied,source_error)
     local Reconciliation=require("SpellHotReload.Pipeline.Reconciliation")
     local common={}
     if supplied~=nil and not plain(supplied) then
@@ -246,11 +346,19 @@ function Driver:DiscoverPublished(file,content,publication,supplied,options)
     end
     common.session_id,common.loaded_source=publication.session_id,publication.loaded_source
     common.registry_entry,common.base_revision=publication.entry,publication.revision
-    local discovery,err=self:Discover(file,content,common,options)
+    local discovery,err
+    if source_error~=nil then
+        if source~=nil or not plain(source_error) or type(source_error.phase)~="string"
+            or type(source_error.code)~="string" or type(source_error.message)~="string"
+            or source_error.file~=nil and source_error.file~=file then
+            return discovery_error("reconcile","failure diagnostic disagrees with source/file",file)
+        end
+        err=source_error
+    else discovery,err=self:Discover(file,source,common) end
     local snapshot=discovery and discovery.snapshot
     local problem
     if not discovery then
-        problem=type(content)~="string" and "candidate bytes unavailable"
+        problem=source==nil and (not source_error or source_error.phase~="analyze") and "candidate bytes unavailable"
             or (plain(err) and err.phase=="match") and "candidate Match failed"
             or "candidate analysis failed"
     end

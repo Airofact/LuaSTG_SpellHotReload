@@ -13,7 +13,7 @@ function M.run()
     end
     local function make(id)
         return {
-            ContractVersion = 4, Id = id,
+            ContractVersion = 5, Id = id,
             Match = hook, Reconcile = hook, Locate = hook, Inject = hook, Commit = hook,
         }
     end

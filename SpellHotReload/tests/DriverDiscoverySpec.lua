@@ -3,6 +3,8 @@ local Driver = require("SpellHotReload.Pipeline.Driver")
 local Registry = require("SpellHotReload.Pipeline.NodeRegistry")
 local Index = require("SpellHotReload.Pipeline.UnitIndex")
 local IR = require("SpellHotReload.Source.TopLevelIR")
+local Source = require("SpellHotReload.Source.FileAnalysis")
+local Binding = require("SpellHotReload.Source.Binding")
 local Card = require("SpellHotReload.Adapters.Card.Card")
 local Callbacks = require("SpellHotReload.Adapters.Card.CardCallbacks")
 local Lexer = require("SpellHotReload.Source.Lexer")
@@ -22,7 +24,7 @@ function M.run(options)
     local calls, analysis_calls, shared, shared_common = {}, 0
     local function adapter(id, specs, claim_key)
         return {
-            ContractVersion=4, Id=id,
+            ContractVersion=5, Id=id,
             Match=function(analysis, common)
                 calls[#calls+1] = id
                 if shared then
@@ -50,11 +52,14 @@ function M.run(options)
     eq(driver:RegisterDiscovery(z), true, "register z")
     eq(driver:RegisterDiscovery(a), true, "register a")
     eq(driver:RegisterDiscovery(a), false, "duplicate Id refused")
-    local live_ref, supplied = {}, {session_id="S", candidate_generation=3, base_revision=7}
+    local live_ref, supplied = {}, {session_id="S", generation=3, base_revision=7}
     supplied.registry_entry = live_ref
     local old_analyze = IR.Analyze
     IR.Analyze = function(...) analysis_calls=analysis_calls+1; return old_analyze(...) end
-    local ok, discovery = pcall(driver.Discover, driver, "F.lua", "G=1 H=2", supplied)
+    local ok, discovery = pcall(function()
+        local facts=assert(Source.Build("G=1 H=2"))
+        return driver:Discover("F.lua",facts,supplied)
+    end)
     IR.Analyze = old_analyze
     assert(ok, discovery)
     assert(discovery)
@@ -63,9 +68,10 @@ function M.run(options)
     eq(discovery.kind, "SpellHotReload.Driver.Discovery", "discovery kind")
     eq(discovery.owner, driver, "discovery owner")
     eq(discovery.file, "F.lua", "requested file")
-    eq(discovery.content, "G=1 H=2", "full bytes retained")
+    eq(discovery.source.content, "G=1 H=2", "full bytes retained")
+    eq(shared,discovery.source,"Match receives the original FileAnalysis")
     eq(discovery.snapshot.common.session_id, "S", "session retained")
-    eq(discovery.snapshot.common.candidate_generation, 3, "generation retained")
+    eq(discovery.snapshot.common.generation, 3, "generation retained")
     eq(discovery.snapshot.common.base_revision, 7, "revision retained")
     eq(discovery.snapshot.common.registry_entry, live_ref, "live reference retained only")
     eq(supplied.file, nil, "caller common not mutated")
@@ -107,28 +113,28 @@ function M.run(options)
     reject(v,e,"locate","artifact metatable")
     v,e = driver:SelectDiscovery(discovery, hostile)
     reject(v,e,"locate","keys metatable")
-    v,e = driver:Discover("F.lua", "G=1", hostile)
+    v,e = driver:Discover("F.lua", assert(Source.Build("G=1")), hostile)
     reject(v,e,"analyze","common metatable")
     eq(touched,0,"metatables not invoked")
-    v,e = driver:Discover("F.lua","G=1",{file="other.lua"})
+    v,e = driver:Discover("F.lua",assert(Source.Build("G=1")),{file="other.lua"})
     reject(v,e,"analyze","common file mismatch")
-    v,e = driver:Discover("", "G=1")
+    v,e = driver:Discover("", assert(Source.Build("G=1")))
     reject(v,e,"analyze","empty file")
     v,e = driver:Discover("F.lua", false)
-    reject(v,e,"analyze","non-string content")
+    reject(v,e,"analyze","complete source required")
     local empty_driver = DriverAPI.New()
-    eq(#assert(empty_driver:Discover("empty.lua","")).index.list,0,"empty file/registry")
+    eq(#assert(empty_driver:Discover("empty.lua",assert(Source.Build("")))).index.list,0,"empty file/registry")
     local legacy = {Reconcile=function() error("unexpected reconciliation") end,
             Locate=function() error("legacy Locate forbidden") end,
         Inject=function() error("legacy Inject forbidden") end,
         Commit=function() error("legacy Commit forbidden") end}
-    eq(#assert(empty_driver:Discover("legacy.lua","G=1")).index.list,0,"legacy adapters excluded")
+    eq(#assert(empty_driver:Discover("legacy.lua",assert(Source.Build("G=1")))).index.list,0,"legacy adapters excluded")
     eq(empty_driver:RegisterDiscovery(legacy),false,"legacy cannot enter discovery")
     shared,shared_common = nil,nil
     local conflict = DriverAPI.New()
     assert(conflict:RegisterDiscovery(adapter("a",{{"a",1,3}},"same")))
     assert(conflict:RegisterDiscovery(adapter("b",{{"b",1,3}},"same")))
-    v,e = conflict:Discover("F.lua","G=1")
+    v,e = conflict:Discover("F.lua",assert(Source.Build("G=1")))
     reject(v,e,"match","semantic conflict")
     eq(e.code,"ownership","conflict not silently resolved")
     shared,shared_common = nil,nil
@@ -136,9 +142,21 @@ function M.run(options)
     local bad = adapter("bad",{})
     bad.Match=function() error(hostile) end
     assert(thrown:RegisterDiscovery(bad))
-    v,e = thrown:Discover("F.lua","G=1")
+    v,e = thrown:Discover("F.lua",assert(Source.Build("G=1")))
     reject(v,e,"match","Match exception")
     eq(touched,0,"thrown object not stringified")
+    -- Discovery/selection consume the existing input, not an internal parse cache.
+    shared,shared_common=nil,nil
+    local old_build,old_ir,old_binding,old_lexer=Source.Build,IR.Analyze,Binding.Analyze,Lexer.Tokenize
+    local function forbidden() error("Driver rebuilt supplied FileAnalysis") end
+    Source.Build,IR.Analyze,Binding.Analyze,Lexer.Tokenize=forbidden,forbidden,forbidden,forbidden
+    local reused,reuse_error=pcall(function()
+        local next_scan=assert(driver:Discover("F.lua",discovery.source,supplied))
+        eq(next_scan.source,discovery.source,"fresh discovery reuses exact complete facts")
+        eq(#assert(driver:SelectDiscovery(next_scan,{"early"})).entries,1,"selection needs no analysis")
+    end)
+    Source.Build,IR.Analyze,Binding.Analyze,Lexer.Tokenize=old_build,old_ir,old_binding,old_lexer
+    assert(reused,reuse_error)
     -- Real Card discovery: full file and both classes, independent of practice.
     local source = [[
 _editor_class["A"] = Class(boss)
@@ -159,7 +177,9 @@ DRIVER_DISCOVERY_EFFECT()
     assert(card_driver:RegisterDiscovery(Card))
     local old_lex, lex_calls = Lexer.Tokenize, 0
     Lexer.Tokenize = function(...) lex_calls=lex_calls+1; return old_lex(...) end
-    local found, real = pcall(card_driver.Discover,card_driver,"Boss.lua",source)
+    local found, real = pcall(function()
+        return card_driver:Discover("Boss.lua",assert(Source.Build(source)))
+    end)
     Lexer.Tokenize = old_lex
     _G.DRIVER_DISCOVERY_EFFECT = old_effect
     assert(found, real); assert(real)
@@ -173,34 +193,45 @@ DRIVER_DISCOVERY_EFFECT()
     eq(next(Card)~=nil,true,"adapter retained without hook execution")
     lex_calls = 0
     Lexer.Tokenize = function(...) lex_calls=lex_calls+1; return old_lex(...) end
-    local bom_ok, bom = pcall(card_driver.Discover,card_driver,"Boss.lua","\239\187\191"..source)
+    local bom_ok, bom = pcall(function()
+        return card_driver:Discover("Boss.lua",assert(Source.Build("\239\187\191"..source)))
+    end)
     Lexer.Tokenize = old_lex
     assert(bom_ok,bom); assert(bom)
     eq(lex_calls,1,"one BOM full-file lex across classes")
-    eq(bom.content,"\239\187\191"..source,"BOM byte identity retained")
+    eq(bom.source.content,"\239\187\191"..source,"BOM byte identity retained")
     eq(bom.index.unit_count,2,"BOM real discovery")
     for _,d in ipairs({real,bom}) do
+        local independent=assert(Source.Build(d.source.content))
         for _,class in ipairs({"A","B"}) do
-            local parsed = assert(Callbacks.Read(d.content,class,d.snapshot.analysis))
-            local legacy_read = assert(Callbacks.Read(d.content,class))
-            eq(#parsed,#legacy_read,"shared/legacy layout length")
-            eq(parsed[1].constructor,legacy_read[1].constructor,"shared/legacy constructor")
-            eq(parsed[1].callbacks.init,legacy_read[1].callbacks.init,"shared/legacy callback bytes")
-            eq(parsed[1].callback_points.init.first,legacy_read[1].callback_points.init.first,
-                "shared/legacy raw definition first byte")
-            eq(parsed[1].callback_points.init.last,legacy_read[1].callback_points.init.last,
-                "shared/legacy raw definition last byte")
+            local parsed=assert(Callbacks.Read(d.source,class))
+            local fresh=assert(Callbacks.Read(independent,class))
+            eq(#parsed,#fresh,"same-input layout length")
+            eq(parsed[1].constructor,fresh[1].constructor,"same-input constructor")
+            eq(parsed[1].callbacks.init,fresh[1].callbacks.init,"same-input callback bytes")
+            eq(parsed[1].callback_points.init.first,fresh[1].callback_points.init.first,
+                "same-input raw definition first byte")
+            eq(parsed[1].callback_points.init.last,fresh[1].callback_points.init.last,
+                "same-input raw definition last byte")
+            local matched=d.snapshot.by_key["card:"..class].unit.context.layout[1]
+            eq(parsed[1].callback_syntax.init,matched.callback_syntax.init,"original discovered function AST identity")
+            local point=parsed[1].callback_points.init
+            eq(d.source.content:sub(point.first,point.last),"function _tmp_sc:init() end","raw method definition bytes")
         end
     end
-    local parsed, perr = Callbacks.Read(source.."-- changed","A",real.snapshot.analysis)
+    local changed={};for key,value in pairs(real.source) do changed[key]=value end
+    changed.content=source.."-- changed"
+    local parsed,perr=Callbacks.Read(changed,"A")
     eq(parsed,nil,"shared analysis cannot come from different bytes")
-    eq(type(perr),"string","shared source mismatch diagnostic")
-    parsed = Callbacks.Read(source,"A",bom.snapshot.analysis)
+    eq(type(perr),"table","shared source mismatch diagnostic")
+    changed={};for key,value in pairs(real.source) do changed[key]=value end
+    changed.analysis=bom.source.analysis
+    parsed=Callbacks.Read(changed,"A")
     eq(parsed,nil,"shared offset must match actual BOM")
-    parsed = Callbacks.Read(source,"A",hostile)
-    eq(parsed,nil,"shared analysis metatable rejected")
-    eq(touched,0,"shared analysis validation does not invoke metatable")
-    local removed = assert(card_driver:Discover("Boss.lua",""))
+    parsed=Callbacks.Read(hostile,"A")
+    eq(parsed,nil,"shared source metatable rejected")
+    eq(touched,0,"shared source validation does not invoke metatable")
+    local removed = assert(card_driver:Discover("Boss.lua",assert(Source.Build(""))))
     local comparison = assert(Index.Compare(real.index,removed.index))
     eq(comparison.counts.removed_units,2,"unmatched old units enter deletion comparison")
     eq(comparison.counts.added_units,0,"no invented replacement units")

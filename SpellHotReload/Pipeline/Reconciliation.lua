@@ -1,6 +1,7 @@
 -- Interpret actual publications against ONE complete successful discovery.
 -- Tables are read-only by contract. This is evidence, never commit authority.
 local Adapter=require("SpellHotReload.Pipeline.Adapter")
+local Source=require("SpellHotReload.Source.FileAnalysis")
 local M={Kind="SpellHotReload.Reconciliation",Version=1}
 local function plain(v) return type(v)=="table" and getmetatable(v)==nil end
 local function text(v) return type(v)=="string" and v~="" end
@@ -30,7 +31,14 @@ local function validate(publication)
         -- retain its captured Id and records instead of becoming another owner.
         if not plain(group) or type(group.owner)~="table" or not text(group.owner_id)
             or owners[group.owner] or ids[group.owner_id] or not plain(group.state)
-            or dense(group.records)==nil then return false end
+            or dense(group.records)==nil or dense(group.units)==nil then return false end
+        local refs,unit_ids={},{}
+        for _,unit in ipairs(group.units) do
+            local ref=plain(unit) and unit.unit_ref
+            if not plain(ref) or ref.owner~=group.owner or not integer(ref.id,1)
+                or refs[ref] or unit_ids[ref.id] then return false end
+            refs[ref],unit_ids[ref.id]=true,true
+        end
         owners[group.owner],ids[group.owner_id]=true,true
         local keys={}
         for _,record in ipairs(group.records) do
@@ -87,6 +95,43 @@ local function checked_rows(rows,group,snapshot)
     for record in next,old do if not seen[record] then return false end end
     return true
 end
+-- Direct contract-5 result: old rows remain mandatory, while private views and
+-- finite exports provide unit endpoints without exposing member/name semantics.
+local function checked_result(result,group,snapshot)
+    if not plain(result) or not checked_rows(result.rows,group,snapshot)
+        or not plain(result.view) or dense(result.units)==nil or dense(result.exports)==nil then return false end
+    local refs,records,used_refs,used_records,by_ref={},{},{},{},{}
+    for _,unit in ipairs(group.units) do refs[unit.unit_ref]=true end
+    for _,record in ipairs(group.records) do records[record]=true end
+    for _,unit in ipairs(result.units) do
+        if not plain(unit) or not text(unit.status) or not plain(unit.private_ref)
+            or dense(unit.previous_records)==nil then return false end
+        local ref,entry=unit.unit_ref,unit.candidate_entry
+        if ref~=nil and (not refs[ref] or used_refs[ref]) then return false end
+        if entry~=nil and (not plain(entry) or entry.adapter~=group.owner or not plain(entry.unit)
+            or snapshot.by_key[entry.unit.key]~=entry) then return false end
+        if ref==nil and (entry==nil or #unit.previous_records~=0) then return false end
+        for _,record in ipairs(unit.previous_records) do
+            if ref==nil or not records[record] or used_records[record] then return false end
+            used_records[record]=true
+        end
+        if ref~=nil then used_refs[ref]=true;by_ref[ref]=unit end
+    end
+    for ref in next,refs do if not used_refs[ref] then return false end end
+    for record in next,records do if not used_records[record] then return false end end
+    local exported,tokens={},{}
+    for _,export in ipairs(result.exports) do
+        local ref=plain(export) and export.unit_ref
+        if not by_ref[ref] or exported[ref] or dense(export.conditions)==nil then return false end
+        exported[ref]=true
+        for _,token in ipairs(export.conditions) do
+            if not plain(token) or tokens[token] then return false end
+            tokens[token]=true
+        end
+    end
+    for ref in next,refs do if not exported[ref] then return false end end
+    return true
+end
 ---On analyze/Match/read failure, call with snapshot=nil and a nonempty problem.
 ---No hook runs; all previous records survive as unresolved. Missing file is an
 ---input failure, never a successful empty source. No publication cache lives here.
@@ -99,7 +144,7 @@ function M.Run(registry,publication,snapshot,problem)
         or common.registry_entry~=publication.entry or common.loaded_source~=publication.loaded_source
         or common.base_revision~=publication.revision or not plain(snapshot.by_key)
         or dense(snapshot.entries)==nil or not plain(snapshot.adapter_contexts)
-        or common.analysis~=snapshot.analysis or type(common.content)~="string") then
+        or not Source.Validate(common.source)) then
         return failure("candidate and publication scope disagree",file)
     end
     if snapshot==nil and not text(problem) then return failure("explicit source failure required",file) end
@@ -120,25 +165,26 @@ function M.Run(registry,publication,snapshot,problem)
     if snapshot then
         for _,adapter in ipairs(adapters) do
             if not known[adapter] then groups[#groups+1]={owner=adapter,owner_id=rawget(adapter,"Id"),
-                state={},records={}} end
+                state={},records={},units={}} end
         end
     end
     local report={kind=M.Kind,version=M.Version,file=file,publication=publication,
         snapshot=snapshot,problem=problem,revision=publication.revision,groups={},rows={},published=false}
     for _,group in ipairs(groups) do
         local available=registered[group.owner_id]==group.owner and Adapter.ValidateDiscovery(group.owner)
-        local reason,rows
+        local reason,rows,result
         if not snapshot then reason=problem
         elseif not available then reason="original adapter unavailable"
         else
             local context={common=common,publication=publication,previous=group,
                 adapter=snapshot.adapter_contexts[group.owner_id]}
-            local called,result=pcall(rawget(group.owner,"Reconcile"),group,snapshot,context)
-            if called and checked_rows(result,group,snapshot) then rows=result
+            local called,value=pcall(rawget(group.owner,"Reconcile"),group,snapshot,context)
+            if called and checked_result(value,group,snapshot) then result=value;rows=value.rows
             else reason=called and "invalid reconciliation result" or "adapter reconciliation failed" end
         end
         if not rows then rows=unresolved(group,reason) end
-        local output={owner=group.owner,owner_id=group.owner_id,previous=group,rows=rows,reason=reason}
+        local output={owner=group.owner,owner_id=group.owner_id,previous=group,rows=rows,reason=reason,
+            view=result and result.view,units=result and result.units or {},exports=result and result.exports or {}}
         report.groups[#report.groups+1]=output
         for _,row in ipairs(rows) do
             report.rows[#report.rows+1]={owner=group.owner,owner_id=group.owner_id,result=row}

@@ -23,14 +23,16 @@ function M.run()
             calls=calls+1;token=t
             local value,err=controller:Commit(t,{},nil,{session_id=self._session_id})
             eq(value,nil,"invalid plan refused")
-            eq(err.code,"unsupported","real token passes phase into plan validation")
+            eq(err.code,"ownership","real token reaches common plan validation")
+            eq(err.message,"operation and fragments required","live token reaches seal validation")
             return "applied fixture"
         end
         eq(p:ApplyFromUI(),"applied fixture","UI preserves result string")
         eq(calls,1,"one dispatch")
         eq(type(token),"table","real dynamic token passed")
         local v,e=controller:Commit(token,{},nil,{session_id=p._session_id})
-        eq(v,nil,"expired token");eq(e.code,"stale","token ends with button action")
+        eq(v,nil,"expired token");eq(e.code,"phase","token ends with button action")
+        eq(e.message,"invalid file commit scope","expired token refused before seal")
         p:Tick()
         eq(calls,1,"Tick does not dispatch Apply")
         p:StopWatching()
@@ -69,7 +71,8 @@ function M.run()
         q.Apply=function(self,t)
             local value,err=controller:Commit(t,{},nil,{session_id=p._session_id})
             eq(value,nil,"foreign controller token refused")
-            eq(err.code,"stale","foreign token not accepted")
+            eq(err.code,"phase","foreign token not accepted")
+            eq(err.message,"invalid file commit scope","foreign token refused before seal")
             return "applied other"
         end
         eq(q:ApplyFromUI(),"applied other","independent Plugin controller")

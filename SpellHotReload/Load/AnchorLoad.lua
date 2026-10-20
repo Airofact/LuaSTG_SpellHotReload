@@ -1,8 +1,9 @@
 -- Execute one generated file once and return both immutable first-load evidence
 -- and its shared-cell anchor. entry.map records original values synchronously;
--- Card.SeedVersions uses those original function identities for revision zero.
+-- FileVersions and its owner contributors use those original function identities for revision zero.
 -- Later publication never writes this map or treats it as a live registry.
 -- Preserve normal arguments/results and capability refusals without replay.
+local Source = require("SpellHotReload.Source.FileAnalysis")
 local Anchor = require("SpellHotReload.Load.Anchor")
 local Compose = require("SpellHotReload.Source.Compose")
 local Capture = require("SpellHotReload.Load.LoadCapture")
@@ -114,7 +115,7 @@ end
 ---   missing `upvaluejoin`    map and anchor kept, reload denied
 ---
 ---@param content string
----@param options table?  -- { name=, analysis=, bindings=, ir_options=, limit=,
+---@param options table?  -- { name=, ir_options=, limit=,
 ---                       --   capability=, args={n=,...} }
 ---@return table? entry  -- { policy, names, loaded_source, map, anchor, slots,
 ---                       --   order, captured, reloadable, reason, ret }
@@ -125,7 +126,9 @@ function M.Capture(content, options)
     if type(content) ~= "string" then
         return nil, "content must be a string", "analyze"
     end
-    local policy, perr = Anchor.Policy(content, options)
+    local facts,ferr=Source.Build(content,options.ir_options)
+    if not facts then return nil,ferr.message,"analyze" end
+    local policy, perr = Anchor.Policy(facts, options)
     if policy == nil then
         return nil, tostring(perr), "analyze"
     end
@@ -134,7 +137,7 @@ function M.Capture(content, options)
     if source:sub(1, 3) == BOM then source = source:sub(4) end
 
     local result = {
-        policy = policy, names = policy.names, loaded_source = content,
+        policy = policy, names = policy.names, loaded_source = content, source = facts,
         map = nil, anchor = nil, slots = nil, order = nil,
         captured = false, reloadable = false, reason = nil, ret = pack(),
     }

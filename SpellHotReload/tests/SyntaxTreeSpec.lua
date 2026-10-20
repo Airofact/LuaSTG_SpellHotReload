@@ -2,6 +2,7 @@
 local M={}
 function M.run()
     local IR=require("SpellHotReload.Source.TopLevelIR")
+    local Source=require("SpellHotReload.Source.FileAnalysis")
     local Tree=require("SpellHotReload.Source.SyntaxTree")
     local Syntax=require("SpellHotReload.Source.LuaSyntax")
     local Lexer=require("SpellHotReload.Source.Lexer")
@@ -41,7 +42,8 @@ function M.run()
     eq(table.concat(bindings.names,","),"a,b,f","declarations consume shared tree")
     -- Literal data with code-looking text cannot create a class or callback.
     local source="local decoy=\"_editor_class['Fake'].cards={}\"; _editor_class['K']=Class(boss); _editor_class['K'].cards={}; _tmp_sc=boss.card.New('C',1,2,3,4,{1,2,3}); function _tmp_sc:init(...) return function(...) return ... end end; table.insert(_editor_class['K'].cards,_tmp_sc)"
-    local analysis=analyze(source)
+    local facts=assert(Source.Build(source))
+    local analysis=facts.analysis
     local original_parse,original_lex=Syntax.Parse,Lexer.Tokenize
     Syntax.Parse=function() error("shared syntax reparsed") end
     Lexer.Tokenize=function() error("shared syntax re-lexed") end
@@ -49,7 +51,7 @@ function M.run()
         local classes=assert(Cards.CardLists(analysis))
         eq(#classes,1,"only real class is discovered")
         eq(classes[1].class_key,"K","class key from index literal")
-        local layout=assert(Callbacks.Read(source,"K",analysis))
+        local layout=assert(Callbacks.Read(facts,"K"))
         eq(#layout,1,"registration from call node")
         eq(layout[1].name,"C","constructor argument value")
         eq(layout[1].callback_syntax.init,analysis.syntax.body[5].fn,"callback reuses original function node")
@@ -69,24 +71,48 @@ function M.run()
         eq(tokens[1].literal,assert(loadstring("return "..raw))(),"literal decoder "..raw)
     end
     local Scanner=require("SpellHotReload.Adapters.Card.GeneratedBossScanner")
-    local keys=Scanner.ClassKeys(source,analysis)
-    eq(keys.K,true,"class-key hint consumes shared tree")
-    eq(keys.Fake,nil,"class-key hint ignores code-looking string")
+    local bom=assert(Source.Build("\239\187\191"..source))
+    local old_build,old_analyze,old_binding=Source.Build,IR.Analyze,Binding.Analyze
+    local old_parse,old_lex=Syntax.Parse,Lexer.Tokenize
     local previous=rawget(_G,"_")
     local marker=function() end
     _G._=marker
-    local standalone=Scanner.ClassKeys(source)
+    local function forbidden() error("class-key hint rebuilt shared analysis") end
+    Source.Build,IR.Analyze,Binding.Analyze=forbidden,forbidden,forbidden
+    Syntax.Parse,Lexer.Tokenize=forbidden,forbidden
+    local queried,query_error=pcall(function()
+        local keys=assert(Scanner.ClassKeys(facts))
+        eq(keys.K,true,"class-key hint consumes shared tree")
+        eq(keys.Fake,nil,"class-key hint ignores code-looking string")
+        eq(assert(Scanner.ClassKeys(bom)).K,true,"BOM source retains shared AST provenance")
+        eq(Scanner.ClassKeys(source),nil,"raw bytes cannot trigger hidden analysis")
+        eq(Scanner.ClassKeys(analysis),nil,"unbound syntax snapshot is not FileAnalysis")
+        local changed={};for key,value in pairs(facts) do changed[key]=value end
+        changed.content=source.." "
+        local none,reason=Scanner.ClassKeys(changed)
+        eq(none,nil,"different bytes cannot reuse old facts")
+        eq(reason.code,"stale","different bytes diagnostic")
+        changed={};for key,value in pairs(facts) do changed[key]=value end
+        changed.bindings={}
+        eq(Scanner.ClassKeys(changed),nil,"foreign binding provenance refused")
+        local again=assert(Scanner.ClassKeys(facts))
+        keys.K=nil;keys.Invented=true
+        eq(again.K,true,"hint result is detached")
+        eq(again.Invented,nil,"hint mutation never changes shared syntax")
+    end)
+    Source.Build,IR.Analyze,Binding.Analyze=old_build,old_analyze,old_binding
+    Syntax.Parse,Lexer.Tokenize=old_parse,old_lex
     local preserved=rawget(_G,"_")==marker
     _G._=previous
-    eq(standalone.K,true,"standalone class-key hint parses its own source")
-    eq(preserved,true,"standalone query preserves translation global")
+    assert(queried,query_error)
+    eq(preserved,true,"class-key hint preserves translation global")
     for _,raw in ipairs({"'\\x41'","'\\z space'","'\\u{41}'","'\\q'"}) do
         local _,reason=Lexer.Tokenize(raw)
         eq(type(reason),"string","unsupported escape refused "..raw)
     end
     for _,tail in ipairs({"_tmp_sc.init=function() end,side_effect()","_tmp_sc.init,other=function() end,0"}) do
         local bad=source:gsub("function _tmp_sc:init%(%.%.%.%) return function%(%.%.%.%) return %.%.%. end end",tail)
-        local layout,why=Callbacks.Read(bad,"K")
+        local layout,why=Callbacks.Read(assert(Source.Build(bad)),"K")
         eq(layout,nil,"compound callback assignment refused")
         eq(type(why),"string","compound callback diagnostic")
     end

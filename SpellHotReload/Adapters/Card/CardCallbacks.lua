@@ -1,24 +1,16 @@
--- Interpret generated Card registration nodes. Candidate wiring is never executed.
-local IR=require("SpellHotReload.Source.TopLevelIR")
+-- Card-only layout interpretation of one validated common FileAnalysis.
+-- No full-source compilation/parsing here and no fallback analysis path.
+local Source=require("SpellHotReload.Source.FileAnalysis")
 local Tree=require("SpellHotReload.Source.SyntaxTree")
 local M={}
-local compile=loadstring or load
 local allowed={}
 for _,name in ipairs({"before","init","frame","render","beforedel","del","after"}) do allowed[name]=true end
-
-function M.Read(content,class_key,analysis)
-    local source=content
-    local offset=0
-    if source:sub(1,3)=="\239\187\191" then source=source:sub(4);offset=3 end
-    if analysis~=nil and (type(analysis)~="table" or getmetatable(analysis)~=nil
-        or analysis.source~=source or analysis.source_offset~=offset
-        or type(analysis.syntax)~="table") then return nil,"shared analysis does not match card source" end
-    local chunk,err=compile(source,"@SpellHotReload.card_check")
-    if not chunk then return nil,"syntax: "..tostring(err) end
-    if not analysis then
-        local nodes,why;nodes,why,analysis=IR.Analyze(content)
-        if not nodes then return nil,why end
-    end
+function M.Read(source,class_key)
+    local valid,err=Source.Validate(source)
+    if not valid then return nil,err end
+    if type(class_key)~="string" or class_key=="" then return nil,"class key required" end
+    local analysis=source.analysis
+    local offset=analysis.source_offset
     local tokens=analysis.tokens
     local function descriptor(expression,visible)
         return {kind=Tree.Constructor(expression) or "other",

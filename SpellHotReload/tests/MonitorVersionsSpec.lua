@@ -1,6 +1,6 @@
 -- Read-only version/action/pending presentation fixtures. Only synthetic first-load chunks
 -- execute; candidate top-level, card construction, and callback bodies never do.
--- Lua5.1 checks real missing-join refusal; only LuaJIT performs shared commits.
+-- Intended for LuaJIT; missing required shared-cell APIs are explicit refusals.
 local M = {}
 function M.run()
     local globals={"lstg","boss","_editor_class","_tmp_sc","_sc_table","ext","_va_runs","_va_api","jit","IsValid"}
@@ -19,6 +19,8 @@ function M.run()
     local Restart=require("SpellHotReload.Runtime.CurrentRestart")
     local Compose=require("SpellHotReload.Source.Compose")
     local Card=require("SpellHotReload.Adapters.Card.Card")
+    local Local=require("SpellHotReload.Adapters.Local.Local")
+    local Files=require("SpellHotReload.Pipeline.FileVersions")
     local passed,failed,failures=0,0,{}
     local function check(v,label)
         if v then passed=passed+1 else failed=failed+1;failures[#failures+1]=label end
@@ -141,9 +143,13 @@ function M.run()
     end
     local function unchanged(f,base,label)
         eq(f.capture.snapshot,base,label.." publication snapshot")
-        eq(Anchor.Get(f.entry,"helper"),base.functions.units.helper.fn,label.." helper cell")
-        for _,key in ipairs(base.order) do
-            local u=base.units[key]
+        local local_group,card_group
+        for _,group in ipairs(base.owners) do
+            if group.owner==Local then local_group=group elseif group.owner==Card then card_group=group end
+        end
+        eq(Anchor.Get(f.entry,"helper"),local_group.state.by_name.helper.fn,label.." helper cell")
+        for _,key in ipairs(card_group.state.order) do
+            local u=card_group.state.units[key]
             for _,cb in ipairs(callbacks) do eq(u.card[cb],u.callbacks[cb].fn,label.." callback "..key..cb) end
         end
         eq(f.p._store:HasPartialPublication(FILE),false,label.." no partial record")
@@ -167,7 +173,7 @@ function M.run()
             eq(f.discoveries,0,"missing join no discovery")
             eq(f.p:GetCandidateInspection(FILE,Binding.CaptureCurrent()),nil,"missing join no cache")
             eq(f.restarts,0,"missing join no restart")
-            print("MonitorVersionsSpec: real shared preview not run (Lua5.1 missing join)")
+            print("MonitorVersionsSpec: required shared-cell API unavailable; shared preview not run")
         else
             local base=f.capture.snapshot
             local joins,writes,flushes=0,0,0
@@ -299,10 +305,13 @@ function M.run()
             f=fixture()
             candidate(f,EDIT.."\n_tmp_sc=boss.card.New('D',1,2,3,100)\nfunction _tmp_sc:init(n) return n end\ntable.insert(_editor_class['K'].cards,_tmp_sc)")
             model=must(f.p:InspectCandidate(FILE))
-            eq(#model.pending_sources,2,"new and unproven sibling sources displayed")
-            eq(model.pending_sources[1].candidate_slot,3,"unproven sibling source slot")
-            eq(model.pending_sources[2].candidate_slot,4,"new unowned source slot")
-            eq(row(model.cards,"card:1:K:3").pending,true,"changed-layout sibling not guessed")
+            eq(#model.pending_sources,1,"only new source is unowned")
+            eq(model.pending_sources[1].source_key,"card:K","new unowned source class")
+            eq(model.pending_sources[1].candidate_slot,4,"new unowned source slot")
+            eq(model.pending_sources[1].action,"restart-required","new source requires restart")
+            eq(row(model.cards,"card:1:K:3").action,"compile-publish","existing sibling is located")
+            eq(row(model.cards,"card:1:K:3").selected,false,"existing sibling is not Current selection")
+            eq(row(model.cards,"card:1:K:3").pending,true,"unselected edited sibling stays pending")
             check(scalar_tree(model.pending_sources),"unowned description excludes source descriptor")
 
             -- A changed object method is outside Card/helper preview, even when
@@ -328,7 +337,7 @@ function M.run()
             model.file_remainder.pending[1].reason="corrupted"
             local cached=must(f.p:GetCandidateInspection(FILE,Binding.CaptureCurrent()))
             check(cached.file_remainder.pending[1].reason~="corrupted","remainder cache detached")
-            has(f.p:ApplyFileFromUI(FILE),"compare: unbounded top-level change","file rejects before commit")
+            has(f.p:ApplyFileFromUI(FILE),"prepare: unbounded top-level change","file rejects before commit")
             eq(f.capture.snapshot,before,"refused file keeps published snapshot")
             has(f.p:ApplyFromUI(),"candidate retained; pending: unknown","Current retains committed definitions and reports unsupported remainder")
             eq(f.p._store:GetCandidate(FILE)~=nil,true,"completion failure keeps candidate")
@@ -357,6 +366,135 @@ function M.run()
                     check(scalar_tree(model.file_remainder),fault.." detached error")
                 end
                 unchanged(f,before,fault.." remainder inspection")
+            end
+
+
+            -- Class-level public refs must not make every private Card slot
+            -- look affected by a direct callback replacement in one slot.
+            f=fixture();local before=f.capture.snapshot
+            candidate(f,SOURCE:gsub("function _tmp_sc:init%(n%) return helper%(n%) end",
+                "function _tmp_sc:init(n) return helper(n)+7 end"))
+            model=must(f.p:InspectCandidate(FILE))
+            eq(row(model.cards,"card:1:K:2").affected,true,"selected direct Card callback affects its own slot")
+            eq(row(model.cards,"card:1:K:3").affected,false,"same public class ref does not invent sibling impact")
+            eq(row(model.cards,"card:1:L:1").affected,false,"unrelated class not affected by direct callback")
+            eq(row(model.cards,"card:1:K:2").definition_version,1,"inspection never displays a proposed Card version")
+            unchanged(f,before,"direct callback inspection")
+
+            -- An owner-wide safety rule may remove a resolved root after it
+            -- produced dependency seeds. Final empty fragments have no impact.
+            f=fixture();before=f.capture.snapshot
+            -- Dynamic registry access is refused even when generated wiring is unchanged.
+            candidate(f,SOURCE:gsub("return state%+n end","return _editor_class[n] end"))
+            model=must(f.p:InspectCandidate(FILE))
+            eq(row(model.functions,"local:helper").selected,false,"unsafe helper is pruned from final selection")
+            eq(row(model.functions,"local:helper").pending,true,"pruned helper remains pending")
+            eq(row(model.cards,"card:1:K:2").selected,false,"unsafe Current root removed")
+            eq(row(model.cards,"card:1:K:2").pending,true,"removed root remains visibly blocked")
+            eq(row(model.cards,"card:1:K:2").action,"binding-blocked","dynamic registry blocks Current root")
+            for _,unit in ipairs(model.functions) do eq(unit.affected,false,"pruned root leaves no Local impact "..unit.key) end
+            for _,unit in ipairs(model.cards) do eq(unit.affected,false,"pruned root leaves no Card impact "..unit.key) end
+            unchanged(f,before,"pruned root inspection")
+
+            -- Display getter stays cheap and explicitly describes a past read.
+            -- A new Apply independently detects external function/callback drift.
+            for _,fault in ipairs({"function","callback"}) do
+                f=fixture();before=f.capture.snapshot;must(f.p:InspectCandidate(FILE))
+                local binding=must(Binding.CaptureCurrent())
+                local original=fault=="function" and Anchor.Get(f.entry,"helper") or f.classes.K.cards[2].init
+                if fault=="function" then debug.setupvalue(f.entry.anchor,must(Anchor.Slot(f.entry,"helper")),function() end)
+                else f.classes.K.cards[2].init=function() end end
+                debug.getupvalue=function() error("getter cannot probe cells") end
+                local ok,cached=pcall(f.p.GetCandidateInspection,f.p,FILE,binding)
+                debug.getupvalue=get
+                eq(ok,true,fault.." getter does not probe live functions")
+                check(cached~=nil,fault.." getter retains explicitly past display")
+                local result=f.p:ApplyFromUI()
+                has(result,"published",fault.." independent Apply detects actual function drift")
+                eq(f.capture.snapshot,before,fault.." failed Apply does not advance actual version")
+                if fault=="function" then debug.setupvalue(f.entry.anchor,must(Anchor.Slot(f.entry,"helper")),original)
+                else f.classes.K.cards[2].init=original end
+                unchanged(f,before,fault.." refusal")
+            end
+
+            -- Owner descriptions may allocate or throw. Validate after them,
+            -- including all unselected actual callbacks and original Local cells.
+            local local_describe=Local.Describe
+            for _,fault in ipairs({"disk","generation","binding","callback","function","snapshot","release","throw","scalar"}) do
+                f=fixture();before=f.capture.snapshot
+                local original_callback=f.classes.K.cards[3].init
+                local original_helper=Anchor.Get(f.entry,"helper")
+                Local.Describe=function(...)
+                    local result,why=local_describe(...)
+                    if fault=="disk" then f.disk=f.disk.."\n-- late describe drift"
+                    elseif fault=="generation" then candidate(f,EDIT)
+                    elseif fault=="binding" then enter(f,3)
+                    elseif fault=="callback" then f.classes.K.cards[3].init=function() end
+                    elseif fault=="function" then debug.setupvalue(f.entry.anchor,must(Anchor.Slot(f.entry,"helper")),function() end)
+                    elseif fault=="snapshot" then f.capture.snapshot={}
+                    elseif fault=="release" then f.p:Release()
+                    elseif fault=="throw" then error("Local describe fixture failure")
+                    elseif fault=="scalar" then debug.setupvalue(f.entry.anchor,must(Anchor.Slot(f.entry,"state")),77) end
+                    return result,why
+                end
+                local ok,display,why=pcall(f.p.InspectCandidate,f.p,FILE)
+                Local.Describe=local_describe
+                f.classes.K.cards[3].init=original_callback
+                if not f.p:IsReleased() then
+                    debug.setupvalue(f.entry.anchor,must(Anchor.Slot(f.entry,"helper")),original_helper)
+                    f.capture.snapshot=before
+                end
+                eq(ok,true,fault.." owner description error remains contained")
+                if fault=="scalar" then
+                    must(display,why)
+                    eq(Anchor.Get(f.entry,"state"),77,"ordinary scalar evolution is not frozen by inspection")
+                    eq(row(display.functions,"local:helper").definition_version,1,"state change does not advance function version")
+                else
+                    eq(display,nil,fault.." late description change refuses inspection")
+                    eq(next(f.p._candidate_inspections),nil,fault.." late description refuses to save a plan")
+                end
+                if fault~="release" then unchanged(f,before,fault.." late description") end
+            end
+
+            -- Domain projections must not retain a callback, metatable or cycle
+            -- in the UI cache even if an owner description accidentally returns it.
+            local card_describe=Card.Describe
+            for _,fault in ipairs({"function","metatable","cycle"}) do
+                f=fixture();before=f.capture.snapshot
+                Card.Describe=function(...)
+                    local description,why=card_describe(...)
+                    if description then
+                        if fault=="function" then description.cards[1].observed[1]=function() end
+                        elseif fault=="metatable" then setmetatable(description.cards,{})
+                        else description.cards[1].observed=description.cards end
+                    end
+                    return description,why
+                end
+                local ok,display,why=pcall(f.p.InspectCandidate,f.p,FILE)
+                Card.Describe=card_describe
+                eq(ok,true,fault.." malformed description is contained")
+                eq(display,nil,fault.." malformed description is refused")
+                has(why,"display values must",fault.." scalar-only boundary diagnosed")
+                eq(next(f.p._candidate_inspections),nil,fault.." no domain objects retained in display cache")
+                unchanged(f,before,fault.." malformed description")
+            end
+
+            -- In addition to candidate/snapshot/binding drift above, retire past
+            -- results on cheap controller/driver/anchor/source-scope changes.
+            for _,fault in ipairs({"driver","controller","anchor","source","file"}) do
+                f=fixture();must(f.p:InspectCandidate(FILE))
+                local binding=must(Binding.CaptureCurrent())
+                local controller,anchor,source,file=f.p._commit,f.entry.anchor,f.entry.loaded_source,f.entry.file
+                if fault=="driver" then f.p._driver_error={message="fixture driver fault"}
+                elseif fault=="controller" then f.p._commit={Poisoned=function() return false end}
+                elseif fault=="anchor" then f.entry.anchor=function() end
+                elseif fault=="source" then f.entry.loaded_source=SOURCE.."\n-- foreign first load"
+                else f.entry.file="Foreign_Boss.lua" end
+                eq(f.p:GetCandidateInspection(FILE,binding),nil,fault.." past inspection retired")
+                eq(next(f.p._candidate_inspections),nil,fault.." drops cached references")
+                f.p._commit,f.entry.anchor,f.entry.loaded_source,f.entry.file=controller,anchor,source,file
+                f.p._driver_error=nil
+                eq(f.p:GetCandidateInspection(FILE,binding),nil,fault.." retired display cannot revive")
             end
 
             -- ImGui binding stub: proves layout consumption/control dispatch, not rendering.

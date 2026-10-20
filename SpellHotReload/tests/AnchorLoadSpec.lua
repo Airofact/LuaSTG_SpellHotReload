@@ -1,41 +1,24 @@
 --------------------------------------------------------------------------------
 --- SpellHotReload tests/AnchorLoadSpec.lua
 ---
---- Unit spec for the joint load-path capture output. AnchorLoad.Capture runs a
---- generated file exactly once and reports both halves of that single
---- execution: the legacy `name -> value` map the current hook already stores and
---- the file anchor the model is going to keep.
+--- Joint first-load capture: one execution returns immutable initial name/value
+--- evidence and the live shared-cell anchor. FileAnalysis supplies the complete
+--- syntax and bindings retained for revision-zero owner contributions.
 ---
---- What is asserted here is the capture contract:
+--- The named synthetic fixtures check dual-trailer arity, one execution on
+--- policy refusal or trailer fallback, nil/false slots, read-through writes,
+--- closure wiring, and refusal without losing normal source results. These
+--- counters concern first-load fixture execution, not candidate Apply or game init.
 ---
----   * the dual trailer keeps the map bytes LoadCapture produces and
----     appends Anchor's trailer, so `results[1]` cannot drift and
----     `results[2]` is the anchor;
----   * the file body runs once - a policy refusal, a trailer that cannot be
----     appended and a missing anchor all still mean one execution, never two;
----   * the map survives every refusal (it is what the legacy consumers read,
----     including on vanilla Lua 5.1) while only the reload verdict degrades with
----     a clear reason;
----   * nil/false slots are real anchor slots, while the map snapshot cannot
----     tell nil from missing - which is why `Values`/`Get`/`Set` read through
----     the anchor and `entry.map` is only the load-time snapshot;
----   * an external setter, a function reassignment and a whole-table
----     replacement are all observed through the anchor cell by the file's own
----     closures and by a freshly composed closure joined onto the anchor.
----
---- Runs under plain Lua 5.1 and LuaJIT with no engine globals (see
---- anchor-load/run-targeted.lua). Capture cases inject an explicit capability so
---- the anchor path is deterministic everywhere, while the *default* verdict is
---- asserted separately: vanilla Lua 5.1 has no `debug.upvaluejoin`, so it must
---- honestly keep the map and refuse to reload instead of failing the spec.
+--- Intended for real LuaJIT without engine globals. Explicit capability tables
+--- exercise selected capability refusals; no engine or performance claim.
 --------------------------------------------------------------------------------
 
 local Anchor = require("SpellHotReload.Load.Anchor")
 local AnchorLoad = require("SpellHotReload.Load.AnchorLoad")
 local Compose = require("SpellHotReload.Source.Compose")
 local Loader = require("SpellHotReload.Load.LoadCapture")
-local IR = require("SpellHotReload.Source.TopLevelIR")
-local Binding = require("SpellHotReload.Source.Binding")
+local Source = require("SpellHotReload.Source.FileAnalysis")
 
 local M = {}
 local passed, failed = 0, 0
@@ -259,12 +242,24 @@ function M.run()
         eq(runs(), 1, "once: a policy-refused file executes once")
 
         _G.__anchor_load_runs = 0
-        local doctored = AnchorLoad.Capture(
-            "local x = 1\n__anchor_load_runs = __anchor_load_runs + 1\nreturn 5\n", {
-                capability = caps(),
-                analysis = { nodes = {}, statements = {} },
-                bindings = { names = { "x" }, duplicates = {}, opaque = false },
-            })
+        -- Miss the return only at the policy seam; keep real full-source facts.
+        local original_policy, calls = Anchor.Policy, 0
+        Anchor.Policy = function(input, options)
+            calls = calls + 1
+            truthy(Source.Validate(input), "once: policy receives complete source")
+            local policy, reason = original_policy(input, options)
+            if policy then
+                truthy(policy.has_return, "once: real policy finds the return")
+                policy.reloadable, policy.has_return, policy.reason = true, false, nil
+            end
+            return policy, reason
+        end
+        local called, doctored = pcall(AnchorLoad.Capture,
+            "local x = 1\n__anchor_load_runs = __anchor_load_runs + 1\nreturn 5\n",
+            { capability = caps() })
+        Anchor.Policy = original_policy
+        assert(called, doctored)
+        eq(calls, 1, "once: one targeted policy fault")
         check(doctored ~= nil, "once: the trailer fallback loads")
         if doctored ~= nil then
             falsy(doctored.captured, "once: the fallback has no map")
@@ -423,13 +418,30 @@ function M.run()
     end
 
     do
-        local entry = AnchorLoad.Capture("local a = 1\n", {
-            capability = caps(),
-            bindings = { names = { "a" }, duplicates = {}, opaque = true },
-        })
+        -- Inject an opacity marker into genuine facts, not a fake input alias.
+        -- This tests capture's policy refusal, not parser classification.
+        local original_build, calls = Source.Build, 0
+        Source.Build = function(content, options)
+            calls = calls + 1
+            local facts, reason = original_build(content, options)
+            if facts then
+                falsy(facts.bindings.opaque, "opaque: real fixture is not opaque")
+                facts.bindings.opaque = true
+                truthy(Source.Validate(facts), "opaque: fault keeps source provenance")
+            end
+            return facts, reason
+        end
+        local called, entry = pcall(AnchorLoad.Capture, "local a = 1\n",
+            { capability = caps() })
+        Source.Build = original_build
+        assert(called, entry)
+        eq(calls, 1, "opaque: one targeted source fault")
         check(entry ~= nil, "opaque: an opaque snapshot loads")
         if entry ~= nil then
             truthy(entry.captured, "opaque: the map is harvested")
+            eq(entry.map.a, 1, "opaque: original value evidence retained")
+            truthy(entry.anchor ~= nil, "opaque: real anchor retained")
+            truthy(entry.policy.opaque, "opaque: policy observes injected marker")
             falsy(entry.reloadable, "opaque: the file is not reloadable")
             contains(entry.reason, "unparsed top-level statement", "opaque: the reason")
         end
@@ -495,14 +507,22 @@ function M.run()
     ----------------------------------------------------------------------------
     do
         local bad, reason, stage = AnchorLoad.Capture("local x = (1\n")
-        reject(bad, reason, "syntax: a bad file fails", "Lua syntax:")
-        eq(stage, "analyze", "syntax: refused before compilation")
+        local _, syntax_error = Source.Build("local x = (1\n")
+        eq(syntax_error.code, "compile", "syntax: full-source compiler rejects input")
+        reject(bad, reason, "syntax: a bad file fails")
+        eq(reason, syntax_error.message, "syntax: native compiler diagnostic retained")
+        eq(stage, "analyze", "syntax: refused at public input boundary")
         local parameters={}
         for i=1,201 do parameters[i]="p"..i end
-        bad,reason,stage=AnchorLoad.Capture("function LIMIT("..table.concat(parameters,",")..") end")
-        eq(bad,nil,"compiler limit has no result")
-        contains(reason,"compile failed","compiler restriction still enforced")
-        eq(stage,"compile","compiler limit remains compile failure")
+        local limited = "function LIMIT("..table.concat(parameters,",")..") end"
+        local original_limit = rawget(_G, "LIMIT")
+        local _, limit_error = Source.Build(limited)
+        eq(limit_error.code, "compile", "compiler restriction rejected by public check")
+        bad, reason, stage = AnchorLoad.Capture(limited)
+        eq(bad, nil, "compiler limit has no result")
+        eq(reason, limit_error.message, "compiler restriction diagnostic retained")
+        eq(stage, "analyze", "compiler limit refused before first-load execution")
+        eq(rawget(_G, "LIMIT"), original_limit, "compiler limit installs no global")
         bad, reason, stage = AnchorLoad.Capture("error('boom')\n")
         reject(bad, reason, "run: a failing file fails", "run failed")
         contains(reason, "boom", "run: the underlying error is kept")
@@ -534,21 +554,28 @@ function M.run()
     end
 
     do
-        -- The caller can hand in the shared R1 analysis instead of re-analyzing.
-        local nodes, err, snapshot = IR.Analyze(FIXTURE)
-        check(nodes ~= nil and snapshot ~= nil, "analysis: the shared snapshot builds ("
-            .. tostring(err) .. ")")
-        if snapshot ~= nil then
-            local bindings = assert(Binding.Analyze(snapshot))
-            local entry = AnchorLoad.Capture(FIXTURE, {
-                capability = caps(), analysis = snapshot, bindings = bindings,
-            })
-            check(entry ~= nil, "analysis: an injected snapshot captures")
-            if entry ~= nil then
-                truthy(entry.captured, "analysis: the map is harvested")
-                eq(table.concat(entry.names, ","), table.concat(bindings.names, ","),
-                    "analysis: the names come from the injected bindings")
-            end
+        -- Observe the sole real build and require that exact source to survive.
+        local original_build, calls, observed = Source.Build, 0, nil
+        Source.Build = function(content, options)
+            calls = calls + 1
+            local facts, reason = original_build(content, options)
+            observed = facts
+            return facts, reason
+        end
+        local called, entry = pcall(AnchorLoad.Capture, FIXTURE, { capability = caps() })
+        Source.Build = original_build
+        assert(called, entry)
+        eq(calls, 1, "analysis: one public full-source build")
+        check(entry ~= nil, "analysis: genuine public source captures")
+        if entry ~= nil then
+            truthy(entry.captured, "analysis: the map is harvested")
+            eq(entry.source, observed, "analysis: exact built source retained")
+            truthy(Source.Validate(entry.source), "analysis: retained source is complete")
+            eq(entry.source.bindings.analysis, entry.source.analysis,
+                "analysis: bindings retain exact AST provenance")
+            eq(entry.source.content, FIXTURE, "analysis: exact loaded bytes retained")
+            eq(table.concat(entry.names, ","), table.concat(entry.source.bindings.names, ","),
+                "analysis: names come from the retained public bindings")
         end
     end
 

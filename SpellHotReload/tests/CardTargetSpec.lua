@@ -1,15 +1,24 @@
 local Planning=require("SpellHotReload.tests.PlanningFixture")
 -- Synthetic first-load ownership only; never game/generated source.
--- Presence-only join fixture on Lua5.1 permits metadata, not shared-cell proof.
+-- Genuine common capture and LuaJIT capabilities; no candidate chunk executes.
 local M={}
 local serial=0
 function M.run(opts)
     opts=opts or {}
     local Target=opts.target or require("SpellHotReload.Adapters.Card.CardTarget")
     local Load=require("SpellHotReload.Load.AnchorLoad")
-    local Versions=require("SpellHotReload.Adapters.Card.Card")
-    local Cards=require("SpellHotReload.Adapters.Card.CardVersions")
-    local Tx=require("SpellHotReload.Apply.CardCommit")
+    local Card=require("SpellHotReload.Adapters.Card.Card")
+    local Local=require("SpellHotReload.Adapters.Local.Local")
+    local Files=require("SpellHotReload.Pipeline.FileVersions")
+    local Source=require("SpellHotReload.Source.FileAnalysis")
+    local Anchor=require("SpellHotReload.Load.Anchor")
+    local Compose=require("SpellHotReload.Source.Compose")
+    local Tx=require("SpellHotReload.Apply.FileCommit")
+    local controllers={}
+    local function state(capture)
+        local group,err=Files.Owner(capture,Card);assert(group,type(err)=="table" and err.message or err)
+        return group.state
+    end
     local passed,failed,failures=0,0,{}
     local function test(value,label)
         if value then passed=passed+1 else failed=failed+1;failures[#failures+1]=label end
@@ -19,8 +28,6 @@ function M.run(opts)
     local function copy(value) local out={} for k,v in next,value do out[k]=v end return out end
     local saved={}
     for _,key in ipairs({"boss","_editor_class","_tmp_sc","_ct_runs","lstg","_sc_table","_boss","IsValid"}) do saved[key]=rawget(_G,key) end
-    local join=debug.upvaluejoin
-    if not join then debug.upvaluejoin=function() error("presence only") end end
     local defaults={}
     for _,key in ipairs({"before","init","frame","render","beforedel","del","after"}) do
         defaults[key]=function() return "default" end
@@ -67,12 +74,14 @@ function M.run(opts)
         end},move={New=function() return {is_combat=false} end}}
         serial=serial+1
         local entry=must(Load.Capture(debug_mode and debug_source or source,
-            {name="Target_Boss.lua",capability={getupvalue=true,setupvalue=true,upvaluejoin=true}}))
+            {name="Target_Boss.lua"}))
+        must(entry.reloadable,entry.reason)
         entry.file="Target_Boss.lua"
         local sid="CardTargetSpec:"..serial
-        local capture=must(Versions.SeedVersions(entry,sid,_editor_class,defaults))
+        local f=must(Planning.Capture(entry,sid,_editor_class,defaults))
+        local capture=f.capture
         local live={capture=capture,snapshot=capture.snapshot,entry=entry,classes=_editor_class,session_id=sid}
-        return binding(_editor_class,"K",debug_mode and 2 or 3,debug_mode and "debug" or "practice"),capture,live
+        return binding(_editor_class,"K",debug_mode and 2 or 3,debug_mode and "debug" or "practice"),capture,live,f
     end
     local function refusal(value,err,code,label)
         eq(value,nil,label.." refused");eq(type(err),"table",label.." error")
@@ -91,17 +100,22 @@ function M.run(opts)
         return chunk()
     end
     local ok,problem=pcall(function()
-        eq(Target.Kind,"SpellHotReload.CardTarget","kind");eq(Target.Version,1,"version")
+        must(Anchor.Supported(Compose.Capability(debug)))
+        eq(Target.Kind,"SpellHotReload.CardTarget","kind");eq(Target.Version,2,"version")
         local b,c,l=fixture()
         local target=must(Target.Resolve(b,c,l))
         eq(target.key,"card:1:K:3","duplicate name selected by actual identity")
         eq(target.card,b.card,"live card");eq(target.slot,3,"live restart slot")
-        eq(target.unit,c.snapshot.units[target.key],"published unit")
+        eq(target.unit,state(c).units[target.key],"actual Card private unit")
+        eq(target.card_group,must(Files.Owner(c,Card)),"actual Card group")
+        eq(target.capture,c,"common first-load capture")
         eq(target.snapshot,c.snapshot,"version identity");eq(target.base_revision,0,"revision copied")
         eq(target.class,l.classes.K,"class identity");eq(target.list,l.classes.K.cards,"list identity")
         eq(target.names==b.names,false,"names copied");eq(target.mode,"practice","practice mode")
         eq(target.include_previous,false,"restart flag")
         eq(Target.Check(target,b,c,l),true,"immediate recheck")
+        local old_target=copy(target);old_target.version=1
+        reject(function() return Target.Check(old_target,b,c,l) end,"unsupported","retired target protocol")
         local first=must(Target.Resolve(binding(l.classes,"K",2),c,l))
         eq(first.key,"card:1:K:2","same name other identity is other key")
         b= binding(l.classes,"K",4)
@@ -139,7 +153,7 @@ function M.run(opts)
             debug=setmetatable({},{__index=function() error("debug forbidden") end}),
             jit={flush=function() error("flush forbidden") end}})
         target=must(reads.Resolve(b,c,l));eq(reads.Check(target,b,c,l),true,"pure reads")
-        eq(_ct_runs,1,"initialization once")
+        eq(_ct_runs,1,"only the explicit miniature first load ran")
         eq(l.classes.K.cards[3].init(),22,"old body unchanged")
         -- Structural/refusal matrix across selected/unselected/placeholder owners.
         local cases={
@@ -165,8 +179,8 @@ function M.run(opts)
             {"entry",function(_,_,v) v.entry=copy(v.entry) end,"stale"},
             {"missing",function(_,_,v) v.entry.missing=true end,"stale"},
             {"reloadable",function(_,_,v) v.entry.reloadable=false end,"stale"},
-            {"source",function(_,_,v) v.entry.loaded_source="changed" end,"stale"},
-            {"anchor",function(_,_,v) v.entry.anchor=function() end end,"stale"},
+            {"source",function(_,_,v) v.entry.loaded_source="changed" end,"unsupported"},
+            {"anchor",function(_,_,v) v.entry.anchor=function() end end,"unsupported"},
             {"classes",function(_,_,v) v.classes=copy(v.classes) end,"ownership"},
             {"class replace",function(_,_,v) v.classes.K=copy(v.classes.K) end,"ownership"},
             {"list replace",function(_,_,v) v.classes.K.cards=copy(v.classes.K.cards) end,"ownership"},
@@ -176,7 +190,7 @@ function M.run(opts)
             {"append",function(_,_,v) v.classes.K.cards[5]={} end,"ownership"},
             {"list extra key",function(_,_,v) v.classes.K.cards.extra={} end,"ownership"},
             {"combat",function(v) v.card.is_combat=false end,"ownership"},
-            {"unindexed unit",function(_,v) v.snapshot.units.extra={} end,"ownership"},
+            {"unindexed unit",function(_,v) state(v).units.extra={} end,"ownership"},
         }
         for _,case in ipairs(cases) do
             b,c,l=fixture();local base=c.snapshot
@@ -223,31 +237,59 @@ function M.run(opts)
         reject(function() return throwing.Resolve(b,c,l) end,"stale","opaque primitive failure")
         eq(traps,0,"no hostile handlers")
         -- Tampered target fields are refused, not silently re-resolved.
-        for _,field in ipairs({"key","file","session_id","card","class","list","snapshot","base_revision","mode"}) do
+        for _,field in ipairs({"key","file","session_id","capture","card_group","entry","classes","unit","class_key",
+            "card","class","list","snapshot","base_revision","slot","name","mode","include_previous"}) do
             b,c,l=fixture();target=must(Target.Resolve(b,c,l));target[field]="wrong"
             reject(function() return Target.Check(target,b,c,l) end,"stale","target "..field)
         end
-        -- Integration: select exact captured root, commit, then retire old target.
-        b,c,l=fixture();target=must(Target.Resolve(b,c,l))
+        -- Real Current selection and ONE common publication retire the old
+        -- target; names never choose between the two identical labels.
+        local f
+        b,c,l,f=fixture();target=must(Target.Resolve(b,c,l))
+        local initial=c.snapshot
         local content=source:gsub("return 22 end","return 222 end")
-        local report=must(Planning.Report(c,content))
-        local selection=must(Cards.Select(report,{target.key}))
+        local facts=must(Source.Build(content))
+        local d=must(Planning.Discover(f,facts,1))
+        local function refresh()
+            return {capture=c,snapshot=c.snapshot,entry=f.entry,classes=l.classes,session_id=f.session,
+                content=content,generation=1,binding=binding(l.classes,"K",3)}
+        end
+        local prepared,report=Planning.Prepare(f,d,{mode="current",refresh=refresh});must(prepared,report)
+        eq(#prepared.dependencies.safe_roots,1,"exact Current root safe")
+        eq(#prepared.dependencies.blocked_roots,0,"no hidden blocked root")
+        eq(prepared.operation.roots[1].root_id,target.key,"original selected duplicate key")
+        local local_piece,card_piece
+        for _,record in ipairs(prepared.entries) do
+            if record.owner==Card then card_piece=record.fragment end
+            if record.owner==Local then local_piece=record.fragment end
+        end
+        must(local_piece);must(card_piece)
+        eq(#local_piece.cell_writes,0,"constant callback does not publish ordinary state")
+        eq(#card_piece.raw_writes,1,"one callback really prepared")
+        eq(#card_piece.card_plan.keys,1,"one private Card member selected")
+        eq(card_piece.card_plan.keys[1],target.key,"exact duplicate selected by identity")
+        eq(card_piece.card_plan.publications[1].target,b.card,"write targets original live card")
         eq(Target.Check(target,b,c,l),true,"precommit current recheck")
-        l.content=content
-        local tx=must(Tx.New(l.session_id))
-        local ran,receipt,terr=tx:Run(function(token) return tx:Commit(token,selection,c,l) end)
-        eq(ran,true,"transaction scope");must(receipt,terr)
+        eq(c.snapshot,initial,"preparation installs no snapshot")
+        local tx=must(Tx.New(f.session));controllers[#controllers+1]=tx
+        local receipt,terr=Planning.Publish(f,prepared,tx);must(receipt,terr)
+        eq(receipt.changed,true,"genuine changed common receipt")
+        eq(receipt.snapshot,c.snapshot,"receipt identifies actual common publication")
+        eq(c.snapshot.revision,1,"one common revision")
         eq(b.card.init(),222,"chosen duplicate updated")
         eq(l.classes.K.cards[2].init(),11,"other duplicate untouched")
-        eq(_ct_runs,1,"integration no initialization replay")
+        eq(_ct_runs,1,"publication never replays miniature source")
         l.snapshot=c.snapshot
         reject(function() return Target.Check(target,b,c,l) end,"stale","old target after publish")
-        local new=must(Target.Resolve(b,c,l));eq(new.base_revision,1,"new target uses published revision")
-        eq(tx:Release(),true,"transaction released")
+        local new=must(Target.Resolve(b,c,l));eq(new.base_revision,1,"new target uses actual revision")
+        eq(new.card_group,must(Files.Owner(c,Card)),"new target owns actual Card group")
+        eq(new.unit,state(c).units[new.key],"new target owns actual private version")
+        eq(new.card,b.card,"same live card after publication")
+        eq(Target.Check(new,b,c,l),true,"new target recheck valid")
     end)
-    debug.upvaluejoin=join
+    for _,controller in ipairs(controllers) do eq(controller:Release(),true,"common transaction released") end
     for _,key in ipairs({"boss","_editor_class","_tmp_sc","_ct_runs","lstg","_sc_table","_boss","IsValid"}) do rawset(_G,key,saved[key]) end
-    if not ok then error(problem) end
+    if not ok then error(type(problem)=="string" and problem or "CardTargetSpec opaque failure",0) end
     for _,label in ipairs(failures) do print("FAIL CardTargetSpec: "..label) end
     return {passed=passed,failed=failed}
 end

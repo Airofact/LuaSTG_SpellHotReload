@@ -6,14 +6,14 @@
 -- Fresh live has {capture,snapshot,entry,session_id,classes,released?,poisoned?}.
 -- Target owns copied names/restart scalars, not an alias to binding.names.
 -- Full FIRST-load ownership (including other classes/placeholders) is checked.
--- No parsing, compiling, debug API, game calls, joins, writes, cache or restart.
+-- No parsing, compiling, debug API, game calls, joins or publication.
 -- LocateDiscovery / CheckDiscovery prove a CURRENT root source correspondence.
 -- LocateFileDiscovery / CheckFileDiscovery enumerate genuine captured owners
 -- without practice bindings. They prove correspondence, NOT binding safety,
 -- publication permission or complete file coverage.
 -- Pure tables are read-only by contract; release targets with their session.
 local Card = require("SpellHotReload.Adapters.Card.Card")
-local M = { Kind="SpellHotReload.CardTarget", Version=1 }
+local M = { Kind="SpellHotReload.CardTarget", Version=2 }
 local function plain(v) return type(v)=="table" and getmetatable(v)==nil end
 local function integer(v, minimum)
     return type(v)=="number" and v>=minimum and v<math.huge and v==math.floor(v)
@@ -38,33 +38,40 @@ local function file_of(live)
 end
 local function session(capture,live)
     local file=file_of(live)
-    if not plain(capture)
-        or capture.kind~="SpellHotReload.LoadVersions" or capture.version~=1
-        or not plain(capture.snapshot) or not plain(live) then
-        return fail("unsupported","first-load capture and fresh live required",file)
+    local Files=require("SpellHotReload.Pipeline.FileVersions")
+    if not Files.Validate(capture) or not plain(live) then
+        return fail("unsupported","common first-load capture and fresh live required",file)
     end
-    local base,entry=capture.snapshot,live.entry
-    if base.kind~="SpellHotReload.CardVersions" or base.version~=1
-        or not integer(base.revision,0) or type(base.session_id)~="string"
-        or base.session_id=="" or not plain(entry) or type(base.anchor)~="function"
-        or type(base.file)~="string" or base.file=="" then
-        return fail("unsupported","valid publication snapshot required",file)
+    local snapshot,entry=capture.snapshot,live.entry
+    local group,initial=Files.Owner(capture,Card)
+    if not group or group.state.kind~="SpellHotReload.CardVersions" or group.state.version~=2
+        or not plain(initial.evidence) then return fail("ownership","original Card contribution required",file) end
+    if live.released or live.poisoned or live.capture~=capture or live.snapshot~=snapshot
+        or live.session_id~=snapshot.session_id or snapshot.entry~=entry
+        or entry.anchor~=snapshot.anchor or entry.file~=snapshot.file
+        or entry.loaded_source~=snapshot.loaded_source or entry.reloadable~=true or entry.missing then
+        return fail("stale","session, capture, anchor or common publication snapshot changed",file)
     end
-    if live.released or live.poisoned or live.capture~=capture or live.snapshot~=base
-        or live.session_id~=base.session_id or base.entry~=entry
-        or entry.anchor~=base.anchor or entry.file~=base.file
-        or entry.loaded_source~=base.loaded_source or entry.reloadable~=true or entry.missing then
-        return fail("stale","session, capture, anchor or publication snapshot changed",file)
-    end
-    return {base=base,entry=entry,file=base.file}
+    return {base=group.state,group=group,initial=initial.evidence,snapshot=snapshot,entry=entry,file=snapshot.file}
 end
 local function ownership(base,capture,live,file)
-    if not plain(live.classes) or live.classes~=capture.classes
-        or dense(capture.ownership)==nil or dense(base.order)==nil or not plain(base.units) then
+    local group,initial=require("SpellHotReload.Pipeline.FileVersions").Owner(capture,Card)
+    local evidence=initial and initial.evidence
+    if not group or group.state~=base or not plain(evidence) or dense(base.order)==nil or not plain(base.units) then
+        return fail("ownership","actual Card contribution required",file)
+    end
+    if evidence.empty then
+        if #base.order~=0 or next(base.units) or #evidence.ownership~=0 then
+            return fail("ownership","empty Card contribution changed",file)
+        end
+        return {}
+    end
+    if not plain(live.classes) or live.classes~=evidence.classes
+        or dense(evidence.ownership)==nil then
         return fail("ownership","first-load class ownership required",file)
     end
     local owners,seen={},{}
-    for _,owner in ipairs(capture.ownership) do
+    for _,owner in ipairs(evidence.ownership) do
         if not plain(owner) or type(owner.class_key)~="string" or owners[owner.class_key]
             or not plain(owner.class) or rawget(live.classes,owner.class_key)~=owner.class
             or not rawequal(rawget(owner.class,"cards"),owner.list) or dense(owner.slots)==nil
@@ -135,7 +142,7 @@ local function resolve(binding,capture,live)
         names[slot]=current
     end
     return {kind=M.Kind,version=M.Version,file=base.file,session_id=base.session_id,
-        capture=capture,snapshot=base,base_revision=base.revision,entry=entry,classes=live.classes,
+        capture=capture,snapshot=context.snapshot,card_group=context.group,base_revision=context.snapshot.revision,entry=entry,classes=live.classes,
         key=selected.key,unit=selected,class_key=selected.class_key,class=owner.class,
         list=owner.list,card=selected.card,slot=selected.slot,name=name(binding.name),
         names=names,mode=binding.mode,include_previous=binding.include_previous==true}
@@ -147,7 +154,7 @@ local function check(target,binding,capture,live)
     end
     local fresh,err=resolve(binding,capture,live)
     if not fresh then return nil,err end
-    for _,field in ipairs({"file","session_id","capture","snapshot","base_revision","entry","classes",
+    for _,field in ipairs({"file","session_id","capture","snapshot","card_group","base_revision","entry","classes",
         "key","unit","class_key","class","list","card","slot","name","mode","include_previous"}) do
         if not rawequal(rawget(target,field),rawget(fresh,field)) then
             return fail("stale","current target or restart context changed",fresh.file)
@@ -234,18 +241,17 @@ local function discovery_classes(target,snapshot,live)
     local common=plain(snapshot) and snapshot.common
     if not plain(common) or common.file~=file or common.session_id~=target.session_id
         or common.registry_entry~=target.entry or common.loaded_source~=base.loaded_source
-        or common.base_revision~=target.base_revision or common.published_units~=base
-        or type(common.content)~="string" or live.content~=common.content then
+        or common.base_revision~=target.base_revision or common.capture~=live.capture
+        or target.snapshot~=live.capture.snapshot
+        or not plain(common.source) or type(common.source.content)~="string" or live.content~=common.source.content
+        or live.generation~=common.generation then
         return fail("stale","candidate discovery or fresh bytes disagree",file)
     end
-    local analysis=snapshot.analysis
-    local source=common.content
-    if source:sub(1,3)=="\239\187\191" then source=source:sub(4) end
-    if not plain(analysis) or common.analysis~=analysis or analysis.source~=source
-        or analysis.source_offset~=#common.content-#source
+    local source=common.source
+    if not require("SpellHotReload.Source.FileAnalysis").Validate(source)
         or dense(snapshot.entries)==nil or not plain(snapshot.by_key)
         or not plain(snapshot.adapter_contexts) then
-        return fail("unsupported","complete source discovery required",file)
+        return fail("unsupported","complete common-source discovery required",file)
     end
     local file_context=snapshot.adapter_contexts.card
     if not plain(file_context) or file_context.carrier~="card"
@@ -292,7 +298,7 @@ local function locate_discovery(target,snapshot,binding,capture,live)
     local common=snapshot.common
     local chosen=classes.by_class[target.class_key]
     if not chosen then return fail("ambiguous","current class is absent from candidate",file) end
-    local before=plain(base.layout) and base.layout[target.class_key]
+    local before=plain(target.card_group.state.layout) and target.card_group.state.layout[target.class_key]
     if not layout_valid(before) or #before~=#target.names
         or not before[target.slot] or before[target.slot].kind~="card" then
         return fail("ownership","captured source layout unavailable",file)
@@ -301,7 +307,7 @@ local function locate_discovery(target,snapshot,binding,capture,live)
     local slot,reason=source_slot(before,after,target)
     if not slot then return fail("ambiguous",reason,file) end
     return {kind=M.Kind..".DiscoveryLocation",version=M.Version,target=target,
-        discovery=snapshot,content=common.content,generation=common.candidate_generation,
+        discovery=snapshot,content=common.source.content,generation=common.generation,
         key=target.key,source_key=chosen.unit.key,entry=chosen,descriptor=after[slot],
         candidate_slot=slot,candidate_name=name(after[slot].name),match=reason}
 end
@@ -329,18 +335,18 @@ local function locate_file(snapshot,capture,live)
     local owners,oerr=ownership(base,capture,live,file)
     if not owners then return nil,oerr end
     local report={kind=M.Kind..".FileDiscovery",version=M.Version,
-        file=file,session_id=base.session_id,capture=capture,snapshot=base,
-        base_revision=base.revision,entry=context.entry,classes=live.classes,
+        file=file,session_id=base.session_id,capture=capture,snapshot=context.snapshot,card_group=context.group,
+        base_revision=context.snapshot.revision,entry=context.entry,classes=live.classes,
         discovery=snapshot,order={},by_key={},located={},pending={},unowned={}}
     local classes,cerr=discovery_classes(report,snapshot,live)
     if not classes then return nil,cerr end
-    report.content=snapshot.common.content
-    report.generation=snapshot.common.candidate_generation
+    report.content=snapshot.common.source.content
+    report.generation=snapshot.common.generation
     -- All slot identities (including placeholders) were checked above. Only
     -- source-described cards with an explicit init are publication units, as
     -- at first load; framework placeholders may still have is_combat=true.
     -- A missing generated unit remains a file-wide capture failure.
-    for _,owner in ipairs(capture.ownership) do
+    for _,owner in ipairs(context.initial.ownership) do
         local before=plain(base.layout) and rawget(base.layout,owner.class_key)
         if not layout_valid(before) or #before~=#owner.slots then
             return fail("ownership","captured source layout unavailable",file)
@@ -449,7 +455,7 @@ local function check_file(report,capture,live)
     end
     local fresh,err=locate_file(report.discovery,capture,live)
     if not fresh then return nil,err end
-    local changed=not equal_fields(report,fresh,{"file","session_id","capture","snapshot",
+    local changed=not equal_fields(report,fresh,{"file","session_id","capture","snapshot","card_group",
         "base_revision","entry","classes","discovery","content","generation"})
         or not equal_list(report.order,fresh.order) or not equal_list(report.located,fresh.located)
         or not equal_list(report.pending,fresh.pending) or not plain(report.by_key)
@@ -511,4 +517,172 @@ function M.SourceSlot(before,after,target)
         or dense(target.names)~=#before then return nil,"invalid source alignment input" end
     return source_slot(before,after,target)
 end
+
+-- Card-private restart proofs retain actual publication REFERENCES only. This
+-- weak map owns no versions or candidate analysis and cannot authorize writes.
+-- The workflow owns request state; release drops its run and hence this proof.
+local restart_proofs=setmetatable({},{__mode="k"})
+local restart_fields={"file","session_id","entry","anchor","capture","classes",
+    "class_key","class","list","card","slot","name","raw_name","include_previous","key"}
+local function restart_shape(run)
+    local proof=plain(run) and restart_proofs[run]
+    if not proof then return fail("ownership","Card-owned frozen restart proof required") end
+    for _,field in ipairs(restart_fields) do
+        if not rawequal(rawget(run,field),proof.fields[field]) then
+            return fail("stale","frozen restart scalar or identity changed",proof.fields.file)
+        end
+    end
+    return proof
+end
+local function freeze_restart(target,capture)
+    if not plain(target) then return fail("unsupported","resolved Card target required") end
+    local live={capture=capture,snapshot=capture and capture.snapshot,entry=target.entry,
+        session_id=target.session_id,classes=target.classes}
+    local binding={class_key=target.class_key,card=target.card,slot=target.slot,name=target.name,
+        mode=target.mode,names=target.names,include_previous=target.include_previous}
+    local ok,err=check(target,binding,capture,live)
+    if not ok then return nil,err end
+    local group,initial=require("SpellHotReload.Pipeline.FileVersions").Owner(capture,Card)
+    local run={kind="versioned-card-restart",file=target.file,session_id=target.session_id,
+        entry=target.entry,anchor=target.entry.anchor,capture=capture,classes=target.classes,
+        class_key=target.class_key,class=target.class,list=target.list,card=target.card,
+        slot=target.slot,name=target.name,raw_name=rawget(target.card,"name"),
+        include_previous=target.include_previous,key=target.key}
+    local fields={};for _,field in ipairs(restart_fields) do fields[field]=rawget(run,field) end
+    restart_proofs[run]={fields=fields,base=capture.snapshot,group=group,initial=initial,
+        unit=target.unit,unit_ref=target.unit.unit_ref}
+    return run
+end
+local function restart_card_versions(before,after,delta,file)
+    if dense(after.order)~=#before.order or not plain(after.units) then
+        return fail("ownership","committed Card index changed",file)
+    end
+    local expected,actual,keys={},{},{}
+    for _,ref in ipairs(delta.unit_refs) do actual[ref]=true end
+    for i,key in ipairs(before.order) do
+        local old,unit=before.units[key],rawget(after.units,key)
+        if after.order[i]~=key or not plain(unit) or unit.key~=key or unit.card~=old.card
+            or unit.unit_ref~=old.unit_ref or unit.class_key~=old.class_key or unit.slot~=old.slot
+            or not plain(unit.callbacks) then return fail("ownership","committed Card identity changed",file) end
+        keys[key]=true
+        local changed=false
+        for _,name in ipairs({"before","init","frame","render","beforedel","del","after"}) do
+            local cb,previous=rawget(unit.callbacks,name),rawget(old.callbacks,name)
+            if not plain(cb) or not plain(previous) or type(cb.fn)~="function" or cb.unit_ref~=old.unit_ref then
+                return fail("ownership","committed callback record required",file)
+            end
+            local advanced=cb.fn~=previous.fn
+            if cb.definition_version~=previous.definition_version+(advanced and 1 or 0)
+                or not advanced and (cb.body~=previous.body or cb.signature~=previous.signature) then
+                return fail("ownership","committed callback version disagrees with publication",file)
+            end
+            changed=changed or advanced
+        end
+        if unit.definition_version~=old.definition_version+(changed and 1 or 0) then
+            return fail("ownership","committed Card version disagrees with callback changes",file)
+        end
+        if changed then expected[old.unit_ref]=true end
+    end
+    for key in next,after.units do if not keys[key] then return fail("ownership","foreign committed Card unit",file) end end
+    for ref in next,expected do if not actual[ref] then return fail("ownership","receipt lost changed Card unit",file) end end
+    for ref in next,actual do if not expected[ref] then return fail("ownership","receipt claims unchanged Card unit",file) end end
+    return true
+end
+local function bind_restart(run,receipt,capture)
+    local proof,err=restart_shape(run);if not proof then return nil,err end
+    local Files=require("SpellHotReload.Pipeline.FileVersions")
+    if proof.receipt or capture~=proof.fields.capture or not Files.Validate(capture)
+        or not plain(receipt) or receipt.kind~="SpellHotReload.FileCommit.Receipt" or receipt.version~=1
+        or receipt.file~=run.file or receipt.snapshot~=capture.snapshot
+        or type(receipt.changed)~="boolean" or dense(receipt.owner_deltas)~=#proof.base.owners then
+        return fail("ownership","successful common receipt for frozen capture required",run.file)
+    end
+    local snapshot=capture.snapshot
+    if snapshot.entry~=proof.base.entry or snapshot.session_id~=proof.base.session_id
+        or snapshot.anchor~=proof.base.anchor or snapshot.loaded_source~=proof.base.loaded_source
+        or receipt.changed~=(snapshot~=proof.base)
+        or snapshot.revision~=proof.base.revision+(receipt.changed and 1 or 0) then
+        return fail("stale","receipt does not describe the next actual file publication",run.file)
+    end
+    local any,card_delta=false,nil
+    for i,old in ipairs(proof.base.owners) do
+        local group,delta=snapshot.owners[i],receipt.owner_deltas[i]
+        if not plain(delta) or group.owner~=old.owner or group.owner_id~=old.owner_id
+            or delta.owner~=old.owner or delta.owner_id~=old.owner_id
+            or type(delta.changed)~="boolean" or dense(delta.unit_refs)==nil
+            or delta.changed~=(group~=old) or delta.changed~=(#delta.unit_refs>0) then
+            return fail("ownership","receipt owner delta disagrees with actual groups",run.file)
+        end
+        local owned,seen={},{}
+        for _,unit in ipairs(old.units) do owned[unit.unit_ref]=true end
+        for _,ref in ipairs(delta.unit_refs) do
+            if not owned[ref] or seen[ref] then return fail("ownership","foreign or duplicate receipt unit",run.file) end
+            seen[ref]=true
+        end
+        any=any or delta.changed
+        if old.owner==Card then card_delta=delta end
+    end
+    if any~=receipt.changed then return fail("ownership","receipt change flag disagrees with owners",run.file) end
+    local group,initial=Files.Owner(capture,Card)
+    local unit=group and rawget(group.state.units,run.key)
+    if initial~=proof.initial or not plain(unit) or unit.unit_ref~=proof.unit_ref
+        or unit.card~=run.card or unit.key~=run.key or unit.class_key~=run.class_key or unit.slot~=run.slot
+        or not plain(unit.callbacks) then
+        return fail("ownership","committed Card target or version changed",run.file)
+    end
+    local valid,why=restart_card_versions(proof.group.state,group.state,card_delta,run.file)
+    if not valid then return nil,why end
+    for _,name in ipairs({"before","init","frame","render","beforedel","del","after"}) do
+        if rawget(run.card,name)~=unit.callbacks[name].fn then
+            return fail("stale","committed callback disagrees with live target",run.file)
+        end
+    end
+    proof.receipt,proof.snapshot,proof.committed_group,proof.committed_unit=receipt,snapshot,group,unit
+    return true
+end
+local function check_restart(run,live)
+    local proof,err=restart_shape(run);if not proof then return nil,err end
+    local capture=proof.fields.capture
+    local Files=require("SpellHotReload.Pipeline.FileVersions")
+    if not plain(live) or not proof.receipt or not Files.Validate(capture)
+        or capture.snapshot~=proof.snapshot or run.snapshot~=proof.snapshot or run.receipt~=proof.receipt
+        or proof.receipt.snapshot~=proof.snapshot
+        or live.released or live.poisoned or live.publication_error
+        or live.entry~=run.entry or live.session_id~=run.session_id
+        or run.entry.anchor~=run.anchor or (run.entry.reloadable~=true and not run.entry.missing)
+        or live.classes~=run.classes or rawget(run.card,"name")~=run.raw_name then
+        return fail("stale","frozen restart target or session changed; restart game",run.file)
+    end
+    -- Missing may retire the Plugin versions lookup; the committed run retains
+    -- its original capture. Do not use normal session(), which rejects Missing.
+    local group,initial=Files.Owner(capture,Card)
+    if group~=proof.committed_group or initial~=proof.initial
+        or rawget(group.state.units,run.key)~=proof.committed_unit then
+        return fail("stale","committed Card publication changed; restart game",run.file)
+    end
+    local owners,oerr=ownership(group.state,capture,live,run.file)
+    if not owners then return nil,oerr end
+    local owner=owners[run.class_key]
+    if not owner or owner.class~=run.class or owner.list~=run.list or owner.slots[run.slot]~=run.card then
+        return fail("ownership","frozen Card owner changed; restart game",run.file)
+    end
+    -- Preserve the established retry contract: full first-load slot identities
+    -- and selected actual callbacks. Scalar values may evolve normally. Shared
+    -- cell integrity is checked by publication Guards, not rescanned on Retry.
+    for _,name in ipairs({"before","init","frame","render","beforedel","del","after"}) do
+        local cb=proof.committed_unit.callbacks[name]
+        if rawget(run.card,name)~=cb.fn then return fail("stale","committed callback changed; restart game",run.file) end
+    end
+    return true
+end
+function M.FreezeRestart(target,capture)
+    return protected(freeze_restart,nil,target,capture)
+end
+function M.BindRestart(run,receipt,capture)
+    return protected(bind_restart,nil,run,receipt,capture)
+end
+function M.CheckRestart(run,live)
+    return protected(check_restart,live,run,live)
+end
+
 return M

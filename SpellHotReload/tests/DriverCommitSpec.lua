@@ -1,217 +1,141 @@
--- One prepared aggregate, exact-input scoped writer; no general group transaction.
+-- Exact registration is not publication. All owners register before ONE writer.
 local M={}
+local serial=0
 function M.run()
     local Driver=require("SpellHotReload.Pipeline.Driver")
-    local Card=require("SpellHotReload.Adapters.Card.Card")
+    local Load=require("SpellHotReload.Load.AnchorLoad")
+    local Versions=require("SpellHotReload.Pipeline.FileVersions")
     local passed,failed,failures=0,0,{}
     local function test(v,label)
         if v then passed=passed+1 else failed=failed+1;failures[#failures+1]=label end
     end
     local function eq(a,b,label) test(rawequal(a,b),label) end
-    local function copy(t) local r={};for k,v in next,t do r[k]=v end;return r end
-    local hooks,writes,traps=0,0,0
-    local hostile=setmetatable({},{
-        __index=function() traps=traps+1;error("hostile index") end,
-        __tostring=function() traps=traps+1;error("hostile tostring") end})
-    local function fixture(keys)
+    local function fixture()
+        serial=serial+1
         local driver=Driver.New()
-        local adapter={Id="value",ContractVersion=4,Reconcile=function() error("unexpected reconciliation") end}
-        adapter.Match=function()
-            local units,claims={},{}
-            for i,key in ipairs({"value:a","value:b"}) do
-                units[i]={key=key,carrier="value",source_ranges={{first=i,last=i}},context={}}
-                claims[i]={kind="definition",key=key,unit_key=key}
-            end
-            return {units=units,claims=claims,context={}}
+        local owners={}
+        for _,id in ipairs({"alpha","beta"}) do
+            local owner={Id=id,ContractVersion=5}
+            owner.Match=function() return {units={},claims={},context={}} end
+            owner.Reconcile=function() return {rows={},view={},units={},exports={}} end
+            owner.Locate=function() error("unexpected Locate replay") end
+            owner.Inject=function() error("unexpected Inject replay") end
+            owner.Commit=function(h,f,c) return c.adapter.register(h,f,c) end
+            assert(driver:RegisterDiscovery(owner));owners[#owners+1]=owner
         end
-        adapter.Locate=function(u,c) return {unit=u,context=c} end
-        adapter.Inject=function(h,u,c) return {handle=h,unit=u,context=c} end
-        adapter.Commit=function(h,p,c)
-            hooks=hooks+1
-            local receipt,err=c.adapter.transaction(h,p,c)
-            return receipt~=nil,err,receipt
+        local entry=assert(Load.Capture("local state=1",{name="Register_Boss.lua"}))
+        entry.file="Register_Boss.lua"
+        local contributions={}
+        for i,owner in ipairs(owners) do
+            contributions[i]={owner=owner,owner_id=owner.Id,state={},units={},records={},functions={},edges={},
+                initial={},identity_objects={},authority={cells={},raws={},forbidden={}}}
         end
-        adapter.Restartable=true
-        adapter.Restart=function() error("restart forbidden") end
-        assert(driver:RegisterDiscovery(adapter))
-        local discovery=assert(driver:Discover("F.lua","G=12",{}))
-        local prepared=assert(driver:PrepareDiscovery(discovery,keys or {"value:a"}))
-        adapter.Match=function() error("Match replay forbidden") end
-        adapter.Locate=function() error("Locate replay forbidden") end
-        adapter.Inject=function() error("Inject replay forbidden") end
-        driver.Commit=function() error("legacy commit forbidden") end
-        driver.Restart=function() error("legacy restart forbidden") end
-        return driver,prepared,adapter
+        local capture=assert(Versions.Capture(entry,"RegisterSpec:"..serial,contributions))
+        local discovery=assert(driver:Discover(entry.file,entry.source,{session_id=capture.snapshot.session_id}))
+        local operation={file=entry.file,entry=entry,anchor=entry.anchor,loaded_source=entry.loaded_source,
+            capture=capture,base_snapshot=capture.snapshot,source=entry.source,generation=1,
+            session_id=capture.snapshot.session_id,mode="file"}
+        local prepared={kind="SpellHotReload.Driver.PreparedDiscovery",version=2,owner=driver,
+            operation=operation,discovery=discovery,entries={}}
+        for i,group in ipairs(capture.snapshot.owners) do
+            local context={common=discovery.snapshot.common,operation=operation,
+                adapter={file=discovery.snapshot.adapter_contexts[group.owner_id]}}
+            local fragment={operation=operation,owner=group.owner,base_group=group,proposed_group=group}
+            prepared.entries[i]={owner=group.owner,base_group=group,context=context,handle={},fragment=fragment}
+        end
+        return driver,prepared,owners
     end
-    local receipt={snapshot={},changed=true}
-    local function writer(h,p,c)
-        writes=writes+1
-        eq(p.handle,h,"writer same injected handle")
-        eq(p.context,c,"writer same per-call context")
-        return receipt
-    end
-    local function rejected(driver,p,transaction,label)
-        local before_h,before_w=hooks,writes
-        local called,ok,err=pcall(driver.CommitDiscovery,driver,p,transaction)
-        eq(called,true,label.." safe");eq(ok,false,label.." refused")
-        eq(type(err),"table",label.." structured")
-        if type(err)=="table" then eq(err.phase,"commit",label.." phase") end
-        eq(hooks,before_h,label.." before hook");eq(writes,before_w,label.." before writer")
-    end
-    local prepare,commit=Card.PrepareVersioned,Driver.CommitDiscovery
-    local bridge,locate,inject=Card.RuntimeContext,Card.Locate,Card.Inject
     local ok,problem=pcall(function()
-        local driver,p,adapter=fixture()
-        local record=p.entries[1]
-        local saved_writer
-        adapter.Commit=function(h,plan,c)
-            hooks=hooks+1
-            eq(h,record.handle,"dispatch original handle");eq(plan,record.plan,"dispatch original plan")
-            eq(c,record.context,"dispatch original context")
-            eq(c.common.transaction,nil,"common has no writer")
-            saved_writer=c.adapter.transaction
-            for _,tuple in ipairs({{{},plan,c},{h,{},c},{h,plan,{}}}) do
-                local before=writes
-                local v,e=saved_writer(unpack(tuple))
-                eq(v,nil,"foreign tuple refused");eq(e.code,"ownership","foreign tuple diagnosis")
-                eq(writes,before,"foreign tuple cannot consume writer")
+        local calls,hooks=0,0
+        local receipt={kind="SpellHotReload.FileCommit.Receipt"}
+        local function transaction(op,fragments)
+            calls=calls+1
+            eq(#fragments,2,"transaction receives both owners")
+            eq(fragments[1].operation,op,"one operation for first owner")
+            eq(fragments[2].operation,op,"one operation for second owner")
+            return receipt
+        end
+        local driver,p,owners=fixture()
+        for _,owner in ipairs(owners) do
+            owner.Commit=function(h,f,c) hooks=hooks+1;eq(calls,0,"no publication during registration");return c.adapter.register(h,f,c) end
+        end
+        eq(driver:CommitDiscovery(p,transaction),receipt,"returns unique receipt directly")
+        eq(calls,1,"one transaction after both registrations");eq(hooks,2,"both hooks run")
+        for _,record in ipairs(p.entries) do eq(record.context.adapter.register,nil,"registration writer revoked") end
+        for _,kind in ipairs({"refuse","throw","zero","double","foreign","receipt","scope","postcheck"}) do
+            driver,p,owners=fixture();calls=0
+            local retained,old_scope
+            owners[1].Commit=function(h,f,c) return c.adapter.register(h,f,c) end
+            owners[2].Commit=function(h,f,c)
+                retained=c.adapter.register;old_scope=c.adapter
+                if kind=="refuse" then return false end
+                if kind=="throw" then error({}) end
+                if kind=="zero" then return true end
+                if kind=="foreign" then retained({},f,c);return true end
+                local accepted=retained(h,f,c)
+                if kind=="double" then retained(h,f,c) end
+                if kind=="receipt" then return accepted,receipt end
+                if kind=="scope" then c.adapter={} end
+                if kind=="postcheck" then p.discovery.snapshot=nil end
+                return accepted
             end
-            local result,err=saved_writer(h,plan,c)
-            local v,e=saved_writer(h,plan,c)
-            eq(v,nil,"second write refused");eq(e.code,"stale","single use diagnosis")
-            return result~=nil,err,result
-        end
-        local published,err,result=driver:CommitDiscovery(p,writer)
-        eq(published,true,"success boolean");eq(err,nil,"success error");eq(result,receipt,"receipt identity")
-        eq(writes,1,"one atomic writer call")
-        eq(record.context.adapter.transaction,nil,"writer revoked after success")
-        eq(record.entry.context.adapter.transaction,nil,"discovery context clean")
-        local v,e=saved_writer(record.handle,record.plan,record.context)
-        eq(v,nil,"retained writer expired");eq(e.code,"stale","retained writer diagnosis")
-        eq(writes,1,"retained writer cannot republish")
-        -- No Driver receipt installs/restart/cached permissions: kernel owns replay.
-        driver,p,adapter=fixture()
-        local original=p.entries[1]
-        local reason={phase="commit",code="stale",message="kernel declined"}
-        v,e=driver:CommitDiscovery(p,function() return nil,reason end)
-        eq(v,false,"writer refusal boolean");eq(e,reason,"writer refusal identity")
-        eq(original.context.adapter.transaction,nil,"writer revoked after kernel refusal")
-        adapter.Commit=function(h,plan,c) saved_writer=c.adapter.transaction;return false,hostile end
-        v,e=driver:CommitDiscovery(p,writer)
-        eq(v,false,"adapter refusal boolean");eq(e,hostile,"opaque refusal unchanged")
-        eq(original.context.adapter.transaction,nil,"writer revoked after adapter refusal")
-        local unused,value=pcall(saved_writer,original.handle,original.plan,original.context)
-        eq(unused,true,"unused expired writer refuses safely");eq(value,nil,"unused writer expires")
-        for _,from in ipairs({"adapter","writer"}) do
-            driver,p,adapter=fixture()
-            record=p.entries[1]
-            adapter.Commit=function(h,plan,c)
-                saved_writer=c.adapter.transaction
-                if from=="adapter" then error(hostile) end
-                local r,why=saved_writer(h,plan,c);return r~=nil,why,r
+            local safe,value,err=pcall(driver.CommitDiscovery,driver,p,transaction)
+            eq(safe,true,kind.." safely rejected")
+            eq(value,nil,kind.." has no receipt");eq(type(err),"table",kind.." structured failure")
+            eq(calls,0,kind.." zero transactions after earlier registration")
+            eq(old_scope.register,nil,kind.." scope always revoked")
+            if retained then
+                local active,v,why=pcall(retained,p.entries[2].handle,p.entries[2].fragment,p.entries[2].context)
+                eq(active,true,kind.." expired writer safe");eq(v,nil,kind.." retained writer expired")
+                eq(why.code,"stale",kind.." expiry diagnosis")
             end
-            local called,thrown=pcall(driver.CommitDiscovery,driver,p,function() error(hostile) end)
-            eq(called,false,from.." throw propagated");eq(thrown,hostile,from.." throw identity")
-            eq(record.context.adapter.transaction,nil,from.." writer revoked after throw")
-            local safe,value=pcall(saved_writer,record.handle,record.plan,record.context)
-            eq(safe,true,from.." expired writer refuses safely");eq(value,nil,from.." saved writer expired")
         end
-        -- Invalid aggregate/ownership/contract cannot enter either callback.
-        driver,p,adapter=fixture()
-        rejected(Driver.New(),p,writer,"foreign driver")
-        rejected(driver,nil,writer,"nil artifact")
-        rejected(driver,hostile,writer,"hostile artifact")
-        for _,change in ipairs({
-            function(q) q.kind="legacy" end,function(q) q.version=2 end,
-            function(q) q.owner={} end,function(q) q.file="Other.lua" end,
-            function(q) q.content="different" end,function(q) q.entries=hostile end,
-            function(q) q.entries={} end,
-            function(q) q.entries={[2]=q.entries[1]} end,
-            function(q) q.entries={q.entries[1],q.entries[1]} end,
-            function(q) q.entries={q.entries[1],extra=true} end,
-            function(q) q.entries={hostile} end,
-            function(q) q.discovery={} end}) do
-            local q=copy(p);change(q);rejected(driver,q,writer,"bad aggregate")
+        -- Expired registration closures must not retain operation or context.
+        driver,p,owners=fixture()
+        local retained,weak
+        owners[1].Commit=function(h,f,c)
+            retained=c.adapter.register
+            weak=setmetatable({c,c.operation},{__mode="v"})
+            return retained(h,f,c)
         end
-        for _,field in ipairs({"entry","adapter","unit","context","handle","plan"}) do
-            local q=copy(p);q.entries={copy(p.entries[1])};q.entries[1][field]=false
-            rejected(driver,q,writer,"bad record "..field)
+        assert(driver:CommitDiscovery(p,transaction))
+        driver,p,owners=nil,nil,nil
+        collectgarbage("collect");collectgarbage("collect")
+        eq(weak[1],nil,"expired writer releases context")
+        eq(weak[2],nil,"expired writer releases operation")
+        local active,v=pcall(retained)
+        eq(active,true,"detached writer safely rejects");eq(v,nil,"detached writer expired")
+        -- Validate the COMPLETE owner list before invoking even the first hook.
+        local function reject(change,label)
+            driver,p,owners=fixture();calls=0;hooks=0
+            owners[1].Commit=function() hooks=hooks+1;return true end
+            change(p,owners,driver)
+            local safe,value=pcall(driver.CommitDiscovery,driver,p,transaction)
+            eq(safe,true,label.." safe");eq(value,nil,label.." refused")
+            eq(hooks,0,label.." no early hook");eq(calls,0,label.." no transaction")
         end
-        for _,context in ipairs({hostile,{}, {common={},adapter={}},
-            {common=p.discovery.snapshot.common,adapter=hostile},
-            {common=p.discovery.snapshot.common,adapter={file={},unit=p.entries[1].unit.context}},
-            {common=p.discovery.snapshot.common,adapter={file=p.entries[1].context.adapter.file,unit={}}}}) do
-            local q=copy(p);q.entries={copy(p.entries[1])};q.entries[1].context=context
-            rejected(driver,q,writer,"bad context")
+        reject(function(q) q.owner={} end,"foreign driver")
+        reject(function(q) q.entries={} end,"missing owners")
+        reject(function(q) q.entries[3]=q.entries[1] end,"duplicate owner")
+        reject(function(q) q.entries[1]=nil end,"sparse owners")
+        reject(function(q) q.entries[2].fragment={} end,"foreign fragment")
+        reject(function(q) q.entries[2].context.common={} end,"foreign common")
+        reject(function(q) q.entries[2].context.adapter.file={} end,"foreign owner context")
+        reject(function(q) q.entries[2].context.adapter.register=function() end end,"existing writer")
+        reject(function(q,o) o[2].Id="replacement" end,"changed owner Id")
+        reject(function(q,o) o[2].ContractVersion=4 end,"old contract")
+        reject(function(q,o) o[2].Commit=false end,"missing hook")
+        driver,p,owners=fixture();calls=0
+        local nested
+        owners[1].Commit=function(h,f,c)
+            nested=driver:CommitDiscovery(p,transaction)
+            return c.adapter.register(h,f,c)
         end
-        rejected(driver,p,false,"nonfunction writer")
-        local scope=p.entries[1].context.adapter
-        scope.transaction=writer
-        rejected(driver,p,writer,"existing writer")
-        eq(scope.transaction,writer,"existing writer untouched");scope.transaction=nil
-        local hook=adapter.Commit;adapter.Commit=false
-        rejected(driver,p,writer,"invalid adapter contract");adapter.Commit=hook
-        local id=adapter.Id;adapter.Id="other"
-        rejected(driver,p,writer,"changed adapter Id");adapter.Id=id
-        local multi=assert(driver:PrepareDiscovery(p.discovery,{})) -- no hooks for empty
-        rejected(driver,multi,writer,"empty prepared result")
-        driver,p,adapter=fixture({"value:a","value:b"})
-        rejected(driver,p,writer,"multiple prepared aggregates")
-        -- Reentrant same-context dispatch is rejected while writer is installed.
-        driver,p,adapter=fixture()
-        adapter.Commit=function(h,plan,c)
-            local before=hooks
-            local inner,why=driver:CommitDiscovery(p,writer)
-            eq(inner,false,"nested dispatch refused");eq(why.code,"ownership","nested diagnosis")
-            eq(hooks,before,"nested no hook")
-            local r,err=c.adapter.transaction(h,plan,c);return r~=nil,err,r
-        end
-        eq(select(1,driver:CommitDiscovery(p,writer)),true,"outer dispatch survives nested refusal")
-        -- Card.PrepareVersioned must preserve the SAME whole generic artifact.
-        local cd=Driver.New();assert(cd:RegisterDiscovery(Card))
-        local bytes="_editor_class['K'].cards={}\n_tmp_sc=boss.card.New('A',1,2,3,4)\nfunction _tmp_sc:init() end\ntable.insert(_editor_class['K'].cards,_tmp_sc)"
-        local found=assert(cd:Discover("K_Boss.lua",bytes))
-        local entry=found.snapshot.by_key["card:K"]
-        local ctx={common=entry.context.common,adapter={file=entry.context.adapter.file,unit=entry.unit.context}}
-        local handle={target={},live={},location={}};local plan={}
-        Card.RuntimeContext=function() return entry.unit,ctx end
-        Card.Locate=function() return handle end
-        Card.Inject=function() return plan end
-        local wrapper=assert(Card.PrepareVersioned({},found,{},{},function() end))
-        eq(wrapper.driver_prepared.owner,cd,"Card retains generic owner")
-        eq(wrapper.driver_prepared.discovery,found,"Card retains complete discovery")
-        eq(wrapper.driver_prepared.entries[1].handle,wrapper.handle,"Card retained located handle")
-        eq(wrapper.driver_prepared.entries[1].plan,wrapper.selection,"Card retained selection")
-        eq(wrapper.driver_prepared.entries[1].context,wrapper.context,"Card retained context")
-        Card.RuntimeContext,Card.Locate,Card.Inject=bridge,locate,inject
-        -- Existing production fixture runs real Plugin/UI/kernel, not a mocked
-        -- dispatch. Spy only observes; all original handoff assertions still run.
-        local production_calls,production_contexts=0,{}
-        Driver.CommitDiscovery=function(self,artifact,atomic)
-            production_calls=production_calls+1
-            eq(artifact.owner,self,"production explicit generic owner")
-            eq(#artifact.entries,1,"production one aggregate")
-            eq(type(atomic),"function","production explicit atomic writer")
-            local context=artifact.entries[1].context
-            production_contexts[#production_contexts+1]=context
-            return commit(self,artifact,atomic)
-        end
-        local handoff=require("SpellHotReload.tests.CardHandoffSpec").run()
-        eq(handoff.failed,0,"production original handoff regression")
-        if type(debug.upvaluejoin)=="function" then
-            eq(production_calls,2,"production Apply dispatches; Retry never redispatches")
-            for _,context in ipairs(production_contexts) do
-                eq(context.adapter.transaction,nil,"production writer revoked")
-            end
-        else
-            eq(production_calls,0,"Lua5.1 genuine sharing gate not bypassed")
-        end
-        eq(traps,0,"no opaque error/artifact metamethods")
+        eq(driver:CommitDiscovery(p,transaction),receipt,"outer registration survives rejected reentry")
+        eq(nested,nil,"nested registration refused")
+        eq(calls,1,"reentry cannot create a second transaction")
     end)
-    Card.PrepareVersioned,Driver.CommitDiscovery=prepare,commit
-    Card.RuntimeContext,Card.Locate,Card.Inject=bridge,locate,inject
-    if not ok then failed=failed+1;failures[#failures+1]="unexpected: "..(type(problem)=="string" and problem or "opaque error") end
-    for _,label in ipairs(failures) do print("FAIL DriverCommitSpec: "..label) end
-    return {passed=passed,failed=failed}
+    if not ok then failed=failed+1;failures[#failures+1]="spec threw: "..(type(problem)=="string" and problem or "opaque error") end
+    return {passed=passed,failed=failed,failures=failures}
 end
 return M

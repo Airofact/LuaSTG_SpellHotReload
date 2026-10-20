@@ -1,6 +1,7 @@
 local UnitIndex = require("SpellHotReload.Pipeline.UnitIndex")
 local FileMatch = require("SpellHotReload.Pipeline.FileMatch")
 local Registry = require("SpellHotReload.Pipeline.NodeRegistry")
+local Source = require("SpellHotReload.Source.FileAnalysis")
 local M = {}
 
 function M.run()
@@ -40,10 +41,11 @@ function M.run()
     local function snapshot(units, claims, content, adapter)
         local snap = {
             units = units, entries = {}, by_key = {}, claim_owners = {},
-            claims = claims or {}, adapter_contexts = {}, bindings = {},
-            common = { file = "F.lua" }, analysis = { statements = {} },
+            claims = claims or {}, adapter_contexts = {},
+            common = { file = "F.lua" },
         }
-        if content ~= nil then snap.common.content = content end
+        -- Structural-only fixture: UnitIndex checks byte bounds, not analysis provenance.
+        if content ~= nil then snap.common.source = { content = content } end
         for i, one in ipairs(units) do
             local entry = {
                 unit = one, adapter = adapter or fixture_adapter,
@@ -76,7 +78,7 @@ function M.run()
     end
     local function adapter(id, match)
         return {
-            ContractVersion = 4, Id = id, Match = match, Reconcile = function() error("unexpected reconciliation") end,
+            ContractVersion = 5, Id = id, Match = match, Reconcile = function() error("unexpected reconciliation") end,
             Locate = hook, Inject = hook, Commit = hook, Restart = hook,
         }
     end
@@ -86,7 +88,7 @@ function M.run()
         return r
     end
     local function discover(r, content)
-        local snap, err = FileMatch.Discover(r, content, { file = "F.lua" })
+        local snap, err = FileMatch.Discover(r, assert(Source.Build(content)), { file = "F.lua" })
         assert(snap ~= nil, err and err.message or "discovery failed")
         return snap
     end
@@ -502,7 +504,7 @@ function M.run()
     eq(functions, 0, "the index carries data only")
 
     local executions = 0
-    local counting = { ContractVersion = 4, Id = "counting", Reconcile=function() error("unexpected reconciliation") end }
+    local counting = { ContractVersion = 5, Id = "counting", Reconcile=function() error("unexpected reconciliation") end }
     for _, name in ipairs({ "Match", "Reconcile", "Locate", "Inject", "Commit", "Restart" }) do
         counting[name] = function() executions = executions + 1 end
     end
@@ -530,7 +532,7 @@ function M.run()
             f:close()
             local fixture = build(discover(registry(adapter("fixture", function(analysis)
                 local units, claims = {}, {}
-                for i, statement in ipairs(analysis.statements) do
+                for i, statement in ipairs(analysis.analysis.statements) do
                     local key = "stmt" .. i
                     local range = statement.source_range
                     units[i] = {

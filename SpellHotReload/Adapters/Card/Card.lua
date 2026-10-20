@@ -1,37 +1,25 @@
--- Card discovery, current/file preparation and caller-bound atomic publication.
--- Practice switching belongs to Runtime.CurrentRestart.
-local CardCallbacks = require("SpellHotReload.Adapters.Card.CardCallbacks")
-local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
-
-local Tree = require("SpellHotReload.Source.SyntaxTree")
-
-local Card = {}
-
-Card.name = "Card"
-Card.Id = "card"
-Card.ContractVersion = 4
-
-local RUNTIME_KIND = "SpellHotReload.Card.RuntimeContext"
-local HANDLE_KIND = "SpellHotReload.Card.VersionedHandle"
-local function runtime_of(context)
-    local adapter = type(context) == "table" and rawget(context, "adapter") or nil
-    if type(adapter) == "table" then return rawget(adapter, "runtime") end
+-- Card owns generated callback/member rules and live practice identity.
+-- Local owns its bindings; Driver resolves finite unit demands; FileCommit is
+-- the ONLY publisher. No nested Local ledger or single-owner transaction path.
+local Source=require("SpellHotReload.Source.FileAnalysis")
+local Versions=require("SpellHotReload.Adapters.Card.CardVersions")
+local Files=require("SpellHotReload.Pipeline.FileVersions")
+local Binding=require("SpellHotReload.Adapters.Card.PracticeBinding")
+local Tree=require("SpellHotReload.Source.SyntaxTree")
+local Card={name="Card",Id="card",ContractVersion=5}
+local CALLBACKS={"before","init","frame","render","beforedel","del","after"}
+local VIEW="SpellHotReload.Card.View"
+local function plain(v) return type(v)=="table" and getmetatable(v)==nil end
+local function integer(v) return type(v)=="number" and v>=1 and v<math.huge and v==math.floor(v) end
+local function dense(v)
+    if not plain(v) then return nil end
+    local count,max=0,0
+    for key in next,v do if not integer(key) then return nil end;count=count+1;max=math.max(max,key) end
+    if count==max then return count end
 end
-local function versioned_refusal(handle, context, phase, detail)
-    local common = type(context)=="table" and rawget(context,"common") or nil
-    local unit = type(handle)=="table" and rawget(handle,"unit") or nil
-    return false, {phase=phase, code="unsupported", message=detail,
-        file=type(common)=="table" and rawget(common,"file") or nil,
-        unit_key=type(unit)=="table" and rawget(unit,"key") or nil}
+local function fail(phase,code,message,context)
+    return nil,{phase=phase,code=code,message=message,file=plain(context) and plain(context.common) and context.common.file}
 end
-
---------------------------------------------------------------------------------
---- discovery: unit / context alignment
---------------------------------------------------------------------------------
-
----Sorted keys of a `{ name = ... }` map, for a stable unit context.
----@param map table?
----@return string[]
 local function names_of(map)
     local names = {}
     if type(map) == "table" then
@@ -134,69 +122,34 @@ function Card.Unit(class_key, ranges, layout)
     }
 end
 
----Discovery Match: publish one unit per card-list class in the file. A file
----without card lists yields an empty success, but a class that owns a list and
----cannot be parsed fails the whole Match (never a silent skip).
----@param analysis table
----@param common table  -- { content = string, ... } from FileMatch
----@return table? result  -- { units, claims, context }
----@return table? error   -- { code, message, unit_key? }
-function Card.Match(analysis, common)
-    local content = type(common) == "table" and common.content or nil
-    if type(content) ~= "string" then
-        return nil, { code = "unsupported", message = "Match needs common.content" }
-    end
-    local classes, reason, code = Card.CardLists(analysis)
-    if classes == nil then
-        return nil, { code = code or "ambiguous", message = reason }
-    end
-    local units, claims = {}, {}
-    for _, class in ipairs(classes) do
-        local ok, layout, perr = pcall(CardCallbacks.Read, content, class.class_key, analysis)
-        if not ok then
-            return nil, { code = "unsupported",
-                message = "card parse failed: " .. tostring(layout),
-                unit_key = class.class_key }
+
+function Card.Match(source,common)
+    local valid,err=Source.Validate(source)
+    if not valid then return nil,err end
+    if not plain(common) or common.source~=source then return fail("match","ownership","same common FileAnalysis required") end
+    local classes,reason,code=Card.CardLists(source.analysis)
+    if not classes then return fail("match",code or "unsupported",reason) end
+    local units,claims={},{}
+    local Callbacks=require("SpellHotReload.Adapters.Card.CardCallbacks")
+    for _,class in ipairs(classes) do
+        local called,layout,why=pcall(Callbacks.Read,source,class.class_key)
+        if not called or not layout then
+            local reason=called and why or layout
+            return nil,{phase="match",code="unsupported",file=common.file,unit_key=class.class_key,
+                message="card parse failed: "..(type(reason)=="string" and reason or "non-string callback layout error")}
         end
-        if layout == nil then
-            return nil, { code = "unsupported",
-                message = "card parse failed: " .. tostring(perr),
-                unit_key = class.class_key }
-        end
-        local unit = Card.Unit(class.class_key, class.ranges, layout)
-        units[#units + 1] = unit
-        for slot, entry in ipairs(layout) do
-            if entry.kind == "card" then
-                claims[#claims + 1] = {
-                    kind = "constructor",
-                    key = class.class_key .. ":" .. slot,
-                    unit_key = unit.key,
-                }
-                for _, name in ipairs(names_of(entry.callbacks)) do
-                    claims[#claims + 1] = {
-                        kind = "callback",
-                        key = class.class_key .. ":" .. slot .. ":" .. name,
-                        unit_key = unit.key,
-                    }
+        local unit=Card.Unit(class.class_key,class.ranges,layout);units[#units+1]=unit
+        for slot,desc in ipairs(layout) do
+            if desc.kind=="card" then
+                claims[#claims+1]={kind="constructor",key=class.class_key..":"..slot,unit_key=unit.key}
+                for _,name in ipairs(names_of(desc.callbacks)) do
+                    claims[#claims+1]={kind="callback",key=class.class_key..":"..slot..":"..name,unit_key=unit.key}
                 end
             end
         end
     end
-    return {
-        units = units,
-        claims = claims,
-        context = { carrier = "card", classes = #units },
-    }
+    return {units=units,claims=claims,context={source=source,carrier="card",classes=#units,units=units}}
 end
-
-local function message(err)
-    if type(err) == "string" then return err end
-    if type(err) == "table" and getmetatable(err) == nil and type(rawget(err, "message")) == "string" then
-        return rawget(err, "message")
-    end
-    return "operation refused"
-end
-
 function Card.FreezeBinding(current)
     local names
     if type(current.names) == "table" then
@@ -206,57 +159,6 @@ function Card.FreezeBinding(current)
         mode=current.mode,names=names,include_previous=current.include_previous}
 end
 
----Same pure current-root path for Apply and explicit Inspect. The trusted
----refresh callback supplies real fresh bytes/binding; it is not a capability.
-function Card.PrepareVersioned(capture, discovery, initial, proof, refresh)
-    local unit, context = Card.RuntimeContext(capture, discovery, initial, proof, refresh)
-    if not unit then return nil, "locate: " .. message(context) end
-    local Driver = require("SpellHotReload.Pipeline.Driver")
-    local prepared, err, phase = Driver.PrepareDiscovery(discovery.owner, discovery,
-        {unit.key}, {[unit.key]=context})
-    if not prepared then
-        local stage = type(err)=="table" and getmetatable(err)==nil and rawget(err,"stage") or nil
-        return nil, (type(stage)=="string" and stage or phase or "locate") .. ": " .. message(err)
-    end
-    local record = prepared.entries[1]
-    local handle, selection = record.handle, record.plan
-    return {target=handle.target, live=handle.live, location=handle.location, selection=selection,
-        handle=handle, context=context, driver_prepared=prepared}
-end
-
----One Card aggregate for the entire captured file, not one transaction per
----class. Per-card correspondence plus binding checks; no current binding/restart.
-function Card.PrepareFileVersioned(capture, discovery, proof, refresh)
-    local function complete(v) return type(v)=="table" and getmetatable(v)==nil end
-    local snapshot=complete(discovery) and discovery.snapshot
-    local class_key
-    if complete(snapshot) and complete(snapshot.entries) then
-        for _,entry in ipairs(snapshot.entries) do
-            if complete(entry) and entry.adapter==Card and complete(entry.unit)
-                and complete(entry.unit.context) then class_key=entry.unit.context.class_key;break end
-        end
-    end
-    if type(class_key)~="string" then return nil,"locate: no genuine Card discovery entry; nothing published" end
-    return Card.PrepareVersioned(capture,discovery,
-        {class_key=class_key,scope="file"},proof,refresh)
-end
-
----Build scalar presentation, then revalidate after possible compiler/allocation
----callbacks. No commit authority is returned; callers own/cache the record.
-function Card.InspectPrepared(prepared, capture, refresh)
-    local Cards = require("SpellHotReload.Adapters.Card.CardVersions")
-    local Target = require("SpellHotReload.Adapters.Card.CardTarget")
-    local model, merr = Cards.Describe(prepared.selection)
-    if not model then return nil, "describe: " .. message(merr) end
-    local live, lerr = refresh()
-    if not live then return nil, "inspection: " .. message(lerr) end
-    local checked, cerr = Target.CheckDiscovery(prepared.location,live.binding,capture,live)
-    if not checked then return nil, "inspection: " .. message(cerr) end
-    return model, live
-end
-
----Cheap card-binding part of a PAST inspection's validity. Caller separately
----checks bytes/generation/session/capture/revision and invalidates its cache.
 function Card.InspectionBindingMatches(record, current, classes)
     local binding = record.binding
     local valid = current ~= nil and classes == record.classes
@@ -278,187 +180,6 @@ function Card.InspectionBindingMatches(record, current, classes)
     return valid
 end
 
----First-load card metadata is adapter-owned. Plugin calls this synchronously
----once per adopted file/session and owns the sticky success/refusal record.
----Never reseed from current live state. Capture is synchronous and never reconstructs history.
-function Card.CaptureVersions(entry, session_id)
-    local ok, capture, err = pcall(function()
-        local classes = rawget(_G, "_editor_class")
-        local boss_api = rawget(_G, "boss")
-        local card_api = type(boss_api) == "table" and rawget(boss_api, "card") or nil
-        local defaults = type(card_api) == "table" and rawget(card_api, "_default_card") or nil
-        return Card.SeedVersions(entry, session_id, classes, defaults)
-    end)
-    local reason
-    if not ok then
-        reason = "first-load metadata failed: " .. (type(capture) == "string" and capture or "non-string error")
-    elseif capture == nil then
-        local detail = type(err) == "table" and rawget(err, "message") or err
-        reason = type(detail) == "string" and detail or "first-load metadata unavailable"
-    end
-    return ok and capture or nil, reason
-end
-
----Engine-facing queries stay behind Card. No freezing/cache here: callers
----choose the read boundary and FreezeBinding before discovery, as before.
-function Card.CaptureCurrent()
-    return Binding.CaptureCurrent()
-end
-
-function Card.IsReplay()
-    return Binding.IsReplay()
-end
-
----Generated-source support is Card's rule, not a generic file-store verdict.
----This format gate grants no runtime identity or publication authority.
-function Card.CheckCandidateSource(content, file)
-    return require("SpellHotReload.Adapters.Card.GeneratedBossScanner").Scan(content, file)
-end
-
----Only consumes an already-complete discovery. The snapshot-local class key
----is adapter syntax, not cross-version live identity; PrepareVersioned rechecks.
-function Card.DefinesCurrent(discovery, current)
-    return discovery.snapshot.by_key["card:" .. current.class_key] ~= nil
-end
-
---------------------------------------------------------------------------------
---- Card-owned first-load and commit policy. Trusted, already-validated inputs;
---- these helpers read raw identities only, never call business code or mutate.
---- Card validates its selection/capture metadata and proposes aggregate versions.
---- Transaction services own capability/cell checks, sealing, phase, cache
---- invalidation, joins/writes/version install and reverse recovery.
---------------------------------------------------------------------------------
-
-local function plain(v) return type(v) == "table" and getmetatable(v) == nil end
-local function integer(v)
-    return type(v) == "number" and v >= 1 and v < math.huge and v == math.floor(v)
-end
-local function dense(v)
-    if not plain(v) then return nil end
-    local count, maximum = 0, 0
-    for k in next, v do
-        if not integer(k) then return nil end
-        count, maximum = count + 1, math.max(maximum, k)
-    end
-    if count == maximum then return count end
-end
----Explicit Card-owned FIRST-load aggregate. Original trailer identities,
----complete Match/ownership and defaults are captured synchronously, never
----reseeded from current live values. Plugin owns sticky once-only bookkeeping.
----No source/body replay, join, setter, publication, restart or module cache.
----Dependencies are lazy to avoid the CardVersions -> Card cycle.
-function Card.SeedVersions(entry, session_id, classes, defaults)
-    local Source = require("SpellHotReload.Source.FunctionPlan")
-    local Functions = require("SpellHotReload.Source.FunctionVersions")
-    local Cards = require("SpellHotReload.Adapters.Card.CardVersions")
-    local function fail(code, detail, e, key)
-        return nil, {phase="capture", code=code, message=detail,
-            file=plain(e) and rawget(e,"file") or nil, unit_key=key}
-    end
-    if not plain(entry) or type(rawget(entry, "file")) ~= "string" or entry.file == ""
-        or entry.reloadable ~= true or entry.missing or not plain(entry.map)
-        or type(session_id) ~= "string" or session_id == "" then
-        return fail("unsupported", "genuine reloadable first load and session required", entry)
-    end
-    if not plain(classes) or not plain(defaults) then
-        return fail("unsupported", "plain first-load class registry and standard defaults required", entry)
-    end
-    local scan, err = Source.Inspect(entry.loaded_source)
-    if not scan then return nil, err end
-    local initial = {}
-    for name in next, scan.definitions do initial[name] = rawget(entry.map, name) end
-    local functions, ferr = Functions.Seed(entry, session_id, initial)
-    if not functions then return nil, ferr end
-    local match, merr = Card.Match(scan.analysis, { content = entry.loaded_source })
-    if not match then return nil, merr end
-    local owners, ownership = Card.CaptureOwnership(match, classes, entry)
-    if not owners then return nil, ownership end
-    local snapshot, cerr = Cards.Seed(functions, owners, defaults)
-    if not snapshot then return nil, cerr end
-    -- Capture only the class bindings required by the recognized source fields.
-    -- Reuse the existing first-load scan; never reconstruct them at Apply time.
-    local class_bindings={}
-    local Evidence=require("SpellHotReload.Adapters.Card.CardReconcile")
-    for _,statement in ipairs(scan.analysis.statements) do
-        local key=Evidence.ClassWriteKey(statement.syntax)
-        if key then class_bindings[key]=rawget(classes,key) end
-    end
-    return { kind = "SpellHotReload.LoadVersions", version = 1, snapshot = snapshot,
-        classes = classes, ownership = ownership, class_bindings=class_bindings }
-end
-
----Card-specific selection/capture shape, publication bases and located-root
----proof. Preserve the original guard's exact ordering and diagnostics. Called
----before sealing AND after flush/fresh by CommitCheck; not a phase capability.
----No source execution, compilation, joins, writes or version installation.
-function Card.CheckCommitInput(selection, capture, live)
-    local function fail(code, detail, file, key)
-        return nil, {phase="commit", code=code, message=detail, file=file, unit_key=key}
-    end
-    if not plain(selection) or selection.kind ~= "SpellHotReload.CardVersions.Selection"
-        or selection.version ~= 1 or not plain(selection.base)
-        or not plain(capture) or capture.kind ~= "SpellHotReload.LoadVersions"
-        or capture.version ~= 1 or not plain(live) then
-        return fail("unsupported", "card selection, load capture and fresh live view required")
-    end
-    local base, entry = selection.base, live.entry
-    local file = type(base.file) == "string" and base.file or nil
-    if live.released or live.poisoned or not rawequal(live.capture, capture)
-        or not rawequal(live.snapshot, base) or not rawequal(capture.snapshot, base)
-        or live.session_id ~= base.session_id or selection.session_id ~= base.session_id
-        or not plain(entry) or not rawequal(entry, base.entry) or not rawequal(selection.entry, entry)
-        or entry.reloadable ~= true or entry.missing
-        or entry.anchor ~= base.anchor or selection.anchor ~= base.anchor
-        or type(base.anchor) ~= "function" or not plain(entry.slots)
-        or entry.file ~= base.file or entry.loaded_source ~= base.loaded_source
-        or selection.base_revision ~= base.revision
-        or not plain(base.functions) or not plain(selection.functions)
-        or not rawequal(selection.functions.base, base.functions)
-        or selection.functions.base_revision ~= base.functions.revision then
-        return fail("stale", "session, capture, anchor or publication revision changed", file)
-    end
-    if type(selection.content) ~= "string" or live.content ~= selection.content then
-        return fail("stale", "candidate bytes changed", file)
-    end
-    if (selection.location == nil) == (selection.file_location == nil) then
-        return fail("unsupported", "exactly one current or file correspondence scope required", file)
-    end
-    if selection.location ~= nil then
-        local Target = require("SpellHotReload.Adapters.Card.CardTarget")
-        local checked, err = Target.CheckDiscovery(selection.location, live.binding, capture, live)
-        if not checked then return fail(err.code, err.message, file, selection.location.key) end
-    end
-    if selection.file_location~=nil then
-        local checked,err=require("SpellHotReload.Adapters.Card.CardTarget").CheckFileDiscovery(selection.file_location,capture,live)
-        if not checked then return fail(err.code,err.message,file) end
-        if not plain(selection.report) or selection.report.file_location~=selection.file_location
-            or selection.file_location.discovery~=selection.discovery or selection.file_location.snapshot~=base then
-            return fail("stale","file correspondence scope changed",file)
-        end
-        if dense(selection.file_class_reads)==nil then return fail("unsupported","class binding read-set required",file) end
-        for _,read in ipairs(selection.file_class_reads) do
-            if not plain(read) or read.registry~=live.classes or type(read.key)~="string"
-                or not plain(read.value) or not rawequal(rawget(live.classes,read.key),read.value) then
-                return fail("stale","candidate class registry binding changed",file)
-            end
-        end
-    end
-    return require("SpellHotReload.Adapters.Card.CardReconcile").CheckPublications(selection,capture,live)
-end
-
----Card owns the aggregate version format. This ONLY proposes the next snapshot;
----CardCommit still seals actions, journals and atomically installs it last.
----Lazy import avoids CardVersions -> Card initialization cycles.
-function Card.ProposeVersion(selection)
-    return require("SpellHotReload.Adapters.Card.CardVersions").Next(selection)
-end
-
-local callbacks = { before=true, init=true, frame=true, render=true,
-    beforedel=true, del=true, after=true }
-local CALLBACKS = { "before", "init", "frame", "render", "beforedel", "del", "after" }
-
----Called synchronously from the genuine first load's complete Card.Match.
----Returns fresh metadata, including placeholder ownership, never a live reseed.
 function Card.CaptureOwnership(match, classes, entry)
     local function fail(code, detail, e, key)
         return nil, {phase="capture", code=code, message=detail,
@@ -495,280 +216,318 @@ function Card.CaptureOwnership(match, classes, entry)
     return owners, ownership
 end
 
----Complete first-load ownership proof, not just the current selected slot.
----The returned set is transient; it grants no phase or mutation authority.
-function Card.CheckOwnership(capture, base, classes)
-    local file = type(base.file) == "string" and base.file or nil
-    local function fail(code, detail, f, key)
-        return nil, {phase="commit", code=code, message=detail, file=f, unit_key=key}
-    end
-    if not plain(classes) or not rawequal(classes, capture.classes)
-        or dense(capture.ownership) == nil or not plain(base.units) then
-        return fail("ownership", "class registry or ownership unavailable", file)
-    end
-    local owners, seen = {}, {}
-    for _, owner in ipairs(capture.ownership) do
-        if not plain(owner) or type(owner.class_key) ~= "string" or owners[owner.class_key]
-            or not plain(owner.class) or not rawequal(rawget(classes, owner.class_key), owner.class)
-            or not rawequal(rawget(owner.class, "cards"), owner.list)
-            or dense(owner.slots) == nil or dense(owner.list) ~= #owner.slots then
-            return fail("ownership", "first-load class/list ownership changed", file)
+
+-- Called only by genuine first-load orchestration. It contributes Card's
+-- records; the caller atomically adopts the COMPLETE owner contribution set.
+function Card.Capture(entry,session,local_group,classes,defaults)
+    if not plain(entry) or not Source.Validate(entry.source) then return fail("capture","ownership","genuine complete first load required") end
+    local match,err=Card.Match(entry.source,{source=entry.source})
+    if not match then return nil,err end
+    if #match.units==0 then return Versions.Empty(Card,entry,session,match) end
+    if not plain(classes) or not plain(defaults) then return fail("capture","ownership","first-load registry and defaults required") end
+    local owners,ownership=Card.CaptureOwnership(match,classes,entry)
+    if not owners then return nil,ownership end
+    local Local=require("SpellHotReload.Adapters.Local.Local")
+    return Versions.Seed(Card,entry,session,match,owners,ownership,classes,defaults,function(binding)
+        return Local.CapturedProvider(local_group,binding)
+    end)
+end
+function Card.CaptureCurrent() return Binding.CaptureCurrent() end
+function Card.IsReplay() return Binding.IsReplay() end
+function Card.CheckCandidateSource(content,file)
+    return require("SpellHotReload.Adapters.Card.GeneratedBossScanner").Scan(content,file)
+end
+function Card.DefinesCurrent(discovery,current,capture)
+    -- Candidate keys route new definitions; captured ownership keeps old-only
+    -- classes visible to reconciliation. Neither route is live Locate permission.
+    if discovery.snapshot.by_key["card:"..current.class_key] then return true end
+    local group=Files.Owner(capture,Card)
+    if group then
+        for _,key in ipairs(group.state.order) do
+            local unit=group.state.units[key]
+            if unit.class_key==current.class_key and unit.slot==current.slot and unit.card==current.card then return true end
         end
-        owners[owner.class_key] = owner
-        for slot, card in ipairs(owner.slots) do
-            if not plain(card) or seen[card] or not rawequal(rawget(owner.list, slot), card) then
-                return fail("ownership", "first-load slot ownership changed", file)
+    end
+    return false
+end
+function Card.Reconcile(previous,candidate,context)
+    return require("SpellHotReload.Adapters.Card.CardReconcile").Run(previous,candidate,context)
+end
+function Card.Roots(view)
+    if not plain(view) or view.kind~=VIEW or not plain(view.base) then return {} end
+    local roots={}
+    for _,key in ipairs(view.base.order) do
+        roots[#roots+1]={root_id=key,unit_ref=view.by_key[key].unit_ref,selector=view.selectors[key]}
+    end
+    return roots
+end
+-- Caller freezes this target for the operation; live candidate_slot is never
+-- treated as identity or as a restart slot. CurrentRestart consumes a later proof.
+function Card.CurrentRoot(view,binding,capture,live)
+    if not plain(view) or view.kind~=VIEW or not plain(view.base_group) then return fail("locate","ownership","original Card view required") end
+    local target,err=require("SpellHotReload.Adapters.Card.CardTarget").Resolve(binding,capture,live)
+    if not target then return nil,err end
+    local item=view.by_key[target.key]
+    if target.card_group~=view.base_group or not item then return fail("locate","ownership","current target is outside original Card view") end
+    return {root_id=target.key,unit_ref=item.unit_ref,selector=view.selectors[target.key]},target
+end
+local function scope(context)
+    if not plain(context) or not plain(context.common) or not plain(context.operation) or not plain(context.view)
+        or context.view.kind~=VIEW or context.view.version~=1 or context.view.source~=context.operation.source
+        or context.common.source~=context.view.source or context.view.discovery.common~=context.common then return false end
+    local group=Files.Owner(context.operation.capture,Card)
+    return group==context.view.base_group and group==context.base_group
+        and context.operation.base_snapshot==context.operation.capture.snapshot
+end
+-- Operation-lifetime LIVE correspondence proof, never a reusable scan cache.
+-- It is revalidated in both final Guards even for a read-only/empty Card owner.
+local function locate(view,op)
+    if view.runtime then
+        if view.runtime.operation~=op then return fail("locate","ownership","Card view already belongs to another operation") end
+        return view.runtime
+    end
+    local input=op.card
+    if not plain(input) or type(input.refresh)~="function"
+        or (op.mode~="file" and op.mode~="current" and op.mode~="inspect")
+        or (op.mode=="file" and input.target~=nil) or (op.mode~="file" and not plain(input.target)) then
+        return fail("locate","ownership","explicit Card operation and trusted fresh read required")
+    end
+    local live,err=input.refresh()
+    if not live then return nil,err end
+    if not plain(live) or live.content~=op.source.content or live.generation~=op.generation then
+        return fail("locate","stale","fresh Card candidate bytes or generation changed")
+    end
+    local Target=require("SpellHotReload.Adapters.Card.CardTarget")
+    local file_location,why=Target.LocateFileDiscovery(view.discovery,op.capture,live)
+    if not file_location then return nil,why end
+    local current_location
+    if input.target then
+        current_location,why=Target.LocateDiscovery(input.target,view.discovery,live.binding,op.capture,live)
+        if not current_location then return nil,why end
+        local row=file_location.by_key[input.target.key]
+        if not row or row.status~="located" or row.descriptor~=current_location.descriptor
+            or row.candidate_slot~=current_location.candidate_slot then
+            return fail("locate","ambiguous","current candidate has no unique file correspondence")
+        end
+    end
+    local rows,rerr=require("SpellHotReload.Adapters.Card.CardReconcile").Index(op.capture,view.discovery)
+    if not rows then return nil,rerr end
+    local compared,cerr=Versions.Compare(view.base_group,view.initial,view.source,view.match,file_location,rows)
+    if not compared then return nil,cerr end
+    local runtime={operation=op,mode=op.mode,input=input,refresh=input.refresh,target=input.target,live=live,
+        file_location=file_location,current_location=current_location,version_view=compared}
+    view.runtime=runtime;return runtime
+end
+function Card.Locate(unit,context)
+    if not scope(context) or context.scope~="unit" or context.phase~="locate" or not plain(unit)
+        or context.view.by_ref[unit.unit_ref]~=unit.private_ref or unit.private_ref.unit~=unit then
+        return fail("locate","ownership","original Card class unit and scope required",context)
+    end
+    local runtime,err=locate(context.view,context.operation)
+    if not runtime then return nil,err end
+    return {kind="SpellHotReload.Card.Handle",version=1,operation=context.operation,view=context.view,
+        unit=unit,item=unit.private_ref,runtime=runtime}
+end
+local function resolve(handle,unit,context)
+    local view,request,item=context.view,context.request,unit.private_ref
+    if not plain(handle) or handle.kind~="SpellHotReload.Card.Handle" or handle.operation~=context.operation
+        or handle.view~=view or handle.unit~=unit or handle.item~=item or handle.runtime~=view.runtime
+        or not plain(request) or request.operation~=context.operation or request.view~=view or request.unit_ref~=unit.unit_ref
+        or type(request.root_id)~="string" or dense(request.conditions)~=0 then
+        return fail("resolve","ownership","exact Card unit handle and finite private selector required",context)
+    end
+    local key=item.selectors[request.selector]
+    local runtime=view.runtime
+    if not key or runtime.target and runtime.target.key~=key then return fail("resolve","ownership","foreign Card member selector",context) end
+    local selected,err=Versions.Resolve(runtime.version_view,key)
+    if not selected then return {blocked=err,needs={},affected={},source_facts={}} end
+    local Local=require("SpellHotReload.Adapters.Local.Local")
+    local local_view
+    for _,group in ipairs(view.discovery.reconciliation.groups) do
+        if group.owner==Local and not group.reason then local_view=group.view end
+    end
+    local choice={view=view,item=item,key=key,root_id=request.root_id,resolved=selected,demands={}}
+    local needs,facts={},{}
+    for _,ref in ipairs(selected.providers) do
+        local provider=Local.Requirement(local_view,ref)
+        if not provider then return fail("resolve","ownership","original callback provider domain unavailable",context) end
+        local demand={root_id=request.root_id,provider_unit=provider.unit_ref,condition_ref=provider.condition_ref,cause_ref=choice}
+        needs[#needs+1]=demand;choice.demands[#choice.demands+1]=demand
+    end
+    for _,name in ipairs(CALLBACKS) do
+        local cb=selected.callbacks[name]
+        if cb~=selected.item.previous.callbacks[name] and cb.syntax then facts[#facts+1]={source=view.source,node=cb.syntax} end
+    end
+    view.choices[request.root_id]=view.choices[request.root_id] or {}
+    view.choices[request.root_id][unit.unit_ref]=choice
+    return {selection_ref=choice,needs=needs,affected=selected.changed and {unit.unit_ref} or {},source_facts=facts}
+end
+local function owner_handle(handle,context)
+    return plain(handle) and handle.kind=="SpellHotReload.Driver.OwnerHandle" and handle.version==1
+        and handle.operation==context.operation and handle.owner==Card and handle.base_group==context.base_group
+        and handle.view==context.view and plain(handle.by_ref)
+end
+local function same(a,b)
+    if not plain(a) or not plain(b) or #a~=#b then return false end
+    for i,v in ipairs(a) do if v~=b[i] then return false end end;return true
+end
+local function guard(fragment,capture,live)
+    local view,runtime,plan=fragment.card_view,fragment.card_runtime,fragment.card_plan
+    local group=Files.Owner(capture,Card);local op=fragment.operation
+    if not plain(view) or not plain(runtime) or not plain(plan) or group~=view.base_group or group~=fragment.base_group
+        or plan.view~=runtime.version_view or view.runtime~=runtime or fragment.owner~=Card
+        or not plain(op) or op.capture~=capture or op.base_snapshot~=capture.snapshot or op.source~=view.source
+        or op.mode~=runtime.mode or op.generation~=runtime.file_location.generation
+        or op.card~=runtime.input or op.card.refresh~=runtime.refresh or op.card.target~=runtime.target
+        or not plain(live) or live.entry~=view.base.entry or live.session_id~=view.base.session_id then
+        return fail("commit","stale","Card original scope, operation or runtime changed")
+    end
+    local Target=require("SpellHotReload.Adapters.Card.CardTarget")
+    local ok,err=Target.CheckFileDiscovery(runtime.file_location,capture,live)
+    if not ok then return nil,err end
+    if runtime.current_location then
+        ok,err=Target.CheckDiscovery(runtime.current_location,live.binding,capture,live)
+        if not ok then return nil,err end
+    end
+    ok,err=Versions.Guard(plan,live.classes)
+    if not ok then return nil,err end
+    -- The public unit is a class; only Card can map a callback action back to
+    -- its exact selected member. Read the separate semantic publications, not
+    -- the caller's raw_writes array, so sealing still isolates later mutation.
+    if dense(fragment.raw_writes)==nil or dense(plan.publications)==nil
+        or #fragment.raw_writes~=#plan.publications then
+        return fail("commit","ownership","Card callback action set changed",{common=op})
+    end
+    local positions={}
+    for i,pub in ipairs(plan.publications) do
+        local unit=plain(pub) and view.base.units[pub.unit_key]
+        local old=plain(unit) and plain(unit.callbacks) and unit.callbacks[pub.key]
+        local cb=plain(pub) and pub.callback
+        local write=fragment.raw_writes[i]
+        if not plain(pub) or not plain(write) or not plain(old) or not plain(cb)
+            or pub.target~=unit.card or pub.before~=old.fn or cb.previous~=old or pub.value~=cb.fn
+            or write.owner~=Card or write.unit_ref~=unit.unit_ref
+            or write.target~=pub.target or write.key~=pub.key
+            or write.before~=pub.before or write.value~=pub.value then
+            return fail("commit","ownership","Card callback publication action changed",{common=op})
+        end
+        local keys=positions[unit.card]
+        if not keys then keys={};positions[unit.card]=keys end
+        if keys[pub.key] then return fail("commit","ownership","duplicate Card callback action",{common=op}) end
+        keys[pub.key]=true
+    end
+    ok,err=require("SpellHotReload.Adapters.Card.CardReconcile").CheckPublications(plan,capture,live,view.discovery)
+    if not ok then return nil,err end
+    if plan.requires_file_check then
+        -- The full FileApply proof is produced only after every owner prepared.
+        local FileApply=require("SpellHotReload.Apply.FileApply")
+        ok,err=FileApply.CheckDeletions(op,plan,live)
+        if not ok then return nil,err end
+    end
+    local proposed,why=Versions.Next(plan)
+    if not proposed then return nil,why end
+    local actual=fragment.proposed_group
+    if not plain(actual) or actual.owner~=Card or #actual.units~=#proposed.units or #actual.records~=#proposed.records then
+        return fail("commit","ownership","Card proposed projection changed")
+    end
+    for _,key in ipairs(view.base.order) do
+        local expected=proposed.state.units[key];local unit=actual.state.units[key]
+        if not plain(unit) or unit.card~=expected.card or unit.unit_ref~=expected.unit_ref
+            or unit.definition_version~=expected.definition_version then return fail("commit","ownership","Card proposed unit changed") end
+        for _,name in ipairs(CALLBACKS) do
+            local a,b=unit.callbacks[name],expected.callbacks[name]
+            if not plain(a) or a.fn~=b.fn or a.body~=b.body or a.signature~=b.signature
+                or a.definition_version~=b.definition_version or not same(a.dependencies,b.dependencies)
+                or not same(a.visible,b.visible) then return fail("commit","ownership","Card proposed callback changed") end
+            for _,dep in ipairs(b.dependencies) do
+                if a.providers[dep]~=b.providers[dep] then return fail("commit","ownership","Card proposed provider changed") end
             end
-            seen[card] = true
-        end
-    end
-    for key, unit in next, base.units do
-        local owner = plain(unit) and owners[unit.class_key] or nil
-        if not owner or not integer(unit.slot) or not rawequal(rawget(owner.slots, unit.slot), unit.card)
-            or rawget(unit.card, "is_combat") ~= true then
-            return fail("ownership", "published card no longer owns its combat slot", file, key)
-        end
-    end
-    return seen
-end
-
-function Card.CheckCallbackRead(read, seen, file)
-    local function fail(code, detail, f)
-        return nil, {phase="commit", code=code, message=detail, file=f}
-    end
-    if not plain(read.target) or not seen[read.target] or not callbacks[read.key]
-        or not rawequal(rawget(read.target, read.key), read.value) then
-        return fail("stale", "raw callback read changed", file)
-    end
-    return true
-end
-
----Only the seven supported callbacks on their captured raw combat card.
----Raw target/key values are checked before the transaction registers writes.
-function Card.CheckPublications(publications, base, seen)
-    local file = type(base.file) == "string" and base.file or nil
-    local function fail(code, detail, f, key)
-        return nil, {phase="commit", code=code, message=detail, file=f, unit_key=key}
-    end
-    local targets = {}
-    for _, pub in ipairs(publications) do
-        if not plain(pub) or not plain(pub.target) or not callbacks[pub.key]
-            or type(pub.value) ~= "function" then
-            return fail("unsupported", "raw callback publication required", file)
-        end
-        local unit = base.units[pub.unit_key]
-        if not plain(unit) or not rawequal(pub.target, unit.card) or not seen[pub.target]
-            or not rawequal(rawget(pub.target, pub.key), pub.before) then
-            return fail("stale", "callback publication owner/preimage changed", file, pub.unit_key)
-        end
-        local keys = targets[pub.target] or {}
-        if keys[pub.key] then return fail("ownership", "duplicate raw publication", file, pub.unit_key) end
-        targets[pub.target], keys[pub.key] = keys, true
-    end
-    return true
-end
-
----A candidate join may target only an unpublished closure selected for install.
----Defaults and unselected published callbacks are live too, not valid scratch.
-function Card.CheckJoinDestinations(selection)
-    local frozen = selection
-    local function fail(code, detail, file)
-        return nil, {phase="commit", code=code, message=detail, file=file}
-    end
-    local published, destinations = {[selection.anchor]=true}, {}
-    for _, fn in next, selection.base.defaults do published[fn] = true end
-    for _, unit in next, selection.base.functions.units do published[unit.fn] = true end
-    for _, unit in next, selection.base.units do
-        for _, cb in next, unit.callbacks do published[cb.fn] = true end
-    end
-    for _, op in ipairs(frozen.writes) do destinations[op.value] = true end
-    for _, op in ipairs(frozen.publications) do destinations[op.value] = true end
-    for _, op in ipairs(frozen.joins) do
-        if published[op.fn] or not destinations[op.fn] then
-            return fail("unsupported", "joins require unpublished destination closures", selection.base.file)
         end
     end
     return true
 end
-
---------------------------------------------------------------------------------
---- Versioned Locate/Inject consume the SAME complete discovered unit/context.
---- A per-call runtime extension belongs to adapter context, never Match's common
---- or a module-level session cache.
---------------------------------------------------------------------------------
-
-local function stage_error(phase, stage, detail, file, key)
-    local code = plain(detail) and rawget(detail, "code") or nil
-    return nil, {phase=phase, code=type(code)=="string" and code or "unsupported",
-        message=message(detail), file=file, unit_key=key, stage=stage}
-end
-
----Bridge the complete discovery context to current-root runtime inputs.
----Do not mutate common/file/unit contexts or rediscover/filter the snapshot.
-function Card.RuntimeContext(capture, discovery, initial, proof, refresh)
-    local snapshot = plain(discovery) and rawget(discovery, "snapshot") or nil
-    local common = plain(snapshot) and rawget(snapshot, "common") or nil
-    local file = plain(common) and rawget(common, "file") or nil
-    if not plain(capture) or not plain(discovery) or not plain(snapshot) or not plain(common)
-        or not plain(snapshot.by_key) or not plain(capture.snapshot)
-        or not plain(initial) or type(initial.class_key)~="string"
-        or not plain(proof) or type(refresh)~="function" then
-        return stage_error("locate", "locate", "complete discovery and explicit runtime inputs required", file)
+function Card.Inject(handle,unit,context)
+    if not scope(context) then return fail("inject","ownership","Card operation view required",context) end
+    if context.scope=="unit" and context.phase=="resolve" then
+        if not plain(unit) or context.view.by_ref[unit.unit_ref]~=unit.private_ref then return fail("resolve","ownership","original Card unit required",context) end
+        return resolve(handle,unit,context)
     end
-    local entry = rawget(snapshot.by_key, "card:" .. initial.class_key)
-    if not plain(entry) or entry.adapter~=Card or not plain(entry.unit)
-        or not plain(entry.context) or entry.context.common~=common or not plain(entry.context.adapter)
-        or not plain(entry.unit.context) or not plain(entry.context.adapter.file)
-        or entry.context.adapter.unit~=entry.unit.context then
-        return stage_error("locate", "locate", "owned Card discovery entry required", file)
+    if context.scope~="owner" or unit~=nil or not owner_handle(handle,context) then
+        return fail("inject","ownership","Card exact owner aggregation required",context)
     end
-    local runtime = {kind=RUNTIME_KIND, capture=capture, discovery=discovery, initial=initial,
-        proof=proof, refresh=refresh, snapshot=capture.snapshot, file_scope=initial.scope=="file"}
-    return entry.unit, {common=common, adapter={file=entry.context.adapter.file,
-        unit=entry.context.adapter.unit, runtime=runtime}}
-end
-
-local function runtime_context(unit, context, phase)
-    local runtime = runtime_of(context)
-    local common = plain(context) and rawget(context, "common") or nil
-    local file = plain(common) and rawget(common, "file") or nil
-    if not plain(context) or not plain(common) or not plain(context.adapter)
-        or not plain(runtime) or runtime.kind~=RUNTIME_KIND or not plain(runtime.discovery)
-        or not plain(runtime.discovery.snapshot) or runtime.discovery.snapshot.common~=common
-        or not plain(runtime.capture) or runtime.snapshot~=runtime.capture.snapshot
-        or not plain(runtime.initial) or type(runtime.initial.class_key)~="string"
-        or runtime.file_scope~=(runtime.initial.scope=="file")
-        or not plain(runtime.proof) or type(runtime.refresh)~="function"
-        or not plain(runtime.snapshot)
-        or not plain(unit) or not plain(unit.context) or unit.carrier~="card"
-        or unit.key~="card:" .. runtime.initial.class_key
-        or unit.context.class_key~=runtime.initial.class_key
-        or not plain(runtime.discovery.snapshot.by_key) then
-        return stage_error(phase, phase, "versioned Card unit/context changed", file)
+    local runtime,err=locate(context.view,context.operation)
+    if not runtime then return nil,err end
+    if context.phase=="resolve" then
+        local proof,why=Versions.Constraints(runtime.version_view,context.dependencies)
+        if not proof then return nil,why end
+        return {operation=context.operation,owner=Card,blocked_roots=proof.blocked_roots,evidence=proof}
     end
-    local entry = rawget(runtime.discovery.snapshot.by_key, unit.key)
-    if not plain(entry) or entry.unit~=unit or entry.adapter~=Card or not plain(entry.context)
-        or entry.context.common~=common or not plain(entry.context.adapter)
-        or context.adapter.file~=entry.context.adapter.file
-        or context.adapter.unit~=unit.context or entry.context.adapter.unit~=unit.context then
-        return stage_error(phase, phase, "versioned Card unit/context ownership changed", file, unit.key)
+    local selection,view=context.selection,context.view
+    if context.phase~="prepare" or not plain(selection) or selection.owner~=Card or selection.view~=view
+        or selection.base_group~=view.base_group or dense(selection.units)==nil or not plain(context.constraints)
+        or context.constraints.operation~=context.operation or context.constraints.owner~=Card then
+        return fail("inject","ownership","Card final pruned selection and constraints required",context)
     end
-    return runtime, entry
-end
-
-function Card.Locate(unit, context)
-    local runtime, entry = runtime_context(unit, context, "locate")
-    if not runtime then return nil, entry end
-    local Target = require("SpellHotReload.Adapters.Card.CardTarget")
-    local capture, file = runtime.capture, context.common.file
-    if runtime.file_scope then
-        local live, lerr = runtime.refresh()
-        if not live then return stage_error("locate", "file preflight", lerr, file, unit.key) end
-        local current, cerr = runtime_context(unit, context, "locate")
-        if not current then return nil, cerr end
-        if current~=runtime or not plain(live) or live.capture~=capture
-            or live.snapshot~=runtime.snapshot or live.entry~=runtime.proof.entry
-            or live.session_id~=context.common.session_id or live.content~=context.common.content
-            or live.released or live.poisoned then
-            return stage_error("locate", "file preflight", "file publication baseline changed", file, unit.key)
+    local selected,seen_refs={},{}
+    for _,record in ipairs(selection.units) do
+        local item=plain(record) and view.by_ref[record.unit_ref]
+        local location=item and handle.by_ref[record.unit_ref]
+        if not item or record.unit_view~=item.unit or not location or location.unit~=item.unit or seen_refs[record.unit_ref]
+            or dense(record.roots)==nil or #record.roots==0 then return fail("inject","ownership","Card final unit lacks exact location",context) end
+        seen_refs[record.unit_ref]=true
+        for _,root in ipairs(record.roots) do
+            local choice=plain(root) and root.selection_ref
+            if not plain(choice) or choice.view~=view or choice.item~=item or choice.root_id~=root.root_id
+                or root.selector~=view.selectors[choice.key] or not view.choices[root.root_id]
+                or view.choices[root.root_id][record.unit_ref]~=choice then return fail("inject","ownership","Card private selection changed",context) end
+            -- Every originally routed provider must survive for this SAME root.
+            for _,demand in ipairs(choice.demands) do
+                local found=false
+                for _,owner in ipairs(context.dependencies.owners) do
+                    for _,provider in ipairs(owner.units) do
+                        if provider.unit_ref==demand.provider_unit then
+                            for _,path in ipairs(provider.roots) do
+                                if path.root_id==root.root_id then
+                                    for _,token in ipairs(path.conditions) do if token==demand.condition_ref then found=true end end
+                                end
+                            end
+                        end
+                    end
+                end
+                if not found then return fail("inject","ownership","Card root lost required provider",context) end
+            end
+            selected[choice.key]=true
         end
-        local owned, oerr = Card.CheckOwnership(capture,runtime.snapshot,live.classes)
-        if not owned then return stage_error("locate", "file preflight", oerr, file, unit.key) end
-        local location,why=Target.LocateFileDiscovery(runtime.discovery.snapshot,capture,live)
-        if not location then return stage_error("locate","file correspondence",why,file,unit.key) end
-        return {kind=HANDLE_KIND, unit=unit, context=context, runtime=runtime,
-            capture=capture, snapshot=runtime.snapshot, discovery=runtime.discovery.snapshot, entry=entry,
-            initial=runtime.initial, proof=runtime.proof, refresh=runtime.refresh, live=live,file_location=location}
     end
-    local target, terr = Target.Resolve(runtime.initial, capture, runtime.proof)
-    if not target then return stage_error("locate", "locate", terr, file, unit.key) end
-    local live, lerr = runtime.refresh()
-    if not live then return stage_error("locate", "versioned preflight", lerr, file, unit.key) end
-    local current, cerr = runtime_context(unit, context, "locate")
-    if not current then return nil, cerr end
-    if current~=runtime or not plain(live) then
-        return stage_error("locate", "locate", "versioned Card runtime changed during refresh", file, unit.key)
-    end
-    local checked, check_error = Target.Check(target, live.binding, capture, live)
-    if not checked then return stage_error("locate", "locate", check_error, file, unit.key) end
-    local location, why = Target.LocateDiscovery(target, runtime.discovery.snapshot, live.binding, capture, live)
-    if not location then return stage_error("locate", "locate", why, file, unit.key) end
-    return {kind=HANDLE_KIND, unit=unit, context=context, runtime=runtime,
-        capture=capture, snapshot=runtime.snapshot, discovery=runtime.discovery.snapshot, entry=entry,
-        initial=runtime.initial, proof=runtime.proof, refresh=runtime.refresh,
-        target=target, live=live, location=location}
+    local keys={};for _,key in ipairs(view.base.order) do if selected[key] then keys[#keys+1]=key end end
+    local registry_reads,why=Versions.RetainConstraints(runtime.version_view,context.constraints.evidence,context.dependencies)
+    if not registry_reads then return nil,why end
+    local plan,perr=Versions.Prepare(runtime.version_view,keys,registry_reads)
+    if not plan then return nil,perr end
+    local proposed,nerr=Versions.Next(plan);if not proposed then return nil,nerr end
+    local coverage,cerr=Versions.Coverage(runtime.version_view,plan)
+    if not coverage then return nil,cerr end
+    return {operation=context.operation,owner=Card,base_group=view.base_group,proposed_group=proposed,
+        file_evidence=coverage,joins=plan.joins,cell_writes=plan.cell_writes,raw_writes=plan.raw_writes,read_set=plan.read_set,capture_reads=plan.capture_reads,
+        owner_guard=guard,card_view=view,card_runtime=runtime,card_plan=plan}
+end
+function Card.Commit(handle,fragment,context)
+    if not scope(context) or not owner_handle(handle,context) or not plain(fragment) or fragment.owner~=Card
+        or fragment.operation~=context.operation or fragment.base_group~=context.base_group
+        or type(context.adapter.register)~="function" then return fail("register","ownership","Card exact fragment registration required",context) end
+    return context.adapter.register(handle,fragment,context)
 end
 
-local function matching_handle(handle, unit, context, phase)
-    local runtime, entry = runtime_context(unit, context, phase)
-    if not runtime then return nil, entry end
-    local file = context.common.file
-    if not plain(handle) or handle.kind~=HANDLE_KIND or handle.unit~=unit or handle.context~=context
-        or handle.runtime~=runtime or handle.capture~=runtime.capture or handle.snapshot~=runtime.snapshot
-        or handle.discovery~=runtime.discovery.snapshot or handle.entry~=entry
-        or handle.initial~=runtime.initial or handle.proof~=runtime.proof or handle.refresh~=runtime.refresh
-        or not plain(handle.live)
-        or (runtime.file_scope and (handle.target~=nil or handle.location~=nil
-            or not plain(handle.file_location) or handle.file_location.discovery~=handle.discovery
-            or handle.file_location.snapshot~=runtime.snapshot))
-        or (not runtime.file_scope and (not plain(handle.target) or not plain(handle.location)
-            or handle.location.target~=handle.target or handle.location.discovery~=handle.discovery
-            or handle.location.entry~=entry)) then
-        return stage_error(phase, phase, "matching versioned Card handle required", file, unit.key)
+-- Private description of Card's final member selection, never Local records.
+function Card.Describe(fragment,inspection)
+    if not plain(fragment) or fragment.owner~=Card or not plain(inspection) or not plain(fragment.operation)
+        or not plain(fragment.card_view) or not plain(fragment.card_plan) or not plain(fragment.card_runtime)
+        or inspection.operation~=fragment.operation or inspection.snapshot~=fragment.operation.base_snapshot
+        or fragment.base_group~=fragment.card_view.base_group
+        or fragment.card_plan.view~=fragment.card_runtime.version_view then
+        return fail("describe","ownership","original Card inspection fragment required")
     end
-    return runtime, entry
-end
-
-function Card.Inject(handle, unit, context)
-    local runtime, err = matching_handle(handle, unit, context, "inject")
-    if not runtime then return nil, err end
-    local file = context.common.file
-    local Cards = require("SpellHotReload.Adapters.Card.CardVersions")
-    local report, rerr
-    if runtime.file_scope then report,rerr=require("SpellHotReload.Apply.FileApply").CompareCards(runtime.snapshot,handle.file_location,
-        runtime.capture,handle.live)
-    else report, rerr = Cards.CompareLocated(runtime.snapshot, handle.location,
-        handle.live.binding, runtime.capture, handle.live) end
-    if not report then return stage_error("inject", "compare", rerr, file, unit.key) end
-    local selection,serr
-    if runtime.file_scope then selection,serr=Cards.SelectFile(report)
-    else selection,serr=Cards.Select(report,{handle.target.key}) end
-    if not selection then return stage_error("inject", "select", serr, file, unit.key) end
-    handle.selection = selection -- per-call output identity; not a module cache
-    return selection
-end
-
----The adapter consumes a caller-bound transaction, never publishes directly.
----The writer accepts only this exact handle/selection/context. It delegates to
----the existing atomic kernel; phase/cache/Guard/seal/rollback/poison remain there.
----Success preserves the boolean/error contract; result 3 is the trusted receipt.
-function Card.Commit(handle, plan, context)
-    local unit = plain(handle) and rawget(handle, "unit") or nil
-    local runtime, err = matching_handle(handle, unit, context, "commit")
-    if not runtime then return false, err end
-    if not plain(plan) or plan.kind~="SpellHotReload.CardVersions.Selection"
-        or plan~=handle.selection or plan.base~=runtime.snapshot
-        or plan.discovery~=handle.discovery or plan.location~=handle.location
-        or plan.file_location~=handle.file_location
-        or plan.entry~=runtime.snapshot.entry or plan.anchor~=runtime.snapshot.anchor
-        or plan.session_id~=runtime.snapshot.session_id then
-        local _, why = stage_error("commit", "commit", "matching injected Card selection required",
-            context.common.file, unit.key)
-        return false, why
-    end
-    local transaction = rawget(context.adapter, "transaction")
-    if type(transaction)~="function" then
-        return versioned_refusal(handle, context, "commit",
-            "versioned publication requires the atomic transaction")
-    end
-    local receipt, problem = transaction(handle, plan, context)
-    if not receipt then return false, problem end
-    return true, nil, receipt
-end
-
----Read-only two-sided interpretation; mutation remains in Locate/Inject/Commit.
-function Card.Reconcile(previous, candidate, context)
-    return require("SpellHotReload.Adapters.Card.CardReconcile").Run(previous, candidate, context)
+    return Versions.Describe(fragment.card_plan,inspection.snapshot,inspection.impact,inspection.dependencies)
 end
 
 return Card

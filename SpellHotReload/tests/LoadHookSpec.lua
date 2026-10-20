@@ -11,6 +11,8 @@ local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
 local Scanner = require("SpellHotReload.Adapters.Card.GeneratedBossScanner")
 local Card = require("SpellHotReload.Adapters.Card.Card")
 local M = {}
+local this_file = debug.getinfo(1, "S").source:sub(2)
+local bootstrap = this_file:match("^(.*[/\\])") .. "../../__init__.lua"
 
 local SOURCE = [[
 local counter, flag, empty, config = 0, false, nil, { a = 1 }
@@ -283,9 +285,7 @@ function M.run()
             watcher_creates=watcher_creates+1
             return {baseline=function() end,Start=function() return true end,IsRunning=function() return true end}
         end
-        local root = arg[1] == "landed" and "THDiMS/game/plugin/SpellHotReload" or
-            "tasks/generic-reload-model/load-hook/proposed"
-        assert(loadfile(root .. "/__init__.lua"))()
+        assert(loadfile(bootstrap))()
         check(type(events.afterTHlib) == "function", "afterTHlib registered")
         check(type(events.afterMod) == "function", "afterMod fallback registered")
         events.afterTHlib()
