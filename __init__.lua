@@ -16,6 +16,7 @@ local lstg_debug = require("lib.Ldebug")
 local Plugin = require("SpellHotReload.Runtime.Plugin")
 local View = require("SpellHotReload.UI.View")
 local LoadHook = require("SpellHotReload.Load.LoadHook")
+local ObjectLoad = require("SpellHotReload.Adapters.Object.ObjectLoad")
 
 local plugin = nil
 local view = nil
@@ -33,7 +34,7 @@ local function ensure_loaded()
 	-- complete reload verdict from one normal execution, not the legacy hook.
 	local ok, reason = LoadHook.Install(lstg, function(file, entry)
 		return plugin:AdoptLoad(file, entry)
-	end, { select = LoadHook.BossFile })
+	end, { select = LoadHook.BossFile, capture = ObjectLoad.Capture })
 	if not ok then error("SpellHotReload load hook: " .. tostring(reason)) end
 	-- THlib's final GameExit is already defined here. FrameFunc and the engine
 	-- can both call it: our cleanup is idempotent, but the previous callback must

@@ -192,7 +192,7 @@ function M.run()
             function(e,s,pieces)
                 order[#order+1]="file"
                 eq(e,first,"File receives same entry");eq(s,p._session_id,"File receives same session")
-                eq(#pieces,2,"File receives complete contribution set")
+                eq(#pieces,3,"File receives complete contribution set")
                 eq(pieces[1],local_piece,"Local contribution identity");eq(pieces[2],card_piece,"Card contribution identity")
                 return captures[3](e,s,pieces)
             end,
@@ -203,7 +203,7 @@ function M.run()
         eq(table.concat(order,","),"local,card,file","synchronous complete adoption exactly once")
         local capture=must(p:GetVersions(file))
         eq(Files.Validate(capture),true,"Plugin stores genuine common capture")
-        eq(#capture.snapshot.owners,2,"Plugin keeps both real owners")
+        eq(#capture.snapshot.owners,3,"Plugin keeps both real owners")
         eq(capture.snapshot.entry,first,"common capture retains first load")
 
         -- A later independent adoption reads its own registry/defaults, never a cache.

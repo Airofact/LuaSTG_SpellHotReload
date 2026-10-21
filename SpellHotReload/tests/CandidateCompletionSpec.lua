@@ -119,7 +119,7 @@ function M.run()
         f.p=Plugin.New();plugins[#plugins+1]=f.p
         f.entry=must(Load.Capture(first_source,{name=FILE}));must(f.p:AdoptLoad(FILE,f.entry))
         f.capture=must(f.p:GetVersions(FILE));f.classes=_editor_class
-        must(Files.Validate(f.capture));eq(#f.capture.snapshot.owners,2,"genuine complete owner capture")
+        must(Files.Validate(f.capture));eq(#f.capture.snapshot.owners,3,"genuine complete owner capture")
         f.p._activated,f.p._supported,f.p._sandbox_ok=true,true,true
         f.p._activation_attempted=true
         f.p:GetStore():SetAccepted(FILE,first_source,"baseline")
@@ -184,7 +184,7 @@ function M.run()
         eq(receipt.version,1,label.." common receipt version")
         eq(receipt.snapshot,f.capture.snapshot,label.." actual receipt snapshot")
         eq(receipt.changed,receipt.snapshot~=r.base,label.." actual changed flag")
-        eq(#receipt.owner_deltas,2,label.." both owner deltas")
+        eq(#receipt.owner_deltas,3,label.." both owner deltas")
         local last=must(f.discovered[#f.discovered],"post-publication discovery required")
         eq(last.snapshot,receipt.snapshot,label.." new discovery against installed snapshot")
         eq(last.source,r.source,label.." same complete analysis reused")
@@ -196,8 +196,8 @@ function M.run()
         eq(witness.report.operation.source,r.source,label.." witness same complete source")
         eq(witness.report.prepared.discovery,last.discovery,label.." witness new discovery")
         eq(#witness.report.operation.roots,0,label.." accounting has empty publication roots")
-        eq(#witness.report.prepared.entries,2,label.." all original owners checked")
-        eq(#witness.report.owner_evidence,2,label.." complete owner coverage")
+        eq(#witness.report.prepared.entries,3,label.." all original owners checked")
+        eq(#witness.report.owner_evidence,3,label.." complete owner coverage")
         eq(witness.plan.proposed_snapshot,witness.plan.base_snapshot,label.." no invented snapshot")
         eq(#witness.plan.joins+#witness.plan.journal,0,label.." no mechanical publication actions")
         for _,row in ipairs(witness.report.prepared.entries) do

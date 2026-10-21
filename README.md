@@ -2,7 +2,8 @@
 
 LuaSTG Editor Sharp 的 **Spell Practice（符卡练习）热重载** 调试插件。
 支持直接在符卡节点下编写逻辑，也支持回调调用同文件的具名局部函数；
-普通符卡练习已有历史限定实机证据；下述共同发布路径仍待最终集成与目标引擎验收。
+普通符卡练习已有历史限定实机证据；文件级共同发布已有离线回归，
+对象类 File Apply 也已完成当前引擎的限定场景验收。
 SC Debugger 有定位支持，完整切关路径仍待验收。
 
 编辑器重新生成 `*_Boss.lua` 后，插件等待两次读取字节一致，再显示候选。
@@ -71,7 +72,7 @@ v0.21.111 / LuaJIT 2.1.1744887079。生产发布和本次共享状态回归均�
 这不是通用 Host/Value 热更；任意中间插入/重排、新类创建或非字面量构造仍不保证可隔离。
 文件级门禁与完整剩余核对由 `SpellHotReload/Apply/FileApply.lua` 负责；Card 仅提供
 卡接线/绑定影响的证据和已证明的定义语句覆盖，不比较无关语句、不决定整文件完成。
-全局/字段值及 Host 场景不在生产支持范围；Local 和 Card 的安全定义集合
+全局/字段值及 Host 场景不在生产支持范围；Local、Card 和 Object 的安全定义集合
 由一次共同文件事务发布，各自保存私有定义规则和版本。
 独立的全局 `Include 'path'` / `Include('path')`（含长字符串、尾随分号）不参与
 符卡热重载：增删或改路径不阻断 Apply，也不单独保留候选；不会执行 Include，
@@ -155,6 +156,20 @@ function _tmp_sc:init()
 end
 ```
 
+对象类 File Apply 仅处理已监视 `*_Boss.lua` 中经真实首载捕获的
+`_editor_class["name"]=Class(_object/bullet/enemy/laser/laser_bent)`。保持类表和已有对象字段，
+成对发布类自身显式定义的 `init/del/frame/render/colli/kill` 与 `[1]..[6]`。
+Apply 不执行 Class、注册或 init；后续调用/新建对象使用更新定义，已有 coroutine 保持原闭包。
+Current 不自动选择对象方法；对象变化仍计入候选剩余。新增/删除回调、类名/基类变化、
+重复/动态键、类表漂移和来源不明的派生继承副本保持 pending 或拒绝。
+不扩大监视范围至 Global/Mid 文件。需重启游戏建立构造来源证据；不从后来活体补种。
+正式离线回归覆盖三 owner 共同发布及写后失败回滚。当前 LuaSTG Sub v0.21.111 /
+LuaJIT 2.1.1744887079 的限定实机验证覆盖真实首载、原生 watcher、活体回调、
+后续 New/init、旧/新 task、实际 receipt、漂移拒绝和候选剩余。另以原 THlib
+脚本及贴图验证 ball_small、直线 laser、sample4 曲线 laser 的渲染、碰撞接收和
+Del 消亡；enemy 仍仅有同一协议的离线覆盖，Kill 掉落、完整自机系统、所有
+弹型/材质及性能未纳入这些限定证据。
+
 ## 边界
 
 - 卡片定位以加载时的生成源码为基准，计数包含对话、移动和非符卡阶段，
@@ -188,7 +203,7 @@ end
 
 1. **首载捕获**：`__init__.lua` 在 `afterTHlib` 安装 `LoadHook`，经
    `AnchorLoad` 从一次正常文件执行取得完整 FileAnalysis、函数身份和共享单元锚点。
-   `Plugin:AdoptLoad` 收齐 Local 和 Card 的独立首载贡献，再由 `FileVersions`
+   `Plugin:AdoptLoad` 收齐 Local、Card 和 Object 的独立首载贡献，再由 `FileVersions`
    一次建立共同文件快照。任一贡献失败都保留拒绝原因，不从后来的活体补建历史。
    同文件再次执行时保留原首载记录并禁用热重载。
 2. **稳定候选与公共分析**：`Watcher` / `SnapshotStore` 双读字节一致后标为 stable；
@@ -239,6 +254,7 @@ end
 | `Adapters/Local/Local.lua`、`LocalDefinitions.lua`、`LocalVersions.lua` | 已有全文节点上的局部定义匹配、支持范围、私有映射、实际版本、依赖需求和最终选择 |
 | `Adapters/Card/Card.lua`、`CardCallbacks.lua` | 回调结构解释、所有权与业务绑定约束、最终回调准备和片段登记；不选择 Local 定义或独立发布 |
 | `Adapters/Card/CardTarget.lua`、`CardVersions.lua` | 精确对应/重启证明、Card 私有版本和公共实际图派生的依赖观察 |
+| `Adapters/Object/` | 正常首载 Class 来源、已有对象类/六回调与数字槽、复制继承拒绝、私有版本及共同事务片段 |
 | `Source/` | 公共语法/绑定/节点事实、编译与选中闭包准备/接线工具；不拥有 Local 领域规则、版本或发布权限 |
 | `Apply/FileApply.lua` | 顶层效果门禁、Include 排除及完整候选剩余核对 |
 | `Apply/FileCommit.lua`、`CommitCheck.lua`、`CommitPhase.lua` | 中立共同事务、所有 owner 权限/冲突/Guard、单次相位授权、日志、回滚及最后安装共同快照 |
@@ -282,7 +298,7 @@ luajit plugin/SpellHotReload/SpellHotReload/tests/Run.lua
 ```
 
 `Run.lua` 保留原基础源码、发现、协调、监视和重启子集，并纳入公共依赖、Local、
-Card、共同事务、FileApply 和 Plugin 集成及退役断言。它要求真实共享 upvalue 能力，
+Card、Object、共同事务、FileApply 和 Plugin 集成及退役断言。它要求真实共享 upvalue 能力，
 不代表所有 spec，也不属于引擎 smoke。完整回归将每个 `tests/*Spec.lua` 的 `run()`
 放在独立进程调用；部分故障注入 spec 还需对应源码路径参数。首载/释放、事务回滚、
 Current/文件 Apply、候选剩余、连续共享状态和冻结 Retry 各有定向测试。

@@ -94,8 +94,8 @@ function M.run()
         eq(r.changed,changed,label.." actual changed flag")
         eq(r.snapshot.revision,revision,label.." actual revision")
         eq(r.snapshot,f.capture.snapshot,label.." receipt actually installed")
-        eq(#r.owner_deltas,2,label.." both owner deltas")
-        eq(#record.fragments,2,label.." both owners registered once")
+        eq(#r.owner_deltas,3,label.." both owner deltas")
+        eq(#record.fragments,3,label.." both owners registered once")
         if not changed then eq(r.snapshot,record.base,label.." exact no-op snapshot") end
         local last=must(f.discovered[#f.discovered])
         check(last.discovery~=f.prepared.driver_prepared.discovery,label.." new postreceipt discovery")
@@ -125,7 +125,7 @@ function M.run()
         f.entry=must(Load.Capture(SOURCE,{name=FILE}))
         must(f.p:AdoptLoad(FILE,f.entry))
         f.capture=must(f.p:GetVersions(FILE))
-        must(Files.Validate(f.capture));eq(#f.capture.snapshot.owners,2,"real complete first-load owners")
+        must(Files.Validate(f.capture));eq(#f.capture.snapshot.owners,3,"real complete first-load owners")
         f.p._activated,f.p._supported=true,true
         f.p._activation_attempted=true
         f.p._sandbox_ok=true

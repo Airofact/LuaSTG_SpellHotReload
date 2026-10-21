@@ -45,7 +45,7 @@ end
 ---success, never a retarget or a second wrapper. on_capture receives the FULL
 ---capture entry, including policy/names/slots/reloadable/reason/loaded_source.
 ---Options: select(filename)->key|nil, read(filename,key)->source|nil, capability,
----limit, ir_options. select is explicit so installing never broadens the scope.
+---limit, ir_options, capture(content,options)->entry|nil,error,phase (trusted). select is explicit so installing never broadens the scope.
 function M.Install(engine, on_capture, options)
     if type(engine) ~= "table" or type(engine.DoFile) ~= "function" then
         return false, "engine.DoFile must be a function"
@@ -53,13 +53,16 @@ function M.Install(engine, on_capture, options)
     if installed[engine] then return true end
     options = options or {}
     if type(options) ~= "table" then return false, "options must be a table" end
+    if options.capture~=nil and type(options.capture)~="function" then
+        return false,"capture must be a trusted load function"
+    end
     if type(on_capture) ~= "function" or type(options.select) ~= "function" then
         return false, "on_capture and select must be functions"
     end
     -- Freeze configuration at install; mutating options cannot retarget a hook.
     local state = {
         original = engine.DoFile, engine = engine, on_capture = on_capture,
-        select_file = options.select, reader = options.read,
+        select_file = options.select, reader = options.read, capture = options.capture,
         capability = options.capability, limit = options.limit,
         ir_options = options.ir_options,
     }
@@ -74,7 +77,7 @@ function M.Install(engine, on_capture, options)
             content = read_source(state.engine, filename, key)
         end
         if state.retired or type(content) ~= "string" then return state.original(filename, ...) end
-        local entry, reason, phase = AnchorLoad.Capture(content, {
+        local entry, reason, phase = (state.capture or AnchorLoad.Capture)(content, {
             name = filename, args = { n = select("#", ...), ... },
             capability = state.capability, limit = state.limit, ir_options = state.ir_options,
         })
@@ -124,7 +127,7 @@ function M.Release(engine)
     installed[engine] = nil
     if engine.DoFile == state.wrapper then engine.DoFile = state.original end
     state.engine, state.on_capture, state.select_file, state.reader = nil, nil, nil, nil
-    state.capability, state.limit, state.ir_options, state.wrapper = nil, nil, nil, nil
+    state.capability, state.limit, state.ir_options, state.wrapper, state.capture = nil, nil, nil, nil, nil
     return true
 end
 

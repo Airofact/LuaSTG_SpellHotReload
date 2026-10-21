@@ -115,12 +115,12 @@ function M.run()
         eq(receipt.changed,false,label.." no changed definitions")
         eq(receipt.snapshot,base,label.." exact installed snapshot")
         eq(recorded.base,base,label.." actual base")
-        eq(#receipt.owner_deltas,2,label.." both owner deltas")
+        eq(#receipt.owner_deltas,3,label.." both owner deltas")
         for _,fragment in ipairs(recorded.fragments) do
             eq(#fragment.joins+#fragment.cell_writes+#fragment.raw_writes,0,label.." owner no mutations")
             eq(fragment.proposed_group,fragment.base_group,label.." owner exact retained group")
         end
-        eq(#recorded.fragments,2,label.." both owner fragments")
+        eq(#recorded.fragments,3,label.." both owner fragments")
         eq(f.p._store:HasPartialPublication(FILE),false,label.." no partial publication")
         check(f.p._store:GetCandidate(FILE)~=nil,label.." pending candidate retained")
         eq(f.p._completion_checks[FILE],nil,label.." no completion witness")
@@ -181,7 +181,7 @@ function M.run()
         f.entry=must(Load.Capture(first_source or SOURCE,{name=FILE}))
         must(f.p:AdoptLoad(FILE,f.entry))
         f.capture=must(f.p:GetVersions(FILE))
-        must(Files.Validate(f.capture));eq(#f.capture.snapshot.owners,2,"real complete owner capture")
+        must(Files.Validate(f.capture));eq(#f.capture.snapshot.owners,3,"real complete owner capture")
         f.p._activated,f.p._supported=true,true
         f.p._activation_attempted=true
         f.p._sandbox_ok=true
@@ -204,7 +204,7 @@ function M.run()
             eq(publication.revision,f.capture.snapshot.revision,"actual common publication revision")
             eq(publication.entry,f.entry,"actual publication entry")
             eq(publication.session_id,f.capture.snapshot.session_id,"actual publication session")
-            eq(#publication.groups,2,"both original owners published")
+            eq(#publication.groups,3,"both original owners published")
             for i,group in ipairs(f.capture.snapshot.owners) do
                 local actual=publication.groups[i]
                 eq(actual.owner,group.owner,"actual owner identity")

@@ -103,7 +103,7 @@ function M.run()
     end
     case("real Card-free Local file uses the common receipt and completes",function()
         local f=fixture(locals,true);candidate(f,locals:gsub("counter%+n","counter+n+10"))
-        eq(#f.capture.snapshot.owners,2,"empty original Card contribution is still present")
+        eq(#f.capture.snapshot.owners,3,"empty original Card contribution is still present")
         local result=f.p:ApplyFileFromUI(file)
         has(result,"candidate complete; removed","Local-only completion")
         eq(f.receipt.kind,"SpellHotReload.FileCommit.Receipt","first transaction result is common receipt")
@@ -181,7 +181,7 @@ function M.run()
         local current=Card.FreezeBinding(must(Card.CaptureCurrent()))
         local prepared=must(f.p:_PrepareVersioned(file,c,f.capture,d,current,"current"))
         eq(#prepared.operation.roots,1,"Current starts from only one Card private root")
-        eq(#prepared.driver_prepared.entries,2,"all original owners still prepare")
+        eq(#prepared.driver_prepared.entries,3,"all original owners still prepare")
         local lp=prepared.driver_prepared.entries[1].fragment
         local selected={};for _,name in ipairs(lp.local_names) do selected[name]=true end
         eq(#lp.local_names,2,"required helper and its retained state provider selected")
