@@ -1,0 +1,19 @@
+LIBRARY dims_tree_sitter_lua
+EXPORTS
+  tree_sitter_lua
+  ts_language_abi_version
+  ts_parser_new
+  ts_parser_delete
+  ts_parser_set_language
+  ts_parser_reset
+  ts_parser_parse_string
+  ts_tree_copy
+  ts_tree_edit
+  ts_tree_delete
+  ts_tree_get_changed_ranges
+  dims_layout
+  dims_root
+  dims_child
+  dims_field
+  dims_info
+  dims_ranges_free

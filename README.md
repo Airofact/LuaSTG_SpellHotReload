@@ -2,7 +2,7 @@
 
 LuaSTG Editor Sharp 的 **Spell Practice（符卡练习）热重载** 调试插件。
 支持直接在符卡节点下编写逻辑，也支持回调调用同文件的具名局部函数；
-普通符卡练习已有历史限定实机证据；下述共同发布路径仍待最终集成与目标引擎验收。
+普通符卡练习与共同发布路径已有历史限定实机证据；本次原生解析后端切换仍待目标引擎验收。
 SC Debugger 有定位支持，完整切关路径仍待验收。
 
 编辑器重新生成 `*_Boss.lua` 后，插件等待两次读取字节一致，再显示候选。
@@ -38,6 +38,15 @@ git add game/plugin/SpellHotReload
 THlib 符卡练习接口的 LuaSTG 环境；已验证环境为 THDiMS 的 LuaSTG Sub
 v0.21.111 / LuaJIT 2.1.1744887079。生产发布和本次共享状态回归均要求真实
 `debug.upvaluejoin` 能力。启用插件后重启游戏，使加载捕获先于 mod 执行。
+
+解析后端要求 Windows x64 LuaJIT FFI；目录安装必须包含
+`game/plugin/SpellHotReload/native/dims_tree_sitter_lua.dll`。从 `game/` 工作目录
+启动引擎，插件使用该物理相对路径加载 DLL；zip 插件安装不在支持范围。
+DLL 包含固定 tree-sitter 核心、Lua grammar 和指针式 FFI 桥接，不依赖引擎
+导出 Lua C API。缺失 DLL 或 ABI 不匹配会拒绝分析，没有另一解析器回退。
+版本、许可证和重建说明见 [native/README.md](native/README.md)。
+这次后端切换的目标引擎验收与同输入 Apply 性能结果仍待取得。
+
 
 ## 使用
 
@@ -315,15 +324,37 @@ Numeric spelling is validated once, without evaluation; unary minus remains a
 separate operator. All consumers share these token categories and byte offsets.
 Card policy accepts number tokens directly and still refuses arithmetic or calls.
 
-`Source/LuaSyntax.lua` consumes those tokens directly with Lua 5.1 grammar,
-so top-level statement boundaries do not depend on line breaks. It performs
-no token coalescing, numeral rescanning, value evaluation or runtime type inference. It retains a syntax tree of nested blocks and expressions without compiling or executing the file. Lexer errors
-and unsupported syntax produce no partial analysis. FileAnalysis additionally
-checks full-source compiler limits before owner discovery; selected closure/capture
-checks still run in preparation. Syntax boundaries alone are not a complete
-binding or runtime identity proof. LuaJIT-only labels/goto, cdata and
-hex-float numerals are currently unsupported; nesting over 160 analysis levels
-is refused with a diagnostic.
+`Source/SyntaxTree.lua` is the stable public entry. Its source-level
+`implementation = "TreeSitter"` selects once when the module is loaded and
+returns `Source.SyntaxTreeImpl.TreeSitter` directly. Unknown names are errors;
+there is no runtime backend switch or fallback. The returned table and functions
+are the implementation itself, so snapshot identity and test spies stay shared.
+`Source/SyntaxTreeImpl/TreeSitter.lua` owns parsing, private node mapping, syntax
+queries and immutable snapshots. `Source/Native.lua` owns FFI access, parser
+sessions and tree pins; the handwritten LuaSyntax backend is removed. Lexer
+still provides the supported literals and exact token/source evidence. Native
+ERROR/MISSING nodes and unsupported syntax produce no partial analysis.
+FileAnalysis also compiles the entire source with the current LuaJIT compiler
+without executing it; a native tree alone is not proof of valid Lua. Selected
+closure/capture checks still run in preparation. LuaJIT-only labels/goto, cdata
+and hex-float numerals remain unsupported; nesting over 160 analysis levels is
+refused. No old AST is projected for consumers.
+
+Normal first load establishes the file's parser session. Plugin retains that
+session and advances a separate baseline only after a successful FileAnalysis
+Build. A compilation or analysis failure leaves the previous baseline intact;
+a later preparation or commit failure does not undo successful syntax analysis.
+The original first-load Source and loaded bytes are never replaced. Each update
+copies the previous native tree before editing it; older snapshots remain
+readable. Multiple Plugins may share a counted parser lease. Missing files,
+duplicate execution and session Release retire ownership; the final owner closes
+the parser after any active parse returns. Tree readers keep their trees and DLL
+alive independently and cannot reopen a retired parser.
+
+Analysis baselines are not published versions or cached permission. Actual
+version comparison, Fresh, live-object checks, Guard, the common transaction and
+post-publication discovery still execute. Incremental parsing reuses syntax;
+full lexical context and binding analysis remain part of every Build.
 
 `Source/StatementAlignment.lua` provides ordered exact-signature evidence for
 file policy and remainder diagnostics. Unique signatures anchor unchanged
@@ -342,8 +373,8 @@ These are offline regression tests; current engine integration is still pending.
 
 The shared syntax tree records declarations, assignment targets/values, calls and
 arguments, members/indices, function parameters/bodies, table fields and control
-blocks. Source.SyntaxTree supplies structural queries and byte extraction, not
-another parser or runtime permission. FileAnalysis builds the shared whole-file
+blocks. Source.SyntaxTree supplies structural queries and byte extraction over its
+native backend; those facts grant no runtime permission. FileAnalysis builds the shared whole-file
 IR and binding facts; LocalDefinitions owns Local matching/support, while
 FunctionPlan prepares only owner-selected descriptors with full lexical context.
 Card discovery/registrations, file wiring/Include policy and closure nested-reference

@@ -29,7 +29,7 @@ local M = {}
 M.HostCalls = {}
 
 -- Parse full Lua 5.1 statements; whitespace never chooses a boundary.
-local function split(content)
+local function split(content, previous_syntax)
     local tokens, lexical_error = Lexer.Tokenize(content)
     if lexical_error then return nil, lexical_error end
     local lines, line, cursor = {}, 1, 1
@@ -45,7 +45,7 @@ local function split(content)
         end
         lines[i]=line
     end
-    local syntax, reason = Tree.Parse(content,tokens)
+    local syntax, reason = Tree.Parse(content,tokens,previous_syntax)
     if not syntax then return nil, reason end
     return tokens, lines, Tree.Statements(syntax), syntax
 end
@@ -135,7 +135,7 @@ end
 ---@return table[]? nodes
 ---@return string? error
 ---@return table? analysis -- shared lexical/syntax snapshot, NOT binding proof
-function M.Analyze(content, options)
+function M.Analyze(content, options, previous_syntax)
     options = options or {}
     if type(content) ~= "string" then
         return nil, "content must be a string"
@@ -146,7 +146,7 @@ function M.Analyze(content, options)
         source_offset = 3
     end
 
-    local tokens, lines, spans, syntax = split(content)
+    local tokens, lines, spans, syntax = split(content, previous_syntax)
     if not tokens then return nil, lines end
     local nodes, statements = {}, {}
     for k = 1, #spans do

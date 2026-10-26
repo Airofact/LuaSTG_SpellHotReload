@@ -1,4 +1,4 @@
--- Full-file syntax facts. No Local policy, live state, cache or publication.
+-- Full-file syntax facts. No Local policy, live state or publication.
 local IR = require("SpellHotReload.Source.TopLevelIR")
 local Binding = require("SpellHotReload.Source.Binding")
 local Tree = require("SpellHotReload.Source.SyntaxTree")
@@ -12,6 +12,19 @@ end
 local function fail(code, message)
     return nil,{phase="analyze",code=code,message=message}
 end
+-- Cache only BOM normalization of immutable strings, never a Validate result.
+-- Values cannot retain their weak source key. Every public fact is checked below.
+local source_texts=setmetatable({}, {__mode="k"})
+local function source_text(source)
+    local content=source.content
+    local saved=source_texts[source]
+    if not saved or saved.content~=content then
+        local offset=content:sub(1,3)=="\239\187\191" and 3 or 0
+        saved={content=content,text=offset==0 and content or content:sub(4),offset=offset}
+        source_texts[source]=saved
+    end
+    return saved.text,saved.offset
+end
 -- Trusted read-only objects, not a hostile-table sandbox. Check provenance of
 -- the public components and the current compiler environment without rescanning.
 function M.Validate(source)
@@ -22,8 +35,8 @@ function M.Validate(source)
         return fail("unsupported","complete FileAnalysis required")
     end
     local a,b,stamp=source.analysis,source.bindings,source.syntax_check
-    local offset=source.content:sub(1,3)=="\239\187\191" and 3 or 0
-    if a.source~=source.content:sub(offset+1) or a.source_offset~=offset
+    local text,offset=source_text(source)
+    if a.source~=text or a.source_offset~=offset
         or not Tree.MatchesInput(a.syntax,a.source,a.tokens) or not plain(a.tokens) or not plain(a.nodes)
         or not plain(a.statements) or b.analysis~=a or source.sites.analysis~=a
         or not plain(b.statements) or #b.statements~=#a.statements
@@ -37,7 +50,7 @@ function M.Validate(source)
     end
     return true
 end
-function M.Build(content, options)
+function M.Build(content, options, previous_source)
     if type(content)~="string" then return fail("unsupported","source must be a string") end
     if content:find("\0",1,true) or content:sub(1,1)=="\27" then
         return fail("unsupported","text Lua source required")
@@ -51,7 +64,13 @@ function M.Build(content, options)
             or (not called and type(chunk)=="string" and chunk) or "source compilation failed")
     end
     chunk=nil -- Never execute the candidate chunk.
-    local nodes,err,analysis=IR.Analyze(content,options)
+    local previous_syntax
+    if previous_source~=nil then
+        local valid,problem=M.Validate(previous_source)
+        if not valid then return nil,problem end
+        previous_syntax=previous_source.analysis.syntax
+    end
+    local nodes,err,analysis=IR.Analyze(content,options,previous_syntax)
     if not nodes then return fail("unsupported",err or "source analysis failed") end
     local bindings,berr=Binding.Analyze(analysis)
     if not bindings then return fail("unsupported",berr or "binding analysis failed") end
@@ -68,6 +87,16 @@ function M.Build(content, options)
     local valid,problem=M.Validate(source)
     if not valid then return nil,problem end
     return source
+end
+-- Retain only mutable parser ownership. Old syntax remains readable after release.
+function M.Retain(source)
+    local valid,err=M.Validate(source)
+    if not valid then return nil,err end
+    local called,release,reason=pcall(Tree.RetainParser,source.analysis.syntax)
+    if not called or type(release)~="function" then
+        return fail("stale",called and tostring(reason) or tostring(release))
+    end
+    return release
 end
 -- Source membership is a snapshot-owned handle plus the original whole-file site.
 function M.Owns(source,node)

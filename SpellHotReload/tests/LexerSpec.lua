@@ -70,17 +70,17 @@ function M.run()
     local values={"0x1e","+","2","-",".5","..","f","(","...",")"}
     eq(#ts,#values,"hex exponent-like digit does not consume addition")
     for i,value in ipairs(values) do eq(ts[i].value,value,"mixed token "..i) end
-    local Syntax=require("SpellHotReload.Source.LuaSyntax")
+    local Syntax=require("SpellHotReload.Source.SyntaxTree")
     local source="local x=0x1e+2; f(x,...)"
     ts=assert(Lexer.Tokenize(source))
     local original={}
     for i,t in ipairs(ts) do original[i]={kind=t.kind,value=t.value,pos=t.pos,depth=t.depth} end
-    local rows=assert(Syntax.Parse(source,ts)).body
+    local rows=Syntax.Statements(assert(Syntax.Parse(source,ts)))
     eq(#rows,2,"syntax consumes lexer tokens")
     same(ts,original,"syntax leaves shared tokens untouched")
-    eq(rows[1].first,1,"syntax first token index")
-    eq(rows[1].last,7,"syntax uses original complete-token indices")
-    eq(rows[2].first,8,"syntax next token index")
+    eq(Syntax.Range(rows[1]),1,"syntax first token index")
+    eq(select(2,Syntax.Range(rows[1])),7,"syntax uses original complete-token indices")
+    eq(Syntax.Range(rows[2]),8,"syntax next token index")
     eq(Capture.Trailer({}), "return {}", "empty trailer bytes")
     eq(Capture.Trailer({"a"}), 'return {["a"]=a}', "single trailer bytes")
     eq(Capture.Trailer({"a","b"}), 'return {["a"]=a,["b"]=b}', "ordered trailer bytes")

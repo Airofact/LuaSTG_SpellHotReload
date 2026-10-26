@@ -8,7 +8,7 @@ for _,name in ipairs({
     "CardDeletionEvidenceSpec","DriverDiscoverySpec","WatcherSpec","CurrentRestartSpec",
     "DependenciesSpec","LocalVersionsSpec","LocalAdapterSpec","CardVersionCoreSpec",
     "CardAdapterSpec","FileCommitSpec","FilePolicyIntegrationSpec","PluginEntrySpec",
-    "RetiredInterfacesSpec",
+    "RetiredInterfacesSpec","NativeOwnershipSpec","IncrementalSourceSpec",
 }) do
     local result=require("SpellHotReload.tests."..name).run()
     assert(result.failed==0,name.." failed")

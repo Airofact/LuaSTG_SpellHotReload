@@ -4,7 +4,7 @@ function M.run()
     local IR=require("SpellHotReload.Source.TopLevelIR")
     local Source=require("SpellHotReload.Source.FileAnalysis")
     local Tree=require("SpellHotReload.Source.SyntaxTree")
-    local Syntax=require("SpellHotReload.Source.LuaSyntax")
+    local Syntax=Tree -- Spy the actual public parse seam for this backend.
     local Lexer=require("SpellHotReload.Source.Lexer")
     local Binding=require("SpellHotReload.Source.Binding")
     local Cards=require("SpellHotReload.Adapters.Card.Card")
@@ -15,6 +15,9 @@ function M.run()
     local function analyze(source)
         local nodes,err,analysis=IR.Analyze(source);assert(nodes,err);return analysis
     end
+    local Impl=require("SpellHotReload.Source.SyntaxTreeImpl.TreeSitter")
+    eq(Tree,Impl,"public syntax entry is the selected implementation table")
+    eq(Tree.Parse,Impl.Parse,"public parse retains implementation function identity")
     local a=analyze("local a,b=1,2; local function f(x,...) local b={...};return function(y) return b[y],a end end; function T:m(n) return self,n end; T[k]=f(a); Include'path'")
     eq(Tree.Is(a.syntax,"chunk"),true,"root kind")
     local statements=Tree.Statements(a.syntax)
