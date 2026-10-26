@@ -42,7 +42,7 @@
 
 local Anchor = require("SpellHotReload.Load.Anchor")
 local Lexer = require("SpellHotReload.Source.Lexer")
-local Syntax = require("SpellHotReload.Source.LuaSyntax")
+local Tree = require("SpellHotReload.Source.SyntaxTree")
 local CodeCache = require("SpellHotReload.Source.CodeCache")
 
 local M = {}
@@ -219,12 +219,13 @@ end
 ---Field labels and declarations are distinct nodes. Scope shadowing is not proved.
 local function nested_mentions(ast,declared)
     local mentions={}
-    local function visit(n,functions)
-        if n.kind=="function" then functions=functions+1 end
-        if n.kind=="name" and declared[n.name] and functions>=2 then mentions[n.name]=true end
-        for _,child in ipairs(n.children) do visit(child,functions) end
-    end
-    visit(ast,0);return mentions
+    Tree.Walk(ast,function(n,parent,functions)
+        if Tree.Is(n,"name") and functions>=2 then
+            local name=Tree.Identifier(n)
+            if declared[name] then mentions[name]=true end
+        end
+    end)
+    return mentions
 end
 
 ---Assemble a fragment into a new closure whose free top-level names are real
@@ -354,9 +355,10 @@ function M.Create(body, target, visible, options)
         local fragment=form=="expression" and ("return "..body) or body
         local tokens,lexerr=Lexer.Tokenize(fragment)
         if lexerr then return nil,lexerr end
-        local reason;syntax,reason=Syntax.Parse(fragment,tokens)
+        local reason;syntax,reason=Tree.Parse(fragment,tokens)
         if not syntax then return nil,reason end
     end
+    if not Tree.IsNode(syntax) then return nil,"source-owned syntax reference required" end
     local nested = nested_mentions(syntax, prefix_set)
     for name in pairs(nested) do
         local found = false

@@ -37,22 +37,24 @@ end
 
 -- Declaration and reference sites are parser nodes, not token-neighbour guesses.
 local function top_level_declarations(ast)
-    if ast.kind~="local" and ast.kind~="local_function" then return nil end
+    local declaration=Tree.Match(ast,"declaration")
+    if not declaration then return nil end
     local names={}
-    for slot,binding in ipairs(ast.names) do
-        names[#names+1]={token=binding.first,name=binding.name,
-            slot=ast.kind=="local" and slot or nil,self_visible=ast.kind=="local_function"}
+    for slot,binding in ipairs(declaration.names) do
+        names[#names+1]={token=Tree.Range(binding),name=Tree.Identifier(binding),
+            slot=not declaration.self_visible and slot or nil,self_visible=declaration.self_visible}
     end
     return names
 end
 local function scan_references(tokens,ast,scope,self_declares)
     local certain,uncertain={},{}
     local repeat_scope=false
-    Tree.Walk(ast,function(n) if n.kind=="repeat" then repeat_scope=true end end)
+    Tree.Walk(ast,function(n) if Tree.Is(n,"repeat") then repeat_scope=true end end)
     for _,ref in ipairs(Tree.Names(ast)) do
-        local value=ref.name
+        local value=Tree.Identifier(ref)
         if scope[value] or (self_declares and self_declares[value]) then
-            local token=tokens[ref.first];local hit={name=value,token=ref.first,depth=token.depth}
+            local first=Tree.Range(ref)
+            local token=tokens[first];local hit={name=value,token=first,depth=token.depth}
             if token.depth==0 and not repeat_scope then certain[#certain+1]=hit
             else uncertain[#uncertain+1]=hit end
         end
@@ -108,9 +110,9 @@ function M.Analyze(analysis)
             nested = false, self_visible = false, unparsed = false,
         }
         for name, declaration in next, scope do record.visible[name] = declaration end
-        if not plain(statement.syntax) then return nil,"statement syntax is required" end
+        if not Tree.SameSnapshot(analysis.syntax,statement.syntax) then return nil,"statement syntax is required" end
         Tree.Walk(statement.syntax,function(n)
-            if n.kind=="function" or n.kind=="block" then record.nested=true end
+            if Tree.Is(n,"function") or Tree.Is(n,"block") then record.nested=true end
         end)
 
         local scanned = top_level_declarations(statement.syntax)

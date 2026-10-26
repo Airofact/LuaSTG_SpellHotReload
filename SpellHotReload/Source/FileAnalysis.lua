@@ -2,7 +2,7 @@
 local IR = require("SpellHotReload.Source.TopLevelIR")
 local Binding = require("SpellHotReload.Source.Binding")
 local Tree = require("SpellHotReload.Source.SyntaxTree")
-local M = {Kind="SpellHotReload.FileAnalysis", Version=1}
+local M = {Kind="SpellHotReload.FileAnalysis", Version=2}
 local function plain(v) return type(v)=="table" and getmetatable(v)==nil end
 local function compiler() return rawget(_G,"loadstring") or rawget(_G,"load") end
 local function environment()
@@ -24,7 +24,7 @@ function M.Validate(source)
     local a,b,stamp=source.analysis,source.bindings,source.syntax_check
     local offset=source.content:sub(1,3)=="\239\187\191" and 3 or 0
     if a.source~=source.content:sub(offset+1) or a.source_offset~=offset
-        or not plain(a.syntax) or not plain(a.tokens) or not plain(a.nodes)
+        or not Tree.MatchesInput(a.syntax,a.source,a.tokens) or not plain(a.tokens) or not plain(a.nodes)
         or not plain(a.statements) or b.analysis~=a or source.sites.analysis~=a
         or not plain(b.statements) or #b.statements~=#a.statements
         or not plain(b.by_name) or not plain(b.names) or not plain(b.declarations)
@@ -69,18 +69,39 @@ function M.Build(content, options)
     if not valid then return nil,problem end
     return source
 end
+-- Source membership is a snapshot-owned handle plus the original whole-file site.
+function M.Owns(source,node)
+    local valid=M.Validate(source)
+    return valid and Tree.SameSnapshot(source.analysis.syntax,node) and source.sites[node]~=nil or false
+end
+-- Inclusive original-file byte range. Token indexes and BOM adjustment stay here.
+function M.ByteRange(source,node)
+    local valid,err=M.Validate(source)
+    if not valid then return nil,err end
+    local analysis=source.analysis
+    if not Tree.SameSnapshot(analysis.syntax,node) or source.sites[node]==nil then
+        return fail("stale","syntax range requires a node owned by this source")
+    end
+    local first,last=Tree.Range(node)
+    local head,tail=analysis.tokens[first],analysis.tokens[last]
+    if first>last or not head or not tail then
+        return fail("unsupported","nonempty syntax range required")
+    end
+    return {first=head.pos+analysis.source_offset,
+        last=tail.pos+#tail.value-1+analysis.source_offset}
+end
 -- Definition-point TOP-LEVEL visibility, not a complete binding proof. The
 -- original function AST lets Compose keep parameter/local/nested-scope semantics.
 function M.Visible(source, node)
     local ok,err=M.Validate(source)
     if not ok then return nil,err end
-    local site=plain(node) and source.sites[node]
+    local site=M.Owns(source,node) and source.sites[node]
     local statement=site and site.statement and source.analysis.statements[site.statement]
     local direct
-    if statement then local target;target,direct=Tree.Function(statement.syntax) end
+    if statement then local definition=Tree.Match(statement.syntax,"definition");direct=definition and definition.fn end
     -- Parent functions/blocks introduce lexical bindings not proved by the
     -- top-level model. Owners must not prepare those via this API.
-    if not statement or node.kind~="function" or direct~=node then
+    if not statement or not Tree.Is(node,"function") or direct~=node then
         return fail("unsupported","direct top-level function with complete source context required")
     end
     local record=source.bindings.statements[site.statement]

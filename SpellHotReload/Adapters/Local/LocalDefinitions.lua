@@ -37,29 +37,33 @@ function M.Match(source)
     -- Group existing IR nodes ONCE. Selected preparation never rebuilds this.
     local by_statement={}
     for _,node in ipairs(a.nodes) do
-        local first=node.tok.first
-        local bucket=by_statement[first] or {};by_statement[first]=bucket
+        local syntax=node.syntax
+        local bucket=by_statement[syntax] or {};by_statement[syntax]=bucket
         bucket[#bucket+1]=node
     end
     for index,statement in ipairs(a.statements) do
         local record=b.statements[index]
         local ast=statement.syntax
-        local target,fn,method,self_visible=Tree.Function(ast)
-        if target and (target.kind=="name" or target.kind=="binding") and not method
-            and (ast.kind=="local" or ast.kind=="local_function" or record.visible[target.name]) then
+        local definition=Tree.Match(ast,"definition")
+        local target=definition and definition.target
+        local name=Tree.Identifier(target)
+        if name and not definition.method
+            and (Tree.Match(ast,"declaration") or record.visible[name]) then
+            local fn,self_visible=definition.fn,definition.self_visible
             local names,nerr=Source.Visible(source,fn)
             if not names then return nil,nerr end
-            local form=ast.kind=="local_function" and "statement" or "expression"
-            append(projection.definitions,target.name,{source=source,name=target.name,
+            local form=definition.self_visible and "statement" or "expression"
+            append(projection.definitions,name,{source=source,name=name,
                 statement=index,syntax=fn,visible=names,form=form,self_visible=self_visible,
-                signature=form=="statement" and Tree.Signature(ast,a.tokens)
-                    or Tree.FunctionSignature(fn,a.tokens),
+                signature=form=="statement" and Tree.Signature(ast)
+                    or Tree.FunctionSignature(fn),
                 source_range=statement.source_range})
         end
-        for _,node in ipairs(by_statement[statement.tok.first] or {}) do
+        for _,node in ipairs(by_statement[ast] or {}) do
             if node.carrier=="effect" and node.kind=="block" then
                 for _,ref in ipairs(Tree.Names(ast)) do
-                    if record.visible[ref.name] then projection.blocked[ref.name]=true end
+                    local name=Tree.Identifier(ref)
+                    if record.visible[name] then projection.blocked[name]=true end
                 end
             end
             local name=(node.carrier=="local" and node.kind~="declare"
@@ -70,7 +74,7 @@ function M.Match(source)
     for _,declaration in ipairs(b.declarations) do
         if projection.definitions[declaration.name]==nil then
             projection.initializers[declaration.name]=Tree.Signature(
-                a.statements[declaration.statement].syntax,a.tokens)
+                a.statements[declaration.statement].syntax)
         end
     end
     return projection

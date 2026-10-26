@@ -62,7 +62,7 @@ function M.run()
                     for _,fact in ipairs(c.dependencies.source_facts) do
                         eq(fact.source,c.common.source,"observer consumes same source")
                         eq(fact.source.sites[fact.node]~=nil,true,"observer consumes owned AST node")
-                        local body=Tree.FunctionSource(fact.node,fact.source.analysis,false)
+                        local body=Tree.FunctionSource(fact.node,false)
                         if options.block_body and body:find(options.block_body,1,true) and not seen[fact.root_id] then
                             seen[fact.root_id]=true
                             blocks[#blocks+1]={root_id=fact.root_id,reason={code="unsupported",message="fixture selected-AST business block"}}

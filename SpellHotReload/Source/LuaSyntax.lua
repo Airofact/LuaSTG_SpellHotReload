@@ -36,6 +36,11 @@ function M.Parse(source,tokens)
         if t.kind~="word" or keywords[t.value] then bad("identifier required") end
         i=i+1;return node(kind or "name",at,{name=t.value})
     end
+    local function fieldname()
+        local t=term(i)
+        if t.kind~="word" or keywords[t.value] then bad("identifier required") end
+        i=i+1;return t.value
+    end
     local function expressions()
         local list={expr(1)}
         while accept(",") do list[#list+1]=expr(1) end
@@ -60,19 +65,23 @@ function M.Parse(source,tokens)
         if accept("(") then local inner=expr(1);take(")");n=node("paren",first,{expression=inner},{inner})
         else n=name() end
         while true do
-            if accept(".") then
-                local field=name("binding")
-                n=node("member",first,{base=n,name=field.name,separator="."},{n})
-            elseif accept("[") then
+            local token=term(i);local suffix=token.value
+            if suffix=="." then
+                i=i+1
+                local field=fieldname()
+                n=node("member",first,{base=n,name=field,separator="."},{n})
+            elseif suffix=="[" then
+                i=i+1
                 local key=expr(1);take("]")
                 n=node("index",first,{base=n,key=key},{n,key})
-            elseif accept(":") then
-                local field=name("binding")
-                local callee=node("member",first,{base=n,name=field.name,separator=":"},{n})
+            elseif suffix==":" then
+                i=i+1
+                local field=fieldname()
+                local callee=node("member",first,{base=n,name=field,separator=":"},{n})
                 local args=arguments();local children={callee}
                 for _,a in ipairs(args) do children[#children+1]=a end
                 n=node("call",first,{callee=callee,args=args,method=true},children)
-            elseif value()=="(" or value()=="{" or term(i).kind=="string" then
+            elseif suffix=="(" or suffix=="{" or token.kind=="string" then
                 local args=arguments();local children={n}
                 for _,a in ipairs(args) do children[#children+1]=a end
                 n=node("call",first,{callee=n,args=args,method=false},children)
@@ -87,7 +96,7 @@ function M.Parse(source,tokens)
                 local at=i;local key,label
                 if accept("[") then key=expr(1);take("]");take("=")
                 elseif term(i).kind=="word" and not keywords[value()] and term(i+1).value=="=" then
-                    label=name("binding").name;take("=")
+                    label=fieldname();take("=")
                 end
                 local val=expr(1);local children=key and {key,val} or {val}
                 fields[#fields+1]=node("field",at,{key=key,name=label,array=not key and not label,value=val},children)
@@ -132,8 +141,10 @@ function M.Parse(source,tokens)
         elseif accept("function") then n=body(first)
         elseif v=="{" then n=constructor()
         else n=prefix() end
-        while binary[value()] and binary[value()]>=minimum do
-            local op=value();local rank=binary[op];i=i+1
+        while true do
+            local op=value();local rank=binary[op]
+            if not rank or rank<minimum then break end
+            i=i+1
             local right=expr((op==".." or op=="^") and rank or rank+1)
             n=node("binary",first,{operator=op,left=n,right=right},{n,right})
         end
@@ -141,8 +152,9 @@ function M.Parse(source,tokens)
     end
     local function variable(n) return n.kind=="name" or n.kind=="member" or n.kind=="index" end
     statement=function()
-        local first=i;local n,laststat
-        if accept("if") then
+        local first,v=i,value();local n,laststat
+        if v=="if" then
+            i=i+1
             local clauses,children={},{}
             local condition=expr(1);take("then");local inside=block()
             clauses[#clauses+1]={condition=condition,body=inside};children[#children+1]=condition;children[#children+1]=inside
@@ -153,16 +165,20 @@ function M.Parse(source,tokens)
             local otherwise
             if accept("else") then otherwise=block();children[#children+1]=otherwise end
             take("end");n=node("if",first,{clauses=clauses,otherwise=otherwise},children)
-        elseif accept("while") then
+        elseif v=="while" then
+            i=i+1
             local condition=expr(1);take("do");loops=loops+1
             local inside=block();loops=loops-1;take("end")
             n=node("while",first,{condition=condition,body=inside},{condition,inside})
-        elseif accept("do") then
+        elseif v=="do" then
+            i=i+1
             local inside=block();take("end");n=node("do",first,{body=inside},{inside})
-        elseif accept("repeat") then
+        elseif v=="repeat" then
+            i=i+1
             loops=loops+1;local inside=block();loops=loops-1;take("until");local condition=expr(1)
             n=node("repeat",first,{body=inside,condition=condition},{inside,condition})
-        elseif accept("for") then
+        elseif v=="for" then
+            i=i+1
             local names={name("binding")};local values,kind
             if accept("=") then
                 kind="for_numeric";values={expr(1)};take(",");values[#values+1]=expr(1)
@@ -175,19 +191,21 @@ function M.Parse(source,tokens)
             local children={};for _,x in ipairs(names) do children[#children+1]=x end
             for _,x in ipairs(values) do children[#children+1]=x end;children[#children+1]=inside
             n=node(kind,first,{names=names,values=values,body=inside},children)
-        elseif accept("function") then
+        elseif v=="function" then
+            i=i+1
             local target=name();local method=false
             while accept(".") do
-                local field=name("binding")
-                target=node("member",target.first,{base=target,name=field.name,separator="."},{target})
+                local field=fieldname()
+                target=node("member",target.first,{base=target,name=field,separator="."},{target})
             end
             if accept(":") then
-                local field=name("binding");method=true
-                target=node("member",target.first,{base=target,name=field.name,separator=":"},{target})
+                local field=fieldname();method=true
+                target=node("member",target.first,{base=target,name=field,separator=":"},{target})
             end
             local fn=body(first)
             n=node("function_statement",first,{target=target,fn=fn,method=method},{target,fn})
-        elseif accept("local") then
+        elseif v=="local" then
+            i=i+1
             if accept("function") then
                 local binding=name("binding");local fn=body(first+1)
                 n=node("local_function",first,{names={binding},fn=fn},{binding,fn})
@@ -198,11 +216,13 @@ function M.Parse(source,tokens)
                 for _,x in ipairs(values) do children[#children+1]=x end
                 n=node("local",first,{names=names,values=values},children)
             end
-        elseif accept("return") then
+        elseif v=="return" then
+            i=i+1
             local values={}
             if not terminator[value()] and value()~=";" then values=expressions() end
             n=node("return",first,{values=values},values);laststat=true
-        elseif accept("break") then
+        elseif v=="break" then
+            i=i+1
             if loops==0 then bad("break outside a loop") end
             n=node("break",first);laststat=true
         else

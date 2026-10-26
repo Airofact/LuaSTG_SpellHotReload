@@ -213,8 +213,7 @@ function M.Resolve(operation,report,roots,resolve)
             end
             local facts={}
             for _,fact in ipairs(result.source_facts or {}) do
-                if not plain(fact) or fact.source~=operation.source or not plain(fact.node)
-                    or operation.source.sites[fact.node]==nil then
+                if not plain(fact) or fact.source~=operation.source or not Source.Owns(operation.source,fact.node) then
                     return fail(operation,"ownership","foreign selected syntax fact",root.root_id)
                 end
                 append(facts,{source=operation.source,node=fact.node,unit_ref=item.unit_ref,root_id=root.root_id})

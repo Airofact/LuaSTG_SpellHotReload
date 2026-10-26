@@ -6,6 +6,7 @@ local Versions=require("SpellHotReload.Adapters.Card.CardVersions")
 local Files=require("SpellHotReload.Pipeline.FileVersions")
 local Binding=require("SpellHotReload.Adapters.Card.PracticeBinding")
 local Tree=require("SpellHotReload.Source.SyntaxTree")
+local CardSyntax=require("SpellHotReload.Adapters.Card.CardSyntax")
 local Card={name="Card",Id="card",ContractVersion=5}
 local CALLBACKS={"before","init","frame","render","beforedel","del","after"}
 local VIEW="SpellHotReload.Card.View"
@@ -43,15 +44,14 @@ end
 ---@return string? reason
 ---@return string? code  -- "unsupported" input/malformed, "ambiguous" interleave
 function Card.CardLists(analysis)
-    if type(analysis) ~= "table" or type(analysis.tokens) ~= "table"
-        or type(analysis.statements) ~= "table" then
+    if type(analysis) ~= "table" or type(analysis.statements) ~= "table" then
         return nil, "card lists need the shared analysis", "unsupported"
     end
-    local tokens, statements = analysis.tokens, analysis.statements
+    local statements = analysis.statements
     local anchors, order = {}, {}
     for position, statement in ipairs(statements) do
         local target,value=Tree.SingleAssignment(statement.syntax)
-        local key=value and value.kind=="table" and Tree.CardList(target) or nil
+        local key=Tree.Is(value,"table") and CardSyntax.CardList(target) or nil
         if key ~= nil then
             if key == "" then
                 return nil, "card list class key is empty", "unsupported"
@@ -72,7 +72,8 @@ function Card.CardLists(analysis)
         local previous = statements[entry.first - 1]
         local target,value
         if previous then target,value=Tree.SingleAssignment(previous.syntax) end
-        if target and Tree.ClassKey(target)==entry.class_key and value.kind=="call" and Tree.IsName(value.callee,"Class") then
+        local call=Tree.Match(value,"call")
+        if target and CardSyntax.ClassKey(target)==entry.class_key and call and Tree.IsName(call.callee,"Class") then
             entry.first = entry.first - 1
         end
     end

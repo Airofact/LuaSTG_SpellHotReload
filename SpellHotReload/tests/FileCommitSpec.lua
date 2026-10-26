@@ -106,11 +106,12 @@ function M.run()
             local hp=must(Compose.Plan(probe.created,entry))
             local syntax
             for _,statement in ipairs(facts.analysis.statements) do
-                local target_node,fn=Tree.Function(statement.syntax)
-                if target_node and target_node.kind=="member" and target_node.name=="callback" then syntax=fn end
+                local definition=Tree.Match(statement.syntax,"definition")
+                local target_node=definition and Tree.Match(definition.target,"member")
+                if target_node and target_node.name=="callback" then syntax=definition.fn end
             end
             local visible=must(Source.Visible(facts,syntax))
-            local created=must(Compose.Create(Tree.FunctionSource(syntax,facts.analysis,false),nil,visible,
+            local created=must(Compose.Create(Tree.FunctionSource(syntax,false),nil,visible,
                 {form="expression",syntax=syntax,name="FileCommitSpec:callback"}))
             local cp=must(Compose.Plan(created,entry))
             local nh,nc={fn=hp.fn,definition_version=2},{fn=cp.fn,definition_version=2}

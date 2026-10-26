@@ -29,9 +29,9 @@ local function ignored_include(scan,index)
     if not statement or not record or not record.visible or record.unparsed
         or record.visible.Include then return false end
     local ast=statement.syntax
-    local call=ast.kind=="call_statement" and ast.expression
+    local call=Tree.Match(ast,"call_statement")
     return call and Tree.IsName(call.callee,"Include") and #call.args==1
-        and call.args[1].kind=="literal" and call.args[1].literal_kind=="string" or false
+        and Tree.String(call.args[1])~=nil or false
 end
 
 
@@ -69,7 +69,7 @@ function M.CheckTopLevel(report)
         for index,statement in ipairs(scan.analysis.statements) do
             if not side.excluded[index] and not ignored_include(scan,index) then
                 local pieces,visible={},{}
-                local tokens,last=scan.analysis.tokens,statement.syntax.content_last
+                local tokens,last=scan.analysis.tokens,Tree.ContentLast(statement.syntax)
                 for i=statement.tok.first,last do
                     pieces[#pieces+1]=tokens[i].kind..":"..#tokens[i].value..":"..tokens[i].value
                 end
@@ -285,7 +285,7 @@ function M.Remaining(report)
             next_token = last + 1
             if not claims[index] and not ignored_include(scan,index) then
                 local pieces = {}
-                for i=first,statement.syntax.content_last do
+                for i=first,Tree.ContentLast(statement.syntax) do
                     local token=tokens[i]
                     pieces[#pieces+1]=token.kind .. ":" .. #token.value .. ":" .. token.value
                 end

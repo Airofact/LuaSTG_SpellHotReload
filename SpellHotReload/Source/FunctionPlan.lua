@@ -27,7 +27,7 @@ local function same(a,b)
 end
 local function descriptor(source,d)
     if not plain(d) or d.source~=source or type(d.name)~="string"
-        or not plain(d.syntax) or d.syntax.kind~="function" then
+        or not Source.Owns(source,d.syntax) or not Tree.Is(d.syntax,"function") then
         return fail("unsupported","selected source-owned function descriptor required")
     end
     local visible,err=Source.Visible(source,d.syntax)
@@ -36,8 +36,9 @@ local function descriptor(source,d)
         return fail("unsupported","descriptor disagrees with definition-point visibility",nil,d.name)
     end
     local site=source.sites[d.syntax]
-    local target=Tree.Function(source.analysis.statements[site.statement].syntax)
-    if not target or (target.kind~="name" and target.kind~="binding") or target.name~=d.name then
+    local definition=Tree.Match(source.analysis.statements[site.statement].syntax,"definition")
+    local target=definition and definition.target
+    if not target or Tree.Identifier(target)~=d.name then
         return fail("unsupported","descriptor target disagrees with source",nil,d.name)
     end
     if Compose.CompilerIdentity()~=source.syntax_check.compiler then
@@ -53,7 +54,7 @@ end
 function M.Probe(source,definition)
     local valid,err=descriptor(source,definition)
     if not valid then return nil,err end
-    local created,why=Compose.Create(Tree.FunctionSource(definition.syntax,source.analysis,false),
+    local created,why=Compose.Create(Tree.FunctionSource(definition.syntax,false),
         nil,definition.visible,{form="expression",syntax=definition.syntax,name="SelectedFunction:"..definition.name})
     if not created then return fail("compile",why,nil,definition.name) end
     local final,problem=Source.Validate(source)

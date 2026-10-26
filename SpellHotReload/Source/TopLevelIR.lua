@@ -18,7 +18,6 @@
 --------------------------------------------------------------------------------
 
 local Lexer = require("SpellHotReload.Source.Lexer")
-local Syntax = require("SpellHotReload.Source.LuaSyntax")
 local Tree = require("SpellHotReload.Source.SyntaxTree")
 
 local M = {}
@@ -46,49 +45,56 @@ local function split(content)
         end
         lines[i]=line
     end
-    local syntax, reason = Syntax.Parse(content,tokens)
+    local syntax, reason = Tree.Parse(content,tokens)
     if not syntax then return nil, reason end
-    return tokens, lines, syntax.body, syntax
+    return tokens, lines, Tree.Statements(syntax), syntax
 end
 
 -- Classification consumes the parser's nodes; token text is used only for display.
 local function classify(ast,tokens,line,options)
     local nodes={}
+    local first,last=Tree.Range(ast)
     local function push(n)
-        n.line=line;n.tok={first=ast.first,last=ast.last};n.syntax=ast;nodes[#nodes+1]=n;return n
+        n.line=line;n.tok={first=first,last=last};n.syntax=ast;nodes[#nodes+1]=n;return n
     end
-    if ast.kind=="local" or ast.kind=="local_function" then
-        for slot,binding in ipairs(ast.names) do
-            push({carrier="local",kind=ast.kind=="local_function" and "function" or (#ast.values>0 and "value" or "declare"),
-                name=binding.name,slot=ast.kind=="local" and slot or nil})
+    local declaration=Tree.Match(ast,"declaration")
+    local definition=Tree.Match(ast,"definition")
+    local assignment=Tree.Match(ast,"assignment")
+    local call=Tree.Match(ast,"call_statement")
+    if declaration then
+        for slot,binding in ipairs(declaration.names) do
+            push({carrier="local",kind=declaration.self_visible and "function" or (#declaration.values>0 and "value" or "declare"),
+                name=Tree.Identifier(binding),slot=not declaration.self_visible and slot or nil})
         end
-    elseif ast.kind=="function_statement" then
-        local target=ast.target
-        if target.kind=="name" then push({carrier="global",kind="function",name=target.name})
-        else push({carrier="field",kind="function",path=Tree.Display(target,tokens),root=Tree.Root(target)}) end
-    elseif ast.kind=="assign" then
-        for slot,target in ipairs(ast.targets) do
-            local path=Tree.Display(target,tokens)
-            if target.kind=="name" then
-                push({carrier="global",kind="assign",name=target.name,slot=slot,
-                    table_rebuild=ast.values[1] and ast.values[1].kind=="table" or nil})
+    elseif definition and definition.form=="function-statement" then
+        local target=definition.target
+        if Tree.Is(target,"name") then push({carrier="global",kind="function",name=Tree.Identifier(target)})
+        else push({carrier="field",kind="function",path=Tree.Display(target),root=Tree.Root(target)}) end
+    elseif assignment then
+        for slot,target in ipairs(assignment.targets) do
+            local path=Tree.Display(target)
+            if Tree.Is(target,"name") then
+                push({carrier="global",kind="assign",name=Tree.Identifier(target),slot=slot,
+                    table_rebuild=assignment.values[1] and Tree.Is(assignment.values[1],"table") or nil})
             else
                 local append=false
-                if target.kind=="index" then Tree.Walk(target.key,function(n)
-                    if n.kind=="unary" and n.operator=="#" then append=true end
+                local index=Tree.Match(target,"index")
+                if index then Tree.Walk(index.key,function(n)
+                    local unary=Tree.Match(n,"unary")
+                    if unary and unary.operator=="#" then append=true end
                 end) end
                 if append then push({carrier="container",kind="append",path=path,slot=slot})
                 else push({carrier="field",kind="assign",path=path,root=Tree.Root(target),slot=slot}) end
             end
         end
-    elseif ast.kind=="call_statement" then
-        local callee=Tree.Path(ast.expression.callee) or ""
+    elseif call then
+        local callee=Tree.Path(call.callee) or ""
         local registered=M.HostCalls[callee] or (options.host_calls and options.host_calls[callee])
         push({carrier=(callee=="table.insert" or callee=="table.remove") and "container" or (registered and "host" or "effect"),
             kind=(callee=="table.insert" or callee=="table.remove") and callee or "call",callee=callee,
             reason=not registered and ("unadapted call: "..callee) or nil})
     else
-        push({carrier="effect",kind=ast.kind=="return" and "return" or "block",
+        push({carrier="effect",kind=Tree.Is(ast,"return") and "return" or "block",
             reason="control flow does not carry a value slot"})
     end
     return nodes
@@ -106,8 +112,9 @@ function M._link(tokens,nodes)
             if n.carrier=="local" then
                 local names,seen={},{}
                 for _,ref in ipairs(Tree.Names(n.syntax)) do
-                    if visible[ref.name] and not seen[ref.name] then seen[ref.name]=true;names[#names+1]=ref.name end
-                    if n.kind=="function" and ref.name==n.name then n.recursive=true end
+                    local name=Tree.Identifier(ref)
+                    if visible[name] and not seen[name] then seen[name]=true;names[#names+1]=name end
+                    if n.kind=="function" and name==n.name then n.recursive=true end
                 end
                 table.sort(names);n.deps=names
             end
@@ -143,7 +150,7 @@ function M.Analyze(content, options)
     if not tokens then return nil, lines end
     local nodes, statements = {}, {}
     for k = 1, #spans do
-        local first, last = spans[k].first, spans[k].last
+        local first, last = Tree.Range(spans[k])
         local first_byte = tokens[first].pos
         local last_byte = tokens[last].pos + #tokens[last].value - 1
         local text = content:sub(first_byte, last_byte)
@@ -181,7 +188,7 @@ function M.SplitStatements(content)
     if not tokens then return nil, lines end
     local result = {}
     for k = 1, #spans do
-        local first, last = spans[k].first, spans[k].last
+        local first, last = Tree.Range(spans[k])
         result[#result + 1] = {
             line = lines[first],
             text = content:sub(tokens[first].pos, tokens[last].pos + #tokens[last].value - 1),

@@ -30,7 +30,7 @@ end
 local function stored(definition,source)
     return {signature=definition.signature,visible=copy(definition.visible),form=definition.form,
         self_visible=definition.self_visible,source_range=copy(definition.source_range),
-        body=Tree.FunctionSource(definition.syntax,source.analysis,false)}
+        body=Tree.FunctionSource(definition.syntax,false)}
 end
 local function names(fn)
     local result,err=Compose.Names(fn)
@@ -319,7 +319,10 @@ function M.Coverage(group,initial,projection,view,blocked)
     local function claim(side,definition,key)
         local statement=side.scan.analysis.statements[definition.statement]
         local target,fn
-        if statement then target,fn=Tree.Function(statement.syntax) end
+        if statement then
+            local definition=Tree.Match(statement.syntax,"definition")
+            if definition then target,fn=definition.target,definition.fn end
+        end
         if not target or fn~=definition.syntax or side.claims[definition.statement] then
             return fail("ownership","Local coverage requires one whole owned function statement",state,key)
         end

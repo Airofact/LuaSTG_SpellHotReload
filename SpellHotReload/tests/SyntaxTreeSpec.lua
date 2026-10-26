@@ -16,28 +16,64 @@ function M.run()
         local nodes,err,analysis=IR.Analyze(source);assert(nodes,err);return analysis
     end
     local a=analyze("local a,b=1,2; local function f(x,...) local b={...};return function(y) return b[y],a end end; function T:m(n) return self,n end; T[k]=f(a); Include'path'")
-    eq(a.syntax.kind,"chunk","root kind")
-    eq(a.statements[1].syntax,a.syntax.body[1],"shared statement identity")
-    eq(#a.syntax.body,5,"statement count")
-    local first=a.syntax.body[1]
-    eq(first.kind,"local","local node")
+    eq(Tree.Is(a.syntax,"chunk"),true,"root kind")
+    local statements=Tree.Statements(a.syntax)
+    eq(a.statements[1].syntax,statements[1],"shared statement identity")
+    eq(#statements,5,"statement count")
+    local first=assert(Tree.Match(statements[1],"declaration"))
+    eq(first.self_visible,false,"plain local declaration")
     eq(#first.names,2,"binding list")
-    eq(first.names[1].kind,"binding","declaration distinct from name read")
-    eq(first.values[2].literal_kind,"number","numeric literal category")
-    local fn=a.syntax.body[2].fn
-    eq(fn.params[1].name,"x","function parameters")
-    eq(fn.vararg,true,"function vararg")
-    eq(fn.body.body[1].values[1].fields[1].value.kind,"vararg","table element structure")
-    local inner=fn.body.body[2].values[1]
-    eq(inner.kind,"function","nested function retained")
-    eq(inner.body.body[1].values[1].kind,"index","computed index retained")
-    eq(a.syntax.body[3].method,true,"method declaration retained")
-    eq(Tree.Path(a.syntax.body[3].target),"T:m","method path")
-    local write=a.syntax.body[4]
-    eq(write.targets[1].key.name,"k","assignment target index")
-    eq(write.values[1].callee.name,"f","call callee")
-    eq(write.values[1].args[1].name,"a","call arguments")
-    eq(a.syntax.body[5].expression.args[1].value,"path","decoded sugar argument")
+    eq(Tree.Is(first.names[1],"binding"),true,"declaration distinct from name read")
+    eq(Tree.Match(first.values[2],"literal").category,"number","numeric literal category")
+    local fn=Tree.Match(statements[2],"definition").fn
+    local function_info=Tree.Match(fn,"function")
+    eq(Tree.Identifier(function_info.params[1]),"x","function parameters")
+    eq(function_info.vararg,true,"function vararg")
+    local body=Tree.Statements(function_info.body)
+    local declaration=Tree.Match(body[1],"declaration")
+    local fields=Tree.Match(declaration.values[1],"table").fields
+    eq(Tree.Is(fields[1].value,"vararg"),true,"table element structure")
+    local inner=Tree.Match(body[2],"return").values[1]
+    eq(Tree.Is(inner,"function"),true,"nested function retained")
+    local inside=Tree.Statements(Tree.Match(inner,"function").body)
+    eq(Tree.Is(Tree.Match(inside[1],"return").values[1],"index"),true,"computed index retained")
+    local method=Tree.Match(statements[3],"definition")
+    eq(method.method,true,"method declaration retained")
+    eq(Tree.Path(method.target),"T:m","method path")
+    local write=Tree.Match(statements[4],"assignment")
+    eq(Tree.Identifier(Tree.Match(write.targets[1],"index").key),"k","assignment target index")
+    local call=Tree.Match(write.values[1],"call")
+    eq(Tree.Identifier(call.callee),"f","call callee")
+    eq(Tree.Identifier(call.args[1]),"a","call arguments")
+    eq(Tree.String(Tree.Match(statements[5],"call_statement").args[1]),"path","decoded sugar argument")
+    eq(fn.kind,nil,"opaque reference has no parser kind")
+    eq(fn.children,nil,"opaque reference has no child graph")
+    eq(Tree.Match(statements[2],"definition").fn,fn,"repeated capture identity")
+    local foreign=analyze("local function f(x,...) end")
+    eq(Tree.SameSnapshot(a.syntax,foreign.syntax),false,"different source snapshots")
+    eq(Tree.IsNode({kind="function"}),false,"raw node cannot impersonate a reference")
+    eq(pcall(Tree.Match,{kind="function"},"function"),false,"foreign match is an error, not no-match")
+    eq(pcall(Tree.Match,fn,"unknown-pattern"),false,"unknown contract operation refused")
+    eq(Tree.Match(fn,"assignment"),nil,"valid structural nonmatch")
+    first.names[1]=nil
+    eq(#Tree.Match(statements[1],"declaration").names,2,"capture list is detached")
+    local saw_inner,visited_inner=false,false
+    Tree.Walk(fn,function(node,parent,depth)
+        if node==inner then
+            eq(depth,2,"function nesting depth")
+            eq(parent,body[2],"stable parent identity")
+            saw_inner=true;return false
+        end
+        if node==inside[1] then visited_inner=true end
+    end)
+    eq(saw_inner,true,"nested function observed")
+    eq(visited_inner,false,"false prunes nested subtree")
+    local simple=analyze("local f=function() end; local function g() end;")
+    local defs=Tree.Statements(simple.syntax)
+    eq(Tree.Match(defs[1],"definition").self_visible,false,"initializer has no implicit self visibility")
+    eq(Tree.Match(defs[2],"definition").self_visible,true,"local function has self visibility")
+    local _,last,content_last=Tree.Range(defs[2])
+    eq(last,content_last+1,"full statement includes its semicolon")
     local bindings=assert(Binding.Analyze(a))
     eq(table.concat(bindings.names,","),"a,b,f","declarations consume shared tree")
     -- Literal data with code-looking text cannot create a class or callback.
@@ -51,10 +87,12 @@ function M.run()
         local classes=assert(Cards.CardLists(analysis))
         eq(#classes,1,"only real class is discovered")
         eq(classes[1].class_key,"K","class key from index literal")
+        eq(assert(Cards.CardLists({statements=analysis.statements}))[1].class_key,"K",
+            "card list query consumes statement facts without a token array")
         local layout=assert(Callbacks.Read(facts,"K"))
         eq(#layout,1,"registration from call node")
         eq(layout[1].name,"C","constructor argument value")
-        eq(layout[1].callback_syntax.init,analysis.syntax.body[5].fn,"callback reuses original function node")
+        eq(layout[1].callback_syntax.init,Tree.Match(Tree.Statements(analysis.syntax)[5],"definition").fn,"callback reuses original function node")
         local body=layout[1].callbacks.init
         assert(loadstring("return "..body))
         eq(body:sub(1,17),"function(self,...","method vararg receiver inserted")
@@ -118,8 +156,56 @@ function M.run()
     end
     -- Tree reference traversal excludes declaration names and field/record labels.
     local refs=Tree.Names(analyze("local obj={field=value,[key]=other}; obj:field(value)").syntax)
-    local names={};for _,ref in ipairs(refs) do names[#names+1]=ref.name end
+    local names={};for _,ref in ipairs(refs) do names[#names+1]=Tree.Identifier(ref) end
     eq(table.concat(names,","),"value,key,other,obj,value","reference structure")
+    -- Byte spans use original file coordinates; no owner performs token/BOM math.
+    for _,callback_text in ipairs({
+        "function _tmp_sc:init(...) return [=[甲\r\n乙]=],... end;",
+        "_tmp_sc.init=function(...) return [=[甲\r\n乙]=],... end;",
+    }) do
+        local bytes="\239\187\191-- 中文 byte offsets\r\n"
+            .."_editor_class['K']=Class(boss);\r\n_editor_class['K'].cards={};\r\n"
+            .."_tmp_sc=boss.card.New('C',1,2,3,4,{1,2,3});\r\n"..callback_text
+            .."\r\ntable.insert(_editor_class['K'].cards,_tmp_sc);"
+        local complete=assert(Source.Build(bytes))
+        local callback_statement=Tree.Statements(complete.analysis.syntax)[4]
+        local function_node=Tree.Match(callback_statement,"definition").fn
+        local foreign=assert(Source.Build(bytes))
+        local expected_first,expected_last=assert(bytes:find(callback_text,1,true))
+        local old_parse,old_lex=Syntax.Parse,Lexer.Tokenize
+        Syntax.Parse=function() error("byte range reparsed syntax") end
+        Lexer.Tokenize=function() error("byte range re-lexed source") end
+        local queried,problem=pcall(function()
+            local whole=assert(Source.ByteRange(complete,callback_statement))
+            local body_range=assert(Source.ByteRange(complete,function_node))
+            eq(whole.first,expected_first,"statement original byte start with BOM/UTF-8/CRLF")
+            eq(whole.last,expected_last,"whole statement includes semicolon")
+            eq(body_range.first,bytes:find("function",expected_first,true),"function starts at its own keyword")
+            eq(body_range.last,expected_last-1,"function span excludes statement semicolon")
+            local layout=assert(Callbacks.Read(complete,"K"))
+            eq(layout[1].callback_points.init.first,expected_first,"callback includes assignment/declaration prefix")
+            eq(layout[1].callback_points.init.last,expected_last-1,"callback ends at function end")
+            whole.first=0
+            eq(assert(Source.ByteRange(complete,callback_statement)).first,expected_first,"range record is detached")
+            local invalid,reason=Source.ByteRange(complete,{kind="function"})
+            eq(invalid,nil,"fabricated range node refused");eq(reason.code,"stale","fabricated range diagnostic")
+            complete.sites[foreign.analysis.syntax]={statement=false}
+            invalid,reason=Source.ByteRange(complete,foreign.analysis.syntax)
+            complete.sites[foreign.analysis.syntax]=nil
+            eq(invalid,nil,"foreign snapshot refused even with an invented site")
+            eq(reason.code,"stale","foreign range diagnostic")
+            local changed={};for key,value in pairs(complete) do changed[key]=value end
+            changed.content=bytes.." "
+            invalid,reason=Source.ByteRange(changed,function_node)
+            eq(invalid,nil,"changed original bytes refused");eq(reason.code,"stale","changed bytes diagnostic")
+        end)
+        Syntax.Parse,Lexer.Tokenize=old_parse,old_lex
+        assert(queried,problem)
+    end
+    local empty=assert(Source.Build("-- comment only\r\n"))
+    local no_range,range_error=Source.ByteRange(empty,empty.analysis.syntax)
+    eq(no_range,nil,"empty node has no fabricated byte range")
+    eq(range_error.code,"unsupported","empty range is explicit")
     print("SyntaxTreeSpec: "..passed.." passed / 0 failed")
     return {passed=passed,failed=0}
 end
