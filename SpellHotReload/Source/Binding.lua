@@ -4,7 +4,7 @@
 --- Lexical declaration set and definition-point visibility for one shared
 --- TopLevelIR analysis snapshot.
 ---
---- The module reads declarations and reference expressions from shared syntax for
+--- The module reads declaration nodes from shared syntax for
 --- *top-level* Lua scope:
 ---
 ---   declarations   the names a file binds as top-level locals, in source
@@ -13,16 +13,10 @@
 ---                  (Lua top-level scoping is strictly backwards; a
 ---                  `local function` name is additionally visible inside its
 ---                  own body);
----   certain        in-scope names occurring at block depth 0 inside the
----                  statement, outside every nested function/if/do/repeat
----                  block, so no nested parameter, loop variable or nested
----                  local can rebind them;
----   uncertain      in-scope names occurring inside a nested block, where such
----                  a rebinding is possible.
 ---
 --- It deliberately does NOT claim a complete Lua binding proof. TopLevelIR's
---- `_link` identifier-expression deps are a heuristic over these same tokens and are never
---- upgraded into safety: `bindings.complete` is always false, and a statement
+--- `_link` identifier-expression hints are never upgraded into safety:
+--- `bindings.complete` is always false, and a statement
 --- TopLevelIR could not parse marks the snapshot `opaque`.
 ---
 --- Nothing here executes the analyzed source.
@@ -35,7 +29,7 @@ local function plain(value)
     return type(value) == "table" and getmetatable(value) == nil
 end
 
--- Declaration and reference sites are parser nodes, not token-neighbour guesses.
+-- Declaration sites are parser nodes, not token-neighbour guesses.
 local function top_level_declarations(ast)
     local declaration=Tree.Match(ast,"declaration")
     if not declaration then return nil end
@@ -46,22 +40,6 @@ local function top_level_declarations(ast)
     end
     return names
 end
-local function scan_references(tokens,ast,scope,self_declares)
-    local certain,uncertain={},{}
-    local repeat_scope=false
-    Tree.Walk(ast,function(n) if Tree.Is(n,"repeat") then repeat_scope=true end end)
-    for _,ref in ipairs(Tree.Names(ast)) do
-        local value=Tree.Identifier(ref)
-        if scope[value] or (self_declares and self_declares[value]) then
-            local first=Tree.Range(ref)
-            local token=tokens[first];local hit={name=value,token=first,depth=token.depth}
-            if token.depth==0 and not repeat_scope then certain[#certain+1]=hit
-            else uncertain[#uncertain+1]=hit end
-        end
-    end
-    return certain,uncertain
-end
-
 ---Build the declaration/visibility model for one TopLevelIR analysis snapshot.
 ---@param analysis table  the third return of TopLevelIR.Analyze
 ---@return table? bindings
@@ -106,14 +84,11 @@ function M.Analyze(analysis)
         local statement = statements[index]
         local first, last = statement.tok.first, statement.tok.last
         local record = {
-            index = index, visible = {}, declares = {}, certain = {}, uncertain = {},
-            nested = false, self_visible = false, unparsed = false,
+            index = index, visible = {}, declares = {},
+            self_visible = false, unparsed = false,
         }
         for name, declaration in next, scope do record.visible[name] = declaration end
         if not Tree.SameSnapshot(analysis.syntax,statement.syntax) then return nil,"statement syntax is required" end
-        Tree.Walk(statement.syntax,function(n)
-            if Tree.Is(n,"function") or Tree.Is(n,"block") then record.nested=true end
-        end)
 
         local scanned = top_level_declarations(statement.syntax)
         local bucket = local_nodes[first]
@@ -147,9 +122,6 @@ function M.Analyze(analysis)
             opaque = true
         end
 
-        local self_declares = record.self_visible and record.declares or nil
-        record.certain, record.uncertain =
-            scan_references(tokens, statement.syntax, record.visible, self_declares)
         bindings.statements[index] = record
     end
 

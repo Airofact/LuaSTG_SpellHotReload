@@ -1,5 +1,6 @@
 local Binding = require("SpellHotReload.Source.Binding")
 local IR = require("SpellHotReload.Source.TopLevelIR")
+local Tree = require("SpellHotReload.Source.SyntaxTree")
 local M = {}
 
 function M.run()
@@ -7,11 +8,6 @@ function M.run()
     local function eq(actual, expected, label)
         assert(actual == expected, label)
         passed = passed + 1
-    end
-    local function names(list)
-        local out = {}
-        for i = 1, #list do out[i] = list[i].name end
-        return table.concat(out, ",")
     end
     local function bind(content, options)
         local nodes, err, analysis = IR.Analyze(content, options)
@@ -47,12 +43,8 @@ function M.run()
     eq(model.statements[1].declares.a, model.by_name.a, "own declaration recorded")
     eq(model.statements[2].visible.a, model.by_name.a, "previous declaration visible")
     eq(model.statements[2].declares.b, model.by_name.b, "second declaration recorded")
-    eq(names(model.statements[2].certain), "a", "initializer reads the visible local")
     eq(model.statements[3].visible.b, model.by_name.b, "b visible later")
-    eq(names(model.statements[3].certain), "b,a", "both names read in token order")
-    eq(#model.statements[3].uncertain, 0, "nothing nested")
     eq(model.statements[4].visible.c, model.by_name.c, "c visible later")
-    eq(names(model.statements[1].certain), "", "nothing to read yet")
 
     -- `local x = x` reads the earlier binding, not the name being declared
     model = bind("local x = 1\nlocal x = x + 1\nG = x")
@@ -63,79 +55,88 @@ function M.run()
     eq(model.by_name.x, nil, "ambiguous name is not resolvable")
     eq(table.concat(model.names, ","), "x", "unique name list")
     eq(model.statements[2].visible.x, model.declarations[1], "second declaration sees the first")
-    eq(names(model.statements[2].certain), "x", "initializer binds the earlier local")
     eq(model.statements[3].visible.x, model.declarations[2], "later statements bind the newest local")
 
     -- self-recursion: the local function name is in scope inside its own body
     model = bind("local function f(n)\n  if n <= 1 then return 1 end\n  return n * f(n - 1)\nend")
     eq(model.declarations[1].self_visible, true, "local function self visibility")
     eq(model.statements[1].visible.f, nil, "not visible before the statement")
-    eq(#model.statements[1].certain, 0, "no proven top-level read inside the body")
-    eq(names(model.statements[1].uncertain), "f", "self-reference is nested, not proven")
 
     -- a forward reference is a global read, never a local edge
     model = bind("G = b\nlocal b = 2")
     eq(model.statements[1].visible.b, nil, "forward name not visible")
-    eq(#model.statements[1].certain, 0, "forward name is not a local read")
     eq(model.statements[2].visible.b, nil, "still not visible before its own declaration")
 
-    -- nested shadowing: TopLevelIR token-name deps are heuristic, not safety
+    -- Nested declarations do not change top-level definition-point visibility.
     local source = "local x = 1\nlocal function g()\n  local x = 2\n  return x\nend\nG = x"
     model, analysis = bind(source)
     local g
     for _, node in ipairs(analysis.nodes) do
         if node.name == "g" then g = node end
     end
-    eq(g.deps[1], "x", "heuristic token-name dep lists the shadowed name")
-    eq(#model.statements[2].certain, 0, "no proven read inside the shadowing body")
-    eq(names(model.statements[2].uncertain), "x", "shadowed read stays uncertain")
-    eq(names(model.statements[3].certain), "x", "top-level read is proven")
+    eq(g.deps[1], "x", "identifier hint remains conservative under shadowing")
+    eq(#model.declarations, 2, "body local is not a top-level declaration")
+    eq(model.statements[2].visible.x, model.by_name.x, "outer x is visible at g definition")
+    eq(model.statements[3].visible.x, model.by_name.x, "body shadowing does not leak")
 
-    -- comments and strings never become declarations or reads
+    -- Comments and strings never become declarations.
     model = bind("local a = 1\n-- local b = 2\nG = 'a'\nS = [[local c = 3]]")
     eq(table.concat(model.names, ","), "a", "comments and strings do not declare")
     eq(#model.declarations, 1, "one real declaration")
     eq(model.statements[2].visible.a, model.by_name.a, "a is in scope")
-    eq(#model.statements[2].certain, 0, "string contents are not identifiers")
     eq(model.statements[3].visible.a, model.by_name.a, "still in scope")
-    eq(#model.statements[3].certain, 0, "long string is not code")
 
-    -- field names, method names and table keys are not variable reads
-    model = bind("local a = 1\nlocal t = {}\nT.a = a\nt = { a = a, b }")
-    eq(names(model.statements[3].certain), "a", "only the value side is a read")
-    eq(names(model.statements[4].certain), "t,a", "receiver and value read, key does not")
-    model = bind("local o = {}\nlocal m = 3\no:m(m)")
-    eq(names(model.statements[3].certain), "o,m", "method name excluded, argument is a read")
+    -- Loop and repeat locals stay inside their own bodies.
+    model = bind("local i = 1\nfor i = 1, 10 do local hidden = i end\nG = i")
+    eq(#model.declarations, 1, "loop locals are not top-level declarations")
+    eq(model.statements[2].visible.i, model.by_name.i, "outer i visible at loop entry")
+    eq(model.statements[3].visible.i, model.by_name.i, "outer i remains after loop")
+    eq(model.by_name.hidden, nil, "loop body declaration does not escape")
+    model = bind("local t = {}\nfor k, v in pairs(t) do end\nlocal after = t")
+    eq(table.concat(model.names, ","), "t,after", "generic loop names do not escape")
+    eq(model.statements[3].visible.t, model.by_name.t, "scope survives generic loop")
+    model = bind("local x = 1\nrepeat local y = x until x > y\nG = x")
+    eq(#model.declarations, 1, "repeat local is not a top-level declaration")
+    eq(model.by_name.y, nil, "repeat declaration does not escape")
+    eq(model.statements[3].visible.x, model.by_name.x, "outer x remains after repeat")
 
-    -- table keys are bracketed values, not keys, when indexed with [ ]
-    model = bind("local k = 1\nT = { [k] = 2 }")
-    eq(names(model.statements[2].certain), "k", "computed key is a read")
-
-    -- for-loop control variables rebind, they are not reads of an outer local
-    model = bind("local i = 1\nfor i = 1, 10 do end\nG = i")
-    eq(model.statements[2].visible.i, model.by_name.i, "outer local still visible")
-    eq(names(model.statements[2].certain), "", "loop variable is not a read")
-    eq(names(model.statements[3].certain), "i", "outer local read after the loop")
-    model = bind("local t = {}\nfor k, v in pairs(t) do end")
-    eq(names(model.statements[2].certain), "t", "loop expression reads the visible local")
-
-    -- repeat/until scope leak: the until expression may see a body local
-    model = bind("local x = 1\nrepeat\n  local y = x\nuntil x > y")
-    eq(#model.statements[2].certain, 0, "repeat demotes every hit")
-    eq(names(model.statements[2].uncertain), "x,x", "both textual hits stay uncertain")
-
-    -- assignment targets count as reads of the visible local
-    model = bind("local a = 1\na = a + 1")
-    eq(names(model.statements[2].certain), "a,a", "target and value both read the local")
-
-    -- nested blocks are flagged; function statements nest their name path
-    model = bind("local a = 1\nlocal f = function() return 1 end")
-    eq(model.statements[1].nested, false, "flat statement")
-    eq(model.statements[2].nested, true, "nested block detected")
+    -- Function initializer and local-function self visibility stay distinct.
+    model = bind("local f = function() return f end\nlocal function g() return g end")
+    eq(model.by_name.f.self_visible, false, "initializer does not declare its own prefix")
+    eq(model.statements[1].visible.f, nil, "initializer cannot see the new f")
+    eq(model.statements[2].visible.f, model.by_name.f, "f visible to the next definition")
+    eq(model.statements[2].declares.g, model.by_name.g, "recursive declaration identity")
+    eq(model.statements[2].self_visible, true, "local function retains self visibility")
     model = bind("function T.m() return T end")
-    eq(model.statements[1].nested, true, "function statement nests its name path")
     eq(#model.declarations, 0, "field function is not a local declaration")
-    eq(#model.statements[1].certain, 0, "no proven read in a function statement")
+
+    -- Once shared IR exists, Binding must not inspect descendant references.
+    local _, problem, shared_ir = IR.Analyze("local outer = 1\nlocal function recur(n) "
+        .. "local outer = n; repeat local held = outer; "
+        .. "local inner = function() return held end until outer > 0; "
+        .. "return recur(n - 1) end\ndo local hidden = outer end\nlocal later = recur")
+    assert(shared_ir, problem)
+    local walk, names = Tree.Walk, Tree.Names
+    local function forbidden() error("Binding scanned descendant diagnostics", 0) end
+    Tree.Walk, Tree.Names = forbidden, forbidden
+    local ok, trimmed, why = pcall(Binding.Analyze, shared_ir)
+    Tree.Walk, Tree.Names = walk, names
+    eq(ok, true, "declaration/visibility analysis does not walk descendants")
+    assert(trimmed, why)
+    eq(table.concat(trimmed.names, ","), "outer,recur,later", "only top-level declarations retained")
+    eq(trimmed.statements[2].visible.outer, trimmed.by_name.outer, "outer declaration identity retained")
+    eq(trimmed.statements[2].declares.recur, trimmed.by_name.recur, "self declaration retained")
+    eq(trimmed.statements[2].self_visible, true, "self visibility retained without reference scan")
+    eq(trimmed.statements[4].visible.recur, trimmed.by_name.recur, "later statement sees recursive function")
+    eq(trimmed.by_name.hidden, nil, "block-local declaration stays private")
+    eq(trimmed.by_name.held, nil, "nested declaration stays private")
+    trimmed.statements[3].visible.outer = nil
+    eq(trimmed.statements[4].visible.outer, trimmed.by_name.outer, "statement visibility snapshots stay separate")
+    for _, record in ipairs(trimmed.statements) do
+        eq(record.certain, nil, "retired reference diagnostics are absent")
+        eq(record.uncertain, nil, "no empty reference result masquerades as analysis")
+        eq(record.nested, nil, "retired nested diagnostic is absent")
+    end
 
     -- Malformed source has no partial declaration/visibility snapshot.
     for _,source in ipairs({"local ??? = 1\nlocal ok = 2","local"}) do
@@ -178,7 +179,7 @@ function M.run()
     local shared
     model, shared = bind("local a = 1\nG = a")
     eq(shared.statements[1].visible, nil, "analysis snapshot untouched")
-    eq(shared.statements[1].certain, nil, "no model records on the analysis")
+    eq(shared.statements[1].declares, nil, "no declaration model written into analysis")
     eq(shared.binding_complete, false, "analysis keeps its own completeness flag")
 
     -- Binding never executes the analyzed source
