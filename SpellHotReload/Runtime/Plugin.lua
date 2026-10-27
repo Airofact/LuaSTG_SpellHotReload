@@ -58,6 +58,7 @@ function Plugin.New()
 	self._log = ChangeLog.New()
 	self._anchors = AnchorRegistry.New()
 	self._loads = {} -- full first-load entries, including non-capturable files
+	self._parse_baselines = {} -- last successful facts + parser ownership, not published versions
 	session_serial = session_serial + 1
 	self._session_id = "SpellHotReload:" .. session_serial
 	self._commit, self._commit_error = FileCommit.New(self._session_id)
@@ -103,7 +104,36 @@ function Plugin:GetVersions(file)
 	return record.capture, record.reason
 end
 
+function Plugin:_RetireAnalysis(file)
+    local record=self._parse_baselines[file]
+    if not record then return end
+    self._parse_baselines[file]=nil
+    local release=record.release
+    record.entry,record.source,record.release=nil,nil,nil
+    if release then release() end
+end
+
+-- Advance only successful analysis, independently of preparation/publication.
+-- Every operation still compiles/analyzes and runs its own Fresh/Guard checks.
+function Plugin:_BuildCandidate(file,content)
+    if self._released then return nil,{phase="analyze",code="stale",message="session ended"} end
+    local entry=self._loads[file]
+    local record=self._parse_baselines[file]
+    if record and (not entry or record.entry~=entry or entry.missing or entry.reloadable~=true) then
+        self:_RetireAnalysis(file);record=nil
+    end
+    local source,err=Source.Build(content,nil,record and record.source)
+    if not source then return nil,err end
+    if self._released or self._loads[file]~=entry or self._parse_baselines[file]~=record
+        or (record and (entry.missing or entry.reloadable~=true)) then
+        return nil,{phase="analyze",code="stale",message="analysis scope changed"}
+    end
+    if record then record.source=source end
+    return source
+end
+
 function Plugin:_RetireVersions(file, reason)
+    self:_RetireAnalysis(file)
 	self:_ClearCompletion(file)
 	self._candidate_remainders[file] = nil
 	local record = self._versions[file]
@@ -183,6 +213,8 @@ function Plugin:Release(reason)
 	self._publication_error, self._restart_active = nil, false
 	self._candidate_inspections = {}
 	self._candidate_remainders, self._completion_checks = {}, {}
+	for file in pairs(self._parse_baselines) do self:_RetireAnalysis(file) end
+	self._parse_baselines = {}
 	if self._watcher then self._watcher:Release() end
 	self._watcher, self._view = nil, nil
 	self._loads, self._versions, self._session_id = {}, {}, nil
@@ -214,12 +246,35 @@ function Plugin:AdoptLoad(file, entry)
 	if entry.reloadable == true and type(entry.anchor) ~= "function" then
 		return false, "reloadable entry must carry an anchor"
 	end
-	if type(entry.anchor) == "function" then
+	local initial_source,loaded_source,anchor=entry.source,entry.loaded_source,entry.anchor
+	local reloadable,reason,missing=entry.reloadable,entry.reason,entry.missing
+	if type(anchor) == "function" then
 		local ok, reason = self._anchors:Set(file, entry)
 		if not ok then return false, reason end
 	end
-	self._loads[file] = entry
-	self:_CaptureVersions(file, entry)
+    local parsed,problem
+    local checked,valid=pcall(Source.Validate,initial_source)
+    if not missing and checked and valid and initial_source.content==loaded_source then
+        local called,release,why=pcall(Source.Retain,initial_source)
+        if called and type(release)=="function" then
+            parsed={entry=entry,source=initial_source,release=release}
+        elseif reloadable==true then
+            problem=called and why or release
+            problem="first-load parser unavailable: "..tostring(type(problem)=="table" and problem.message or problem)
+        end
+    end
+    -- Capturing ownership may allocate or re-enter; never resurrect a retired load.
+    if self._released or self._loads[file]~=nil
+        or entry.source~=initial_source or entry.loaded_source~=loaded_source or entry.anchor~=anchor
+        or entry.reloadable~=reloadable or entry.reason~=reason or entry.missing~=missing
+        or (type(anchor)=="function" and self._anchors:Entry(file)~=entry) then
+        if parsed then parsed.release() end
+        return false,"load entry changed during parser adoption"
+    end
+    if problem then entry.reloadable,entry.reason=false,problem end
+    self._loads[file] = entry
+    if parsed then self._parse_baselines[file]=parsed end
+    self:_CaptureVersions(file, entry)
 	if self._watcher and type(self._watcher.Track) == "function" then
 		self._watcher:Track(file)
 	end
@@ -239,7 +294,7 @@ function Plugin:Missing(file, reason)
 	if self._released then return false, "session ended" end
 	local entry = self._loads[file]
 	if entry == nil then return false, "unknown loaded file: " .. tostring(file) end
-	if entry.missing then return true end
+	if entry.missing then self:_RetireAnalysis(file);return true end
 	entry.missing = true
 	entry.missing_reason = "loaded file missing; restart game: " .. tostring(file)
 	if reason ~= nil then entry.missing_reason = entry.missing_reason .. ": " .. tostring(reason) end
@@ -257,13 +312,16 @@ function Plugin:_CheckLoad(file)
 	local entry = self._loads[file]
 	local held = entry
 	if held and held.missing then
+        self:_RetireAnalysis(file)
 		return false, held.missing_reason or "loaded file missing; restart game"
 	end
 	if entry == nil then return false, "first-load entry unavailable; restart game" end
 	if entry.reloadable ~= true then
+        self:_RetireAnalysis(file)
 		return false, entry.reason or "file is not reloadable"
 	end
 	if self._anchors:Entry(file) ~= entry or not self._anchors:Live(file) then
+        self:_RetireAnalysis(file)
 		return false, "anchor entry is unavailable or missing; restart game"
 	end
 	return true
@@ -743,7 +801,7 @@ function Plugin:_applyFile(file,token)
     if not capture then return "first-load versions unavailable: "..message(why).."; restart game" end
     local gate=Card.CheckCandidateSource(candidate.first_content,file)
     if not gate.ok then return "source: "..message(gate.error) end
-    local source,serr=Source.Build(candidate.first_content)
+    local source,serr=self:_BuildCandidate(file,candidate.first_content)
     if not source then return "source: "..message(serr) end
     local discovery,derr=self:_DiscoverVersioned(file,candidate,capture,source)
     if not discovery then return "discover: "..message(derr) end
@@ -794,7 +852,7 @@ function Plugin:InspectCandidate(file)
         initial=Card.FreezeBinding(initial)
         local live,lerr=self:_FreshVersioned(file,candidate,capture)
         if not live then return nil,"inspection: "..message(lerr) end
-        local source,serr=Source.Build(candidate.first_content)
+        local source,serr=self:_BuildCandidate(file,candidate.first_content)
         if not source then return nil,"source: "..message(serr) end
         local discovery,derr=self:_DiscoverVersioned(file,candidate,capture,source)
         if not discovery then return nil,"discover: "..message(derr) end
@@ -877,7 +935,7 @@ function Plugin:_apply(token)
             local gate=Card.CheckCandidateSource(candidate.first_content,file)
             if not gate.ok then log(self,"warn","apply: rejected "..file..": "..message(gate.error))
             else
-                local source,serr=Source.Build(candidate.first_content)
+                local source,serr=self:_BuildCandidate(file,candidate.first_content)
                 if not source then return "source: "..message(serr) end
                 local entry,capture,discovery=self._loads[file]
                 local matches

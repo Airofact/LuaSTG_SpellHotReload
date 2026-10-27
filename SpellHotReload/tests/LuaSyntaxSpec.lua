@@ -2,8 +2,7 @@
 local M={}
 function M.run()
     local IR=require("SpellHotReload.Source.TopLevelIR")
-    local Binding=require("SpellHotReload.Source.Binding")
-    local Lexer=require("SpellHotReload.Source.Lexer")
+    local Source=require("SpellHotReload.Source.FileAnalysis")
     local passed,failed,failures=0,0,{}
     local function check(v,label) if v then passed=passed+1 else failed=failed+1;failures[#failures+1]=label end end
     local function eq(a,b,label) check(a==b,label..": "..tostring(a).." ~= "..tostring(b)) end
@@ -39,13 +38,14 @@ function M.run()
                 local nodes,reason,analysis=IR.Analyze(source)
                 check(nodes~=nil,"analyze "..n.."/"..k..": "..tostring(reason))
                 if analysis then
-                    local next_token=1
+                    local previous=0
                     for _,row in ipairs(analysis.statements) do
-                        eq(row.tok.first,next_token,"contiguous token partition")
-                        next_token=row.tok.last+1
+                        check(row.source_range.first>previous,"native statement spans stay ordered")
+                        previous=row.source_range.last
                         eq(source:sub(row.source_range.first,row.source_range.last),row.text,"exact original bytes")
+                        eq(analysis.syntax.IsNode(row.syntax),true,"statement retains native entity")
                     end
-                    eq(next_token,#analysis.tokens+1,"full token partition")
+                    eq(analysis.tokens,nil,"no second lexical index")
                 end
             end
         end
@@ -65,29 +65,30 @@ function M.run()
         eq(analysis,nil,"invalid source has no analysis "..n)
         check(type(reason)=="string","analyze diagnostic "..n)
     end
-    local _,_,analysis=IR.Analyze("local a=1 local b=a local c=b")
-    local bindings=assert(Binding.Analyze(analysis))
-    check(bindings.statements[2].visible.a~=nil,"same-line definition-point visibility")
-    eq(bindings.statements[1].visible.a,nil,"initializer not self-visible")
-    check(bindings.statements[3].visible.b~=nil,"third statement visibility")
+    local facts=assert(Source.Build("local a=1 local b=a local c=b"))
+    check(Source.ResolveLocal(facts,2,"a")~=nil,"same-line definition-point visibility")
+    eq(Source.ResolveLocal(facts,1,"a"),nil,"initializer not self-visible")
+    check(Source.ResolveLocal(facts,3,"b")~=nil,"third statement visibility")
     local _,_,bom=IR.Analyze("\239\187\191a=1\r\nb=2\rc=3\nd=4")
     eq(bom.statements[1].source_range.first,4,"BOM original offset")
     for i=1,4 do eq(bom.statements[i].line,i,"all newline forms") end
     eq(#assert(IR.SplitStatements("a=(factory())[key](1); (factory()).x=1")),2,"parenthesized next statement requires separator")
-    local old_compile,old_load,old_loadfile=loadstring,load,loadfile
-    local calls=0
-    local function trap() calls=calls+1;error("analyzer compiled candidate") end
-    loadstring,load,loadfile=trap,trap,trap
+    local old_compile=loadstring
+    local calls,executed=0,false
+    local old_unrun=rawget(_G,"UNRUN")
+    _G.UNRUN=function() executed=true end
+    loadstring=function(...) calls=calls+1;return old_compile(...) end
     local ok,reason=pcall(function()
         assert(IR.Analyze("UNRUN() x=1 y=2"))
-        assert(IR.Analyze("function UNRUN() error('never') end"))
+        assert(Source.Build("function UNRUN() error('never') end"))
     end)
-    loadstring,load,loadfile=old_compile,old_load,old_loadfile
-    check(ok,"pure parser: "..tostring(reason));eq(calls,0,"zero compiler calls")
-    local tokens,err=Lexer.Tokenize("--[=[ broken")
-    check(type(tokens)=="table" and type(err)=="string","lexer reports truncated long comment")
+    loadstring=old_compile;_G.UNRUN=old_unrun
+    check(ok,"compiler-backed analysis: "..tostring(reason));eq(calls,2,"one whole-input compilation per analysis")
+    eq(executed,false,"compiled candidate chunks are never executed")
+    local bad,err=IR.Analyze("--[=[ broken")
+    check(bad==nil and type(err)=="string","whole compiler rejects unfinished long comment")
     -- Differential examples for lexical and expression continuation edges.
-    -- Compilation is an oracle in this test only; the resulting chunks are
+    -- The same host compiler defines language validity; resulting chunks are
     -- discarded. Nothing in this corpus is called or registered.
     local expressions={
         "nil", "false", "true", "0", "0x1e+2", "0XFF-1", ".5e+2", "12.E-2",
@@ -136,10 +137,11 @@ function M.run()
         check(rows~=nil,"literal remains opaque "..n..": "..tostring(reason))
         if rows then eq(#rows,2,"literal does not consume next statement") end
     end
-    local blocks="value="..string.rep("(",180).."1"..string.rep(")",180)
+    local blocks="value="..string.rep("(",2000).."1"..string.rep(")",2000)
+    check(compile(blocks)==nil,"host compiler bounds extreme nesting")
     local too_deep,depth_reason=IR.Analyze(blocks)
     eq(too_deep,nil,"deep input fails closed")
-    check(type(depth_reason)=="string" and depth_reason:find("limit",1,true),"nesting diagnostic")
+    check(type(depth_reason)=="string","nesting diagnostic")
     for _,source in ipairs({"local x=1LL","::label:: goto label","local x=0x1.fp2"}) do
         local unsupported,reason=IR.Analyze(source)
         eq(unsupported,nil,"unsupported dialect has no partial nodes")

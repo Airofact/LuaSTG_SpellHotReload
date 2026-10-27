@@ -11,14 +11,13 @@ function M.run()
     local Tx=require("SpellHotReload.Apply.FileCommit")
     local Compose=require("SpellHotReload.Source.Compose")
     local IR=require("SpellHotReload.Source.TopLevelIR")
-    local Binding=require("SpellHotReload.Source.Binding")
     local passed,failed,failures=0,0,{}
     local function test(v,label)
         if v then passed=passed+1 else failed=failed+1;failures[#failures+1]=label end
     end
     local function eq(a,b,label) test(rawequal(a,b),label) end
     local function must(v,e) assert(v,type(e)=="table" and e.message or e);return v end
-    local create,analyze,bind=Compose.Create,IR.Analyze,Binding.Analyze
+    local create,analyze=Compose.Create,IR.Analyze
     local source=table.concat({
         "local counter=3",
         "local flag=false",
@@ -59,7 +58,6 @@ function M.run()
         Compose.Create=function(...) constructions=constructions+1;return create(...) end
         -- If prepare attempts full-file work after source/Match, fail immediately.
         IR.Analyze=function() error("repeated complete IR analysis") end
-        Binding.Analyze=function() error("repeated complete Binding analysis") end
         must(Local.Resolve(v,"other"))
         eq(constructions,0,"helper-only change does not rebuild unchanged consumer")
         local helper=must(Local.Resolve(v,"helper"))
@@ -74,7 +72,7 @@ function M.run()
         eq(constructions,1,"prepare consumes probe without reconstructing closure")
         eq(Anchor.Get(entry,"counter"),41,"preparation does not replay initializer")
         eq(Anchor.Get(entry,"helper"),before,"preparation does not publish")
-        IR.Analyze,Binding.Analyze,Compose.Create=analyze,bind,create
+        IR.Analyze,Compose.Create=analyze,create
         local proposed=must(Local.Next(p))
         eq(proposed.state.by_name.helper.definition_version,2,"selected definition proposes next version")
         eq(proposed.state.by_name.unused.definition_version,1,"unselected definition version stays actual")
@@ -112,7 +110,7 @@ function M.run()
         Compose.Create=create
         must(tx:Release())
     end)
-    Compose.Create,IR.Analyze,Binding.Analyze=create,analyze,bind
+    Compose.Create,IR.Analyze=create,analyze
     if not ok then failed=failed+1;failures[#failures+1]="spec threw: "..(type(problem)=="string" and problem or "opaque error") end
     return {passed=passed,failed=failed,failures=failures}
 end

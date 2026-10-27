@@ -12,7 +12,6 @@ function M.run()
     local Tx=require("SpellHotReload.Apply.FileCommit")
     local Compose=require("SpellHotReload.Source.Compose")
     local IR=require("SpellHotReload.Source.TopLevelIR")
-    local Binding=require("SpellHotReload.Source.Binding")
     local Tree=require("SpellHotReload.Source.SyntaxTree")
     local passed,failed,failures=0,0,{}
     local controllers={}
@@ -61,8 +60,8 @@ function M.run()
                     local blocks,seen={},{}
                     for _,fact in ipairs(c.dependencies.source_facts) do
                         eq(fact.source,c.common.source,"observer consumes same source")
-                        eq(fact.source.sites[fact.node]~=nil,true,"observer consumes owned AST node")
-                        local body=Tree.FunctionSource(fact.node,fact.source.analysis,false)
+                        eq(Source.Site(fact.source,fact.node)~=nil,true,"observer consumes owned AST node")
+                        local body=fact.source.analysis.syntax.FunctionSource(fact.node,false)
                         if options.block_body and body:find(options.block_body,1,true) and not seen[fact.root_id] then
                             seen[fact.root_id]=true
                             blocks[#blocks+1]={root_id=fact.root_id,reason={code="unsupported",message="fixture selected-AST business block"}}
@@ -124,13 +123,12 @@ function M.run()
         return receipt,err
     end
     local function no_rescan(body)
-        local create,analyze,bind=Compose.Create,IR.Analyze,Binding.Analyze
+        local create,analyze=Compose.Create,IR.Analyze
         local count=0
         Compose.Create=function(...) count=count+1;return create(...) end
         IR.Analyze=function() error("preparation repeated whole-file IR analysis") end
-        Binding.Analyze=function() error("preparation repeated whole-file binding analysis") end
         local ok,err=pcall(body,function() return count end)
-        Compose.Create,IR.Analyze,Binding.Analyze=create,analyze,bind
+        Compose.Create,IR.Analyze=create,analyze
         if not ok then error(err,0) end
     end
     case("Local-only no-change",function()
@@ -295,11 +293,20 @@ function M.run()
     case("Local exact selection/location boundary",function()
         local f=fixture();local p,d,op=prepare(f,source:gsub("counter%+1","counter+2"),{"consumer"})
         local r=p.entries[1];local selected=r.context.selection
-        local binding=d.source.bindings.by_name.helper
+        local binding=Source.Declaration(d.source,"helper")
         local provider=must(Local.Provider(r.context.view,binding))
         eq(provider.unit_ref,r.context.view.by_name.helper.unit.unit_ref,"canonical Binding maps to original provider unit")
         eq(Local.Provider(r.context.view,copy(binding)),nil,"same-name copied binding cannot claim provider")
         eq(Local.Provider(r.context.view,{name="helper"}),nil,"name alone cannot claim provider")
+        local first=r.context.base_group.state.entry.source
+        local original=must(Source.Declaration(first,"helper"))
+        local equivalent=must(Source.Build(d.source.content))
+        eq(Local.Provider(r.context.view,Source.Declaration(equivalent,"helper")),nil,"same bytes do not share candidate declaration identity")
+        eq(Local.Provider(r.context.view,original),nil,"first-load declaration cannot impersonate candidate")
+        eq(Local.CapturedProvider(r.context.base_group,original),provider.unit_ref,"original declaration maps to stable captured unit")
+        eq(Local.CapturedProvider(r.context.base_group,copy(original)),nil,"copied original declaration refused")
+        eq(Local.CapturedProvider(r.context.base_group,binding),nil,"candidate declaration cannot impersonate first load")
+        eq(Source.Declarations(d.source)[binding.ordinal],binding,"provider input is canonical IR declaration")
         local function reject(handle,selection,label)
             local c=copy(r.context);c.selection=selection
             local value,why=Local.Inject(handle,nil,c)

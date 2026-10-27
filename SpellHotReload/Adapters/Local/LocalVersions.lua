@@ -5,7 +5,7 @@ local Definitions=require("SpellHotReload.Adapters.Local.LocalDefinitions")
 local Plan=require("SpellHotReload.Source.FunctionPlan")
 local Compose=require("SpellHotReload.Source.Compose")
 local Anchor=require("SpellHotReload.Load.Anchor")
-local Tree=require("SpellHotReload.Source.SyntaxTree")
+local Source=require("SpellHotReload.Source.FileAnalysis")
 local M={Kind="SpellHotReload.LocalVersions",Version=1}
 local function plain(v) return type(v)=="table" and getmetatable(v)==nil end
 local function copy(v) local out={};for k,x in next,v do out[k]=x end;return out end
@@ -30,7 +30,7 @@ end
 local function stored(definition,source)
     return {signature=definition.signature,visible=copy(definition.visible),form=definition.form,
         self_visible=definition.self_visible,source_range=copy(definition.source_range),
-        body=Tree.FunctionSource(definition.syntax,source.analysis,false)}
+        body=source.analysis.syntax.FunctionSource(definition.syntax,false)}
 end
 local function names(fn)
     local result,err=Compose.Names(fn)
@@ -94,7 +94,7 @@ function M.Seed(owner,entry,session_id,loaded)
     if not pair then return nil,err end
     local state={kind=M.Kind,version=M.Version,owner=owner,owner_id=owner.Id,file=entry.file,
         entry=entry,anchor=entry.anchor,loaded_source=entry.loaded_source,
-        session_id=session_id,names=copy(loaded.source.bindings.names),by_name={}}
+        session_id=session_id,names=copy(Source.DeclaredNames(loaded.source)),by_name={}}
     local initial={projection=loaded}
     local authority={cells={},raws={},forbidden={}}
     for index,name in ipairs(state.names) do
@@ -305,7 +305,7 @@ function M.Coverage(group,initial,projection,view,blocked)
     end
     local function side(p)
         local result={scan=p.source,claims={},excluded={},structures={},binding_reads={},wiring=""}
-        for _,declaration in ipairs(p.source.bindings.declarations) do
+        for _,declaration in ipairs(Source.Declarations(p.source)) do
             result.excluded[declaration.statement]=true
         end
         for _,definitions in next,p.definitions do
@@ -317,10 +317,14 @@ function M.Coverage(group,initial,projection,view,blocked)
         initial_source=initial.projection.source,before=side(initial.projection),after=side(projection),
         pending={},function_names={},requires_top_level=false}
     local function claim(side,definition,key)
+        local Tree=side.scan.analysis.syntax
         local statement=side.scan.analysis.statements[definition.statement]
         local target,fn
-        if statement then target,fn=Tree.Function(statement.syntax) end
-        if not target or fn~=definition.syntax or side.claims[definition.statement] then
+        if statement then
+            local definition=Tree.Match(statement.syntax,"definition")
+            if definition then target,fn=definition.target,definition.fn end
+        end
+        if not target or not Tree.SameNode(fn,definition.syntax) or side.claims[definition.statement] then
             return fail("ownership","Local coverage requires one whole owned function statement",state,key)
         end
         side.claims[definition.statement]=key;return true

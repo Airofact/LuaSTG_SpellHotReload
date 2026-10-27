@@ -14,7 +14,6 @@ function M.run()
     local FileApply=require("SpellHotReload.Apply.FileApply")
     local Compose=require("SpellHotReload.Source.Compose")
     local IR=require("SpellHotReload.Source.TopLevelIR")
-    local Binding=require("SpellHotReload.Source.Binding")
     local names={"before","init","frame","render","beforedel","del","after"}
     local defaults={};for _,name in ipairs(names) do defaults[name]=function() end end
     local saved={boss=rawget(_G,"boss"),classes=rawget(_G,"_editor_class"),tmp=rawget(_G,"_tmp_sc")}
@@ -113,13 +112,12 @@ function M.run()
         return receipt,err
     end
     local function no_scan(body)
-        local create,analyze,bind=Compose.Create,IR.Analyze,Binding.Analyze
+        local create,analyze=Compose.Create,IR.Analyze
         local count=0
         Compose.Create=function(...) count=count+1;return create(...) end
         IR.Analyze=function() error("Card five hooks repeated full-file IR") end
-        Binding.Analyze=function() error("Card five hooks repeated full-file binding") end
         local ok,err=pcall(body,function() return count end)
-        Compose.Create,IR.Analyze,Binding.Analyze=create,analyze,bind
+        Compose.Create,IR.Analyze=create,analyze
         if not ok then error(err,0) end
     end
 
@@ -183,6 +181,37 @@ function M.run()
         eq(Anchor.Get(f.entry,"flag"),false,"actual false cell retained")
         eq(Anchor.Get(f.entry,"alias")(),1,"alias retains original copied function")
         eq(Anchor.Get(f.entry,"helper")(),2,"selected function changed independently")
+    end)
+    case("unconsumed unsupported initializer stays pending while helper commits",function()
+        local f=fixture();local before=Anchor.Get(f.entry,"counter")
+        local candidate=source:gsub("local counter=3",
+            [=[local counter={nested=function() return '\x41' end}]=])
+            :gsub("return counter%+n","return counter+n+1")
+        local p,d=prepare(f,candidate);local receipt=must(publish(f,p))
+        eq(receipt.changed,true,"supported helper produces a real changed receipt")
+        eq(Anchor.Get(f.entry,"counter"),before,"initializer never replaces shared state")
+        eq(f.classes.K.cards[1]:init(2),6,"retained callback uses new helper and old scalar")
+        local model,witness=account(f,d.source);must(model,witness)
+        eq(model.complete,false,"unexecuted initializer prevents full completion")
+        eq(witness,nil,"pending initializer has no completion witness")
+        eq(pending(model,"local:counter"),true,"initializer remainder survives publication")
+        eq(pending(model,"local:helper"),false,"published helper uses actual version")
+    end)
+    case("unsupported selected helper cannot publish or clear its candidate",function()
+        local f=fixture();local before=Anchor.Get(f.entry,"helper");local snapshot=f.capture.snapshot
+        local candidate=source:gsub("return counter%+n",
+            [=[error('candidate body executed'); return '\x41']=])
+        local p,d=prepare(f,candidate)
+        eq(#p.dependencies.blocked_roots>0,true,"selected unsupported body blocks dependent roots")
+        local receipt=must(publish(f,p));eq(receipt.changed,false,"refusal produces no installation")
+        eq(f.capture.snapshot,snapshot,"refusal retains actual file snapshot")
+        eq(Anchor.Get(f.entry,"helper"),before,"refusal retains actual helper")
+        eq(Anchor.Get(f.entry,"counter"),3,"refusal retains scalar state")
+        eq(f.classes.K.cards[1]:init(2),5,"retained callback behavior stays old")
+        local model,witness=account(f,d.source);must(model,witness)
+        eq(model.complete,false,"unsupported helper remains pending")
+        eq(witness,nil,"unsupported helper cannot be ACKed")
+        eq(pending(model,"local:helper"),true,"helper remainder is retained")
     end)
     case("no Card file can really publish and complete",function()
         local f=fixture("local function helper() return 1 end",true)

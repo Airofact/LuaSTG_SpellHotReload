@@ -20,7 +20,6 @@ function M.run()
     local Source=require("SpellHotReload.Source.FileAnalysis")
     local Compose=require("SpellHotReload.Source.Compose")
     local IR=require("SpellHotReload.Source.TopLevelIR")
-    local Binding=require("SpellHotReload.Source.Binding")
     local Restart=require("SpellHotReload.Runtime.CurrentRestart")
     local Target=require("SpellHotReload.Adapters.Card.CardTarget")
     local passed,failed,failures=0,0,{}
@@ -91,14 +90,13 @@ function M.run()
         return must(f.p._store:VerifyStable(file,c.generation,bytes,2,1))
     end
     local function instrument(body)
-        local build,parse,bind,create=Source.Build,IR.Analyze,Binding.Analyze,Compose.Create
-        local count={build=0,parse=0,bind=0,create=0}
+        local build,parse,create=Source.Build,IR.Analyze,Compose.Create
+        local count={build=0,parse=0,create=0}
         Source.Build=function(...) count.build=count.build+1;return build(...) end
         IR.Analyze=function(...) count.parse=count.parse+1;return parse(...) end
-        Binding.Analyze=function(...) count.bind=count.bind+1;return bind(...) end
         Compose.Create=function(...) count.create=count.create+1;return create(...) end
         local ok,err=pcall(body,count)
-        Source.Build,IR.Analyze,Binding.Analyze,Compose.Create=build,parse,bind,create
+        Source.Build,IR.Analyze,Compose.Create=build,parse,create
         if not ok then error(err,0) end
     end
     case("real Card-free Local file uses the common receipt and completes",function()
@@ -128,7 +126,6 @@ function M.run()
             eq(f.discoveries,2,"fresh discovery after receipt")
             eq(count.build,1,"one syntax compilation and source construction")
             eq(count.parse,1,"one full-file IR analysis")
-            eq(count.bind,1,"one full-file binding analysis")
             eq(count.create,0,"no-op prepares no replacement closure")
             eq(f.p:_IsCompleted(file,source),true,"Watcher validates common all-owner witness")
             debug.setupvalue(f.entry.anchor,must(Anchor.Slot(f.entry,"counter")),9)
@@ -158,7 +155,6 @@ function M.run()
             eq(f.constructions,2,"candidate constructors never execute")
             eq(count.build,1,"changed publication accounting reuses shared source")
             eq(count.parse,1,"changed publication parses once")
-            eq(count.bind,1,"changed publication binds once")
         end)
     end)
     case("real file deletion supplies complete proof through the final refresh",function()

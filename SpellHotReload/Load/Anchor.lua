@@ -10,8 +10,8 @@
 ---   Supported the capability gate - `getupvalue`/`setupvalue`/`upvaluejoin`
 ---             must be present, so a runtime without join never claims it can
 ---             hot-reload a shared unit;
----   Policy    read-only verdict over the shared TopLevelIR analysis and the
----             Binding declaration model: a top-level return, a duplicate
+---   Policy    read-only verdict over the shared TopLevelIR declarations
+---             and statement scope frontiers: a top-level return, a duplicate
 ---             top-level local, an unparsed statement or too many slots is
 ---             loaded normally but marked non-reloadable;
 ---   Trailer   the `return function() return <locals> end` suffix that turns the
@@ -159,7 +159,9 @@ function M.Policy(source, options)
     local valid,err=Source.Validate(source)
     if not valid then return nil,err.message end
     options=options or {}
-    local analysis,bindings=source.analysis,source.bindings
+    local analysis=source.analysis
+    local declared=Source.DeclaredNames(source)
+    local duplicates=Source.Duplicates(source)
     local has_return = false
     for _, node in ipairs(analysis.nodes) do
         if node.kind == "return" then
@@ -168,21 +170,21 @@ function M.Policy(source, options)
         end
     end
     local names = {}
-    for i = 1, #bindings.names do names[i] = bindings.names[i] end
+    for i = 1, #declared do names[i] = declared[i] end
     local limit = options.limit or M.DefaultSlotLimit
     if not integer(limit) or limit < 0 then limit = M.DefaultSlotLimit end
 
     local policy = {
         reloadable = true, names = names, has_return = has_return,
-        duplicates = bindings.duplicates, opaque = bindings.opaque == true,
+        duplicates = duplicates, opaque = analysis.scope_complete ~= true,
         statements = #analysis.statements, limit = limit,
     }
     if has_return then
         policy.reloadable = false
         policy.reason = "top-level return disables capture"
-    elseif #bindings.duplicates > 0 then
+    elseif #duplicates > 0 then
         policy.reloadable = false
-        policy.reason = "duplicate top-level local: " .. tostring(bindings.duplicates[1].name)
+        policy.reason = "duplicate top-level local: " .. tostring(duplicates[1].name)
     elseif policy.opaque then
         policy.reloadable = false
         policy.reason = "unparsed top-level statement"

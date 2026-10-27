@@ -104,14 +104,15 @@ function M.run()
             local descriptor=projection.definitions.helper[1]
             local probe=must(Plan.Probe(facts,descriptor))
             local hp=must(Compose.Plan(probe.created,entry))
-            local syntax
+            local syntax;local Tree=facts.analysis.syntax
             for _,statement in ipairs(facts.analysis.statements) do
-                local target_node,fn=Tree.Function(statement.syntax)
-                if target_node and target_node.kind=="member" and target_node.name=="callback" then syntax=fn end
+                local definition=Tree.Match(statement.syntax,"definition")
+                local target_node=definition and Tree.Match(definition.target,"member")
+                if target_node and target_node.name=="callback" then syntax=definition.fn end
             end
             local visible=must(Source.Visible(facts,syntax))
-            local created=must(Compose.Create(Tree.FunctionSource(syntax,facts.analysis,false),nil,visible,
-                {form="expression",syntax=syntax,name="FileCommitSpec:callback"}))
+            local created=must(Compose.Create(Tree.FunctionSource(syntax,false),nil,visible,
+                {form="expression",tree=facts.analysis.syntax,syntax=syntax,name="FileCommitSpec:callback"}))
             local cp=must(Compose.Plan(created,entry))
             local nh,nc={fn=hp.fn,definition_version=2},{fn=cp.fn,definition_version=2}
             local ga,gb=copy(base.owners[1]),copy(base.owners[2])
@@ -210,6 +211,40 @@ function M.run()
         eq(f.capture.snapshot.owners[1].state.helper.fn,select(2,get(f.capture.entry.anchor,f.capture.entry.slots.helper)),"flush cannot alter sealed ledger")
         eq(f.capture.snapshot.owners[1].records[2].definition_version,2,"sealed definition version retained")
         eq(f.capture.snapshot.owners[2].state.target,f.target,"copied first-load live identity retained")
+        -- Candidate facts may not escape into metadata, even as table keys.
+        for _,as_key in ipairs({false,true}) do
+            f=fixture()
+            local source=f.operation.source
+            local analysis=source.analysis
+            local ffi=require("ffi")
+            local copied=ffi.new("TSNode[1]");copied[0]=analysis.syntax.root[0]
+            local facts={copied,source,analysis,source.sites,source.syntax_check,analysis.syntax,analysis.syntax.root,
+                source.sites[analysis.statements[1].syntax],
+                analysis.statements,analysis.statements[1],analysis.statements[1].syntax,
+                analysis.nodes,analysis.nodes[1],Source.Declarations(source),
+                Source.DeclaredNames(source),Source.Declaration(source,"counter"),
+                Source.Declaration(source,"counter").name_syntax,
+                analysis.declarations_by_name,analysis.declarations_by_name.counter}
+            for _,fact in ipairs(facts) do
+                local metadata={}
+                if as_key then metadata[fact]=true else metadata.held=fact end
+                f.fragments[1].proposed_group.state.extra=metadata
+                local sealed,reason=pcall(Guard.Seal,f.operation,f.fragments)
+                eq(sealed,false,"candidate fact rejected before writes")
+                test(type(reason)=="string" and reason:find("candidate source",1,true),"candidate fact refusal is explicit")
+                unchanged(f,"candidate fact")
+            end
+        end
+        f=fixture()
+        local shared={tag="metadata"};shared.self=shared
+        f.fragments[1].proposed_group.state.extra=shared
+        f.fragments[1].proposed_group.state.alias=shared
+        receipt=must(scoped(f))
+        local published=f.capture.snapshot.owners[1].state
+        eq(published.extra,published.alias,"publication preserves shared metadata")
+        eq(published.extra.self,published.extra,"publication preserves metadata cycles")
+        test(published.extra~=shared,"publication seals metadata independently")
+        eq(f.capture.snapshot.owners[2].state.target,f.target,"first-load identity still retained")
         f=fixture()
         local extra=copy(f.fragments[1].cell_writes[1]);extra.value=function() return -1 end
         f.fragments[1].cell_writes[2]=extra

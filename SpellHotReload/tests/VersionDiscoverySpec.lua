@@ -13,7 +13,6 @@ function M.run()
     local Anchor=require("SpellHotReload.Load.Anchor")
     local Compose=require("SpellHotReload.Source.Compose")
     local IR=require("SpellHotReload.Source.TopLevelIR")
-    local Binding=require("SpellHotReload.Source.Binding")
     local Target=require("SpellHotReload.Adapters.Card.CardTarget")
     local Guard=require("SpellHotReload.Apply.CommitCheck")
     local Dependencies=require("SpellHotReload.Pipeline.Dependencies")
@@ -51,7 +50,7 @@ function M.run()
     local globals={"boss","_editor_class","_tmp_sc","VERSION_DISCOVERY_EFFECT"}
     local saved={};for _,n in ipairs(globals) do saved[n]=rawget(_G,n) end
     local old_join,old_set,old_jit=debug.upvaluejoin,debug.setupvalue,rawget(_G,"jit")
-    local old_build,old_analyze,old_binding=Source.Build,IR.Analyze,Binding.Analyze
+    local old_build,old_analyze=Source.Build,IR.Analyze
     local old_local_match,old_card_match=Local.Match,Card.Match
     local source=[[
 local state=4
@@ -71,7 +70,7 @@ table.insert(_editor_class["L"].cards,_tmp_sc)
 VERSION_DISCOVERY_EFFECT()
 ]]
     local effects=0
-    local builds,analyzes,bindings,local_matches,card_matches=0,0,0,0,0
+    local builds,analyzes,local_matches,card_matches=0,0,0,0
     local joins,writes,flushes,discovery_count=0,0,0,0
     local ok,problem=pcall(function()
         must(Anchor.Supported(Compose.Capability(debug))) -- Real LuaJIT capability required.
@@ -98,7 +97,6 @@ VERSION_DISCOVERY_EFFECT()
         local facts,bom_facts=must(Source.Build(candidate)),must(Source.Build(bom))
         Source.Build=function() builds=builds+1;error("hidden full Build") end
         IR.Analyze=function() analyzes=analyzes+1;error("hidden full parse") end
-        Binding.Analyze=function() bindings=bindings+1;error("hidden binding reconstruction") end
         Local.Match=function(...) local_matches=local_matches+1;return old_local_match(...) end
         Card.Match=function(...) card_matches=card_matches+1;return old_card_match(...) end
         debug.upvaluejoin=function() joins=joins+1;error("premature join") end
@@ -159,7 +157,7 @@ VERSION_DISCOVERY_EFFECT()
         eq(compared.by_key[keyb].changed,true,"B changed though unselected")
         eq(compared.by_key[keyc].changed,false,"C callback definition unchanged")
         eq(compared.source.analysis,facts.analysis,"Card uses original full AST")
-        eq(compared.source.bindings,facts.bindings,"Card uses original lexical bindings")
+        eq(Source.Declarations(compared.source),Source.Declarations(facts),"Card uses canonical declarations")
         eq(lf.local_view.projection.source,facts,"Local projection uses same facts")
         eq(#lf.cell_writes,1,"only necessary Local helper written")
         eq(lf.cell_writes[1].name,"helper","exact selected Local helper")
@@ -217,7 +215,6 @@ VERSION_DISCOVERY_EFFECT()
         local bad=copy(snapshot);bad.common=copy(snapshot.common);bad.common.source=bad_source
         v,e=Target.LocateFileDiscovery(bad,capture,live());refuses(v,e,"stale","wrong live bytes")
         bad_source=copy(facts);bad_source.analysis=copy(facts.analysis);bad_source.analysis.source_offset=3
-        bad_source.bindings=copy(facts.bindings);bad_source.bindings.analysis=bad_source.analysis
         bad_source.sites=copy(facts.sites);bad_source.sites.analysis=bad_source.analysis
         v,e=Source.Validate(bad_source);refuses(v,e,"stale","wrong BOM offset")
         bad=copy(snapshot);bad.common=copy(snapshot.common);bad.common.source=bad_source
@@ -294,10 +291,9 @@ VERSION_DISCOVERY_EFFECT()
         eq(card_matches,discovery_count,"no Card Match outside explicit discovery")
         eq(builds,0,"no hidden full Build")
         eq(analyzes,0,"no hidden whole-file parse")
-        eq(bindings,0,"no hidden binding reconstruction")
         eq(effects,1,"only explicit miniature first load executed")
     end)
-    Source.Build,IR.Analyze,Binding.Analyze=old_build,old_analyze,old_binding
+    Source.Build,IR.Analyze=old_build,old_analyze
     Local.Match,Card.Match=old_local_match,old_card_match
     debug.upvaluejoin,debug.setupvalue,_G.jit=old_join,old_set,old_jit
     for _,n in ipairs(globals) do rawset(_G,n,saved[n]) end

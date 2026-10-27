@@ -13,8 +13,7 @@ function M.run()
     local Anchor=require("SpellHotReload.Load.Anchor")
     local Tx=require("SpellHotReload.Apply.FileCommit")
     local IR=require("SpellHotReload.Source.TopLevelIR")
-    local Binding=require("SpellHotReload.Source.Binding")
-    local Lexer=require("SpellHotReload.Source.Lexer")
+    local Syntax=require("SpellHotReload.Source.SyntaxTree")
     local passed,failed,failures=0,0,{}
     local function eq(a,b,label) assert(rawequal(a,b),label);passed=passed+1 end
     local function must(v,e) assert(v,type(e)=="table" and e.message or e);return v end
@@ -210,11 +209,11 @@ function M.run()
             calls=calls+1;eq(self,real.driver,"real original driver");eq(d,discovery,"real full discovery")
             return original_prepare(self,d,o)
         end
-        local old_build,old_analyze,old_binding,old_lex=Source.Build,IR.Analyze,Binding.Analyze,Lexer.Tokenize
+        local old_build,old_analyze,old_lex=Source.Build,IR.Analyze,Syntax.Parse
         local function forbidden() error("preparation rebuilt supplied full-file facts") end
-        Source.Build,IR.Analyze,Binding.Analyze,Lexer.Tokenize=forbidden,forbidden,forbidden,forbidden
+        Source.Build,IR.Analyze,Syntax.Parse=forbidden,forbidden,forbidden
         local ran,prepared,report,operation=pcall(Fixture.Prepare,real,discovery,{mode="current",refresh=live})
-        Source.Build,IR.Analyze,Binding.Analyze,Lexer.Tokenize=old_build,old_analyze,old_binding,old_lex
+        Source.Build,IR.Analyze,Syntax.Parse=old_build,old_analyze,old_lex
         Driver.PrepareDiscovery=original_prepare
         if not ran then error(prepared,0) end
         must(prepared,report);eq(calls,1,"real owners enter common preparation once")

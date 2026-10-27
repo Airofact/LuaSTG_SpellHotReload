@@ -12,7 +12,7 @@ function M.run()
     local Load=require("SpellHotReload.Load.AnchorLoad")
     local Source=require("SpellHotReload.Source.FileAnalysis")
     local IR=require("SpellHotReload.Source.TopLevelIR")
-    local Binding=require("SpellHotReload.Source.Binding")
+    local Tree=require("SpellHotReload.Source.SyntaxTree")
     local Anchor=require("SpellHotReload.Load.Anchor")
     local Compose=require("SpellHotReload.Source.Compose")
     local passed,failed,failures=0,0,{}
@@ -29,7 +29,7 @@ function M.run()
     local globals={};for _,key in ipairs(keys) do globals[key]=rawget(_G,key) end
     local get,set,join,id=debug.getupvalue,debug.setupvalue,debug.upvaluejoin,debug.upvalueid
     local slots={{Local,"Capture"},{Card,"Match"},{Card,"CaptureOwnership"},{Cards,"Seed"},{Files,"Capture"},
-        {Source,"Build"},{IR,"Analyze"},{Binding,"Analyze"},{Card,"Capture"}}
+        {Source,"Build"},{IR,"Analyze"},{Tree,"Parse"},{Card,"Capture"}}
     local original={};for i,slot in ipairs(slots) do original[i]=slot[1][slot[2]] end
     local traps,mutations=0,0
     local hostile=setmetatable({},{__index=function() traps=traps+1;error("hostile index") end,
@@ -274,7 +274,7 @@ function M.run()
                 eq(m,matched,"Card versions same Match");eq(o,combat,"Card versions complete combat owners")
                 eq(w,ownership,"Card versions complete ownership");eq(c,adopted_classes,"Card versions registry")
                 eq(d,adopted_defaults,"Card versions saved defaults")
-                eq(provider(e.source.bindings.by_name.helper),local_result.state.by_name.helper.unit_ref,"provider canonical Local ref")
+                eq(provider(Source.Declaration(e.source,"helper")),local_result.state.by_name.helper.unit_ref,"provider canonical Local ref")
                 if not step(4) then return nil,marker end
                 card_result=must(original[4](owner,e,s,m,o,w,c,d,provider));return card_result
             end

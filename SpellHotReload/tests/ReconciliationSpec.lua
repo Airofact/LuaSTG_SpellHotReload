@@ -141,12 +141,10 @@ function M.run()
     end
     original.Reconcile=valid_reconcile
     local IR=require("SpellHotReload.Source.TopLevelIR")
-    local Binding=require("SpellHotReload.Source.Binding")
-    local analyze,bind=IR.Analyze,Binding.Analyze
+    local analyze=IR.Analyze
     IR.Analyze=function() error("unexpected full-file analysis in discovery reuse") end
-    Binding.Analyze=function() error("unexpected binding reconstruction in discovery reuse") end
     local reused_ok,reused=pcall(driver.DiscoverPublished,driver,"A.lua",empty,publication)
-    IR.Analyze,Binding.Analyze=analyze,bind
+    IR.Analyze=analyze
     eq(reused_ok,true,"fresh discovery consumes existing full facts")
     if reused_ok then
         eq(reused.source,empty,"same source facts survive fresh discovery")

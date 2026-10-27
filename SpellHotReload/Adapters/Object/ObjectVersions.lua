@@ -4,7 +4,7 @@ local D=require('SpellHotReload.Adapters.Object.ObjectDefinitions')
 local Observe=require('SpellHotReload.Adapters.Object.ObjectLoad')
 local Compose=require('SpellHotReload.Source.Compose')
 local Anchor=require('SpellHotReload.Load.Anchor')
-local Tree=require('SpellHotReload.Source.SyntaxTree')
+local Source=require('SpellHotReload.Source.FileAnalysis')
 local Local=require('SpellHotReload.Adapters.Local.Local')
 local M={Kind='SpellHotReload.ObjectVersions',Version=1}
 local plain=D.Plain
@@ -18,9 +18,11 @@ local function same(a,b)
     return true
 end
 local function line(source,node)
-    local pos=source.analysis.tokens[node.first].pos
-    local _,count=source.analysis.source:sub(1,pos-1):gsub('\n','')
-    return count+1
+    local Tree=source.analysis.syntax
+    local first=Tree.Line(node)
+    local text=Tree.Text(node):gsub('\r\n','\n'):gsub('\n\r','\n')
+    local _,count=text:gsub('[\r\n]','')
+    return first,first+count
 end
 local function shared(fn,entry,dependencies)
     local proof,err=Compose.Plan(fn,entry)
@@ -37,7 +39,7 @@ local function shared(fn,entry,dependencies)
 end
 local function prepared(source,definition,entry,providers)
     local created,err=Compose.Create(definition.body,nil,definition.visible,
-        {form='expression',syntax=definition.syntax,name='Object callback'})
+        {form='expression',tree=source.analysis.syntax,syntax=definition.syntax,name='Object callback'})
     if not created then return nil,err end
     local proof,why=Compose.Plan(created,entry);if not proof then return nil,why end
     local dependencies=copy(created.used);table.sort(dependencies)
@@ -82,8 +84,9 @@ function M.Seed(owner,entry,session,local_group,p)
     local function identity(v)
         if type(v)=='table' and not known[v] then known[v]=true;identities[#identities+1]=v end
     end
-    for _,name in ipairs(entry.source.bindings.names) do
-        local ref=Local.CapturedProvider(local_group,entry.source.bindings.by_name[name])
+    for _,name in ipairs(Source.DeclaredNames(entry.source)) do
+        local declaration=Source.Declaration(entry.source,name)
+        local ref=declaration and Local.CapturedProvider(local_group,declaration)
         if not ref then return fail('original Local provider missing',state) end
         state.providers[name]=ref
     end
@@ -114,7 +117,7 @@ function M.Seed(owner,entry,session,local_group,p)
             return fail('class/base identity or engine dispatch flags unsupported',state,key)
         end
         local count,found=0,nil
-        local first,last=line(p.source,ctor.value),line(p.source,{first=ctor.value.last})
+        local first,last=line(p.source,ctor.value)
         for _,call in ipairs(observation.calls) do
             if call.class==cls then count=count+1;found=call end
         end

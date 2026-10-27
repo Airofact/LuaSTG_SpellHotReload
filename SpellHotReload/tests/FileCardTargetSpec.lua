@@ -9,8 +9,7 @@ function M.run(opts)
     local Files=require("SpellHotReload.Pipeline.FileVersions")
     local Source=require("SpellHotReload.Source.FileAnalysis")
     local IR=require("SpellHotReload.Source.TopLevelIR")
-    local Binding=require("SpellHotReload.Source.Binding")
-    local Lexer=require("SpellHotReload.Source.Lexer")
+    local Syntax=require("SpellHotReload.Source.SyntaxTree")
     local Compose=require("SpellHotReload.Source.Compose")
     local Callbacks=require("SpellHotReload.Adapters.Card.CardCallbacks")
     local Card=require("SpellHotReload.Adapters.Card.Card")
@@ -33,11 +32,11 @@ function M.run(opts)
     local saved={}
     for _,n in ipairs({"boss","_editor_class","_tmp_sc","_BOSS_ESCAPE","FILE_TARGET_EFFECT"}) do saved[n]=rawget(_G,n) end
     local saved_apis={read=Callbacks.Read,match=Card.Match,build=Source.Build,analyze=IR.Analyze,
-        bind=Binding.Analyze,tokenize=Lexer.Tokenize,create=Compose.Create}
+        tokenize=Syntax.Parse,create=Compose.Create}
     local function restore_apis()
         Callbacks.Read,Card.Match=saved_apis.read,saved_apis.match
-        Source.Build,IR.Analyze,Binding.Analyze,Lexer.Tokenize,Compose.Create=
-            saved_apis.build,saved_apis.analyze,saved_apis.bind,saved_apis.tokenize,saved_apis.create
+        Source.Build,IR.Analyze,Syntax.Parse,Compose.Create=
+            saved_apis.build,saved_apis.analyze,saved_apis.tokenize,saved_apis.create
     end
     local function card_state(capture)
         return must(Files.Owner(capture,Card)).state
@@ -298,7 +297,7 @@ function M.run(opts)
         local pure=chunk()
         before_effect,before_ctor=effects,constructors
         Callbacks.Read=forbidden;Card.Match=forbidden;Source.Build=forbidden
-        IR.Analyze=forbidden;Binding.Analyze=forbidden;Lexer.Tokenize=forbidden;Compose.Create=forbidden
+        IR.Analyze=forbidden;Syntax.Parse=forbidden;Compose.Create=forbidden
         local ran,value=pcall(function()
             r=must(pure.LocateFileDiscovery(d,f.capture,f.live))
             return pure.CheckFileDiscovery(r,f.capture,f.live)

@@ -120,8 +120,8 @@ function M.run()
     end
     local ok,problem=pcall(function()
         must(Anchor.Supported(Compose.Capability(debug)))
-        -- Statement separators affect the full token partition but not residual
-        -- content. Verify both directions through real first-load/file evidence.
+        -- Optional statement separators do not change the statement content signature.
+        -- Verify both directions through real first-load/file evidence.
         for _,edit in ipairs({{"REMAINDER_EFFECT%(%)","REMAINDER_EFFECT();"},
             {"local state=4","local state=4;"}}) do
             local formatted,count=SOURCE:gsub(edit[1],edit[2])
@@ -168,7 +168,7 @@ function M.run()
         eq(inserted.complete,false,"source insertion never swallowed")
         local model=f.remaining(SOURCE)
         eq(model.complete,true,"unchanged complete source")
-        eq(#model.pending,0,"all tokens covered")
+        eq(#model.pending,0,"all statement content accounted")
         eq(model.file,f.entry.file,"file scope")
         eq(model.session_id,base.session_id,"session scope")
         eq(model.revision,0,"actual revision, not proposal")
@@ -183,7 +183,7 @@ function M.run()
         f=fixture();base=f.capture.snapshot
         local formatted="\239\187\191" .. SOURCE:gsub("state=4","state = 4 -- retained state\r\n")
             :gsub("return helper%(n%) end","return -- comment\n helper ( n ) end",1)
-        eq(f.remaining(formatted).complete,true,"BOM and formatting are not semantic changes")
+        eq(f.remaining(formatted).complete,false,"changed initializer/body span remains pending despite equivalent runtime meaning")
         local edited=SOURCE:gsub("state%+n end","state+n+1 end")
             :gsub("helper%(n%)%+10","helper(n)+20")
         local joins,writes,flushes=0,0,0
@@ -283,10 +283,10 @@ function M.run()
         eq(value,nil,"selection never a receipt or remainder baseline")
         eq(err.code,"stale","selection cannot be accounting evidence")
         local partition=f.report(SOURCE)
-        partition.coverage.after.scan.analysis.statements[1].tok.first=2
+        partition.coverage.after.scan.analysis.statements={}
         value,err=FileApply.Remaining(partition)
-        eq(value,nil,"token partition gap never counts as complete")
-        eq(err.code,"unsupported","partition diagnostic")
+        eq(value,nil,"replaced source sequence cannot count as complete")
+        eq(err.code,"stale","source provenance diagnostic")
         f=fixture();base=f.capture.snapshot
         local receipt,prepared=f.commit(edited,"current")
         eq(#prepared.dependencies.safe_roots,1,"Current exact root safe")

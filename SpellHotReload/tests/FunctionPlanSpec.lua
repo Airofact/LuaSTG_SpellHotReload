@@ -125,9 +125,9 @@ function M.run()
 
         -- Complete facts/Local projections exist BEFORE selected preparation.
         local IR=require("SpellHotReload.Source.TopLevelIR")
-        local Bindings=require("SpellHotReload.Source.Binding")
-        local Lexer=require("SpellHotReload.Source.Lexer")
+        local Syntax=require("SpellHotReload.Source.SyntaxTree")
         local facts=must(Source.Build(candidate))
+        local original_analysis=facts.analysis
         local loaded=must(Definitions.Match(entry.source))
         local projection=must(Definitions.Match(facts))
         local pair=must(Definitions.Pair(loaded,projection))
@@ -137,8 +137,8 @@ function M.run()
         -- A genuine Local-only common scope, not a production two-owner fixture.
         local contribution=must(Local.Capture(entry,"FunctionPlan:scope"))
         local common=must(Files.Capture(entry,"FunctionPlan:scope",{contribution}))
-        local slots={{Source,"Build"},{IR,"Analyze"},{Bindings,"Analyze"},
-            {Lexer,"Tokenize"},{Definitions,"Match"}}
+        local slots={{Source,"Build"},{IR,"Analyze"},
+            {Syntax,"Parse"},{Definitions,"Match"}}
         local apis,scans={},{}
         for i,slot in ipairs(slots) do
             local index=i;apis[i]=slot[1][slot[2]];scans[i]=0
@@ -203,7 +203,7 @@ function M.run()
         for i,slot in ipairs(slots) do slot[1][slot[2]]=apis[i] end
         Compose.Plan=compose_plan
         entry.slots.counter,entry.loaded_source=counter_slot,source
-        facts.content,facts.analysis=candidate,projection.source.bindings.analysis
+        facts.content,facts.analysis=candidate,original_analysis
         must(scoped_ok,scoped_error)
         -- A new comparison explicitly constructs a new source. Old probes cannot
         -- cross that source identity even when the bytes and definition match.
@@ -238,6 +238,51 @@ function M.run()
             "state initializer never called")
         eq(Anchor.Get(entry, "counter"), 0, "state initializer not adopted")
         eq(entry.loaded_source, source, "loaded source never rewritten")
+
+
+        -- Unconsumed bodies do not define whole-file support. Selected closure
+        -- traversal still refuses unsupported mapping/literals before any write.
+        for _,case in ipairs({
+            { body=[=[return '\x41']=], reason="unsupported string escape" },
+            { body="::unused:: return 1", reason="unsupported native node" },
+        }) do
+            local hidden=source:gsub("local config = { tag = 'old' }",
+                "local config = { callback = function() "..case.body.." end }")
+            hidden=hidden:gsub("return counter %+ n","return counter + n * 2")
+            check(loadstring(hidden)~=nil,"full host compiler accepts hidden body")
+            local plan=must(prepare(hidden,entry,{"helper"},published))
+            eq(#plan.functions,1,"only selected supported function prepared")
+            eq(#plan.writes,1,"unconsumed initializer has no write")
+            eq(Anchor.Get(entry,"config").tag,"old","initializer remains actual old state")
+            eq(Anchor.Get(entry,"helper"),helper,"preparation does not publish helper")
+
+            local invalid=source:gsub("return counter %+ n",
+                "error('candidate body executed'); "..case.body)
+            check(loadstring(invalid)~=nil,"selected body is host-language valid")
+            local bad_facts=must(Source.Build(invalid))
+            local bad_pair=must(Definitions.Pair(must(Definitions.Match(entry.source)),
+                must(Definitions.Match(bad_facts))))
+            local bad_defs=must(Definitions.Select(bad_pair,{"helper"}))
+            local value,why=Plan.Probe(bad_facts,bad_defs[1])
+            refusal(value,why,"compile","selected unsupported syntax")
+            check(why.message:find(case.reason,1,true)~=nil,"selected syntax diagnostic retained")
+            eq(Source.Validate(bad_facts),true,"failed probe is not failed source parsing")
+            eq(Anchor.Get(entry,"helper"),helper,"refusal retains actual helper")
+            eq(Anchor.Get(entry,"counter"),0,"refusal retains state")
+
+            local recovered=must(Source.Build(candidate,nil,bad_facts))
+            eq(recovered.analysis.syntax.revision.session,bad_facts.analysis.syntax.revision.session,
+                "next valid input reuses the successful native baseline")
+            local recovery_pair=must(Definitions.Pair(must(Definitions.Match(entry.source)),
+                must(Definitions.Match(recovered))))
+            must(Plan.Probe(recovered,must(Definitions.Select(recovery_pair,{"helper"}))[1]))
+        end
+        local invalid_hidden=source:gsub("local config = { tag = 'old' }",
+            "local config = { callback = function() break end }")
+        local no_source,compile_error=Source.Build(invalid_hidden)
+        refusal(no_source,compile_error,"compile","invalid hidden body still rejected","analyze")
+        no_source,compile_error=Source.Build([=[local value='\x41']=])
+        refusal(no_source,compile_error,"unsupported","queried initializer still rejected","analyze")
 
         local scoped_control=candidate.."\ndo local config_shadow=config end"
         eq(#must(prepare(scoped_control,entry,{"helper"},published)).functions,1,

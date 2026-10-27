@@ -8,8 +8,7 @@ local Driver = require("SpellHotReload.Pipeline.Driver")
 local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
 local IR = require("SpellHotReload.Source.TopLevelIR")
 local Source = require("SpellHotReload.Source.FileAnalysis")
-local Bindings = require("SpellHotReload.Source.Binding")
-local Lexer = require("SpellHotReload.Source.Lexer")
+local Syntax = require("SpellHotReload.Source.SyntaxTree")
 local Compose = require("SpellHotReload.Source.Compose")
 
 local M = {}
@@ -272,8 +271,8 @@ function M.run()
         ------------------------------------------------------------------------
         do
             local facts=assert(Source.Build(new))
-            local slots={{Source,"Build"},{IR,"Analyze"},{Bindings,"Analyze"},
-                {Lexer,"Tokenize"},{Compose,"Create"}}
+            local slots={{Source,"Build"},{IR,"Analyze"},
+                {Syntax,"Parse"},{Compose,"Create"}}
             local saved,calls={},{}
             for i,slot in ipairs(slots) do
                 local index=i;saved[i]=slot[1][slot[2]];calls[i]=0

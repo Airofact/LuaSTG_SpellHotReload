@@ -4,7 +4,7 @@ local V=require('SpellHotReload.Adapters.Object.ObjectVersions')
 local Files=require('SpellHotReload.Pipeline.FileVersions')
 local Local=require('SpellHotReload.Adapters.Local.Local')
 local Compose=require('SpellHotReload.Source.Compose')
-local Tree=require('SpellHotReload.Source.SyntaxTree')
+local Source=require('SpellHotReload.Source.FileAnalysis')
 local M={Id='object',ContractVersion=5}
 local plain,copy,fail=D.Plain,V.Copy,V.Fail
 local function dense(t)
@@ -131,28 +131,30 @@ local function resolve(handle,unit,context)
         source_facts=result.changed and {{source=view.source,node=result.node}} or {}}
 end
 local function bindings(view,node)
+    local Tree=view.source.analysis.syntax
     local reads,problem={},nil
-    local function walk(n,parent)
-        if n.kind=='name' and next(view.versions.pending_classes)~=nil
-            and (view.projection.aliases[n.name] or view.initial.projection.aliases[n.name]) then
-            problem='class alias may depend on unpublished construction';return
+    Tree.Walk(node,function(n,parent)
+        if problem then return false end
+        local name=Tree.Is(n,'name') and Tree.Identifier(n)
+        if name and next(view.versions.pending_classes)~=nil
+            and (view.projection.aliases[name] or view.initial.projection.aliases[name]) then
+            problem='class alias may depend on unpublished construction';return false
         end
-        if n.kind=='name' and n.name=='_editor_class' then
-            local key=parent and parent.kind=='index' and parent.base==n and Tree.String(parent.key)
+        if name=='_editor_class' then
+            local index=Tree.Match(parent,'index')
+            local key=index and Tree.SameNode(index.base,n) and Tree.String(index.key)
             if not key or view.versions.pending_classes[key] then
-                problem='class registry read depends on unknown, dynamic or unpublished construction';return
+                problem='class registry read depends on unknown, dynamic or unpublished construction';return false
             end
             -- External/Card class identities keep their existing domain proof.
             -- Object guards only its original classes and pending constructors.
             if view.base.by_key[key] then
                 local cls=view.initial.bindings[key]
-                if not plain(cls) then problem='original Object dependency is unavailable';return end
+                if not plain(cls) then problem='original Object dependency is unavailable';return false end
                 reads[#reads+1]={registry=view.initial.registry,key=key,value=cls}
             end
         end
-        for _,child in ipairs(n.children) do if not problem then walk(child,n) end end
-    end
-    walk(node)
+    end)
     if problem then return nil,problem end
     return reads
 end
@@ -161,7 +163,7 @@ local function constraints(view,dependencies)
     for _,root in ipairs(dependencies.safe_roots) do result.by_root[root.root_id]={reads={}} end
     for _,fact in ipairs(dependencies.source_facts) do
         local target=result.by_root[fact.root_id]
-        if fact.source~=view.source or not target or not view.source.sites[fact.node] then return fail('foreign Object binding source fact') end
+        if fact.source~=view.source or not target or not Source.Site(view.source,fact.node) then return fail('foreign Object binding source fact') end
         local reads,err=bindings(view,fact.node)
         if not reads then target.reason=err
         else for _,r in ipairs(reads) do target.reads[#target.reads+1]=r end end

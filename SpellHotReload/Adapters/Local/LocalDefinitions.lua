@@ -1,7 +1,6 @@
 -- Local-owned direct-definition projection and lexical support rules.
 -- No versions/live identities, candidate execution, preparation or publication.
 local Source=require("SpellHotReload.Source.FileAnalysis")
-local Tree=require("SpellHotReload.Source.SyntaxTree")
 local Anchor=require("SpellHotReload.Load.Anchor")
 local M={Kind="SpellHotReload.LocalDefinitions",Version=1}
 local function plain(v) return type(v)=="table" and getmetatable(v)==nil end
@@ -29,7 +28,7 @@ end
 function M.Match(source)
     local valid,err=Source.Validate(source)
     if not valid then return nil,err end
-    local a,b=source.analysis,source.bindings
+    local a=source.analysis;local Tree=a.syntax
     local policy,why=Anchor.Policy(source)
     if not policy then return fail(why or "capture policy unavailable") end
     local projection={kind=M.Kind,version=M.Version,source=source,policy=policy,
@@ -37,40 +36,43 @@ function M.Match(source)
     -- Group existing IR nodes ONCE. Selected preparation never rebuilds this.
     local by_statement={}
     for _,node in ipairs(a.nodes) do
-        local first=node.tok.first
-        local bucket=by_statement[first] or {};by_statement[first]=bucket
+        local syntax=node.syntax
+        local bucket=by_statement[syntax] or {};by_statement[syntax]=bucket
         bucket[#bucket+1]=node
     end
     for index,statement in ipairs(a.statements) do
-        local record=b.statements[index]
         local ast=statement.syntax
-        local target,fn,method,self_visible=Tree.Function(ast)
-        if target and (target.kind=="name" or target.kind=="binding") and not method
-            and (ast.kind=="local" or ast.kind=="local_function" or record.visible[target.name]) then
+        local definition=Tree.Match(ast,"definition")
+        local target=definition and definition.target
+        local name=Tree.Identifier(target)
+        if name and not definition.method
+            and (Tree.Match(ast,"declaration") or Source.ResolveLocal(source,index,name)) then
+            local fn,self_visible=definition.fn,definition.self_visible
             local names,nerr=Source.Visible(source,fn)
             if not names then return nil,nerr end
-            local form=ast.kind=="local_function" and "statement" or "expression"
-            append(projection.definitions,target.name,{source=source,name=target.name,
+            local form=definition.self_visible and "statement" or "expression"
+            append(projection.definitions,name,{source=source,name=name,
                 statement=index,syntax=fn,visible=names,form=form,self_visible=self_visible,
-                signature=form=="statement" and Tree.Signature(ast,a.tokens)
-                    or Tree.FunctionSignature(fn,a.tokens),
+                signature=form=="statement" and Tree.Signature(ast)
+                    or Tree.FunctionSignature(fn),
                 source_range=statement.source_range})
         end
-        for _,node in ipairs(by_statement[statement.tok.first] or {}) do
+        for _,node in ipairs(by_statement[ast] or {}) do
             if node.carrier=="effect" and node.kind=="block" then
                 for _,ref in ipairs(Tree.Names(ast)) do
-                    if record.visible[ref.name] then projection.blocked[ref.name]=true end
+                    local name=Tree.Identifier(ref)
+                    if Source.ResolveLocal(source,index,name) then projection.blocked[name]=true end
                 end
             end
             local name=(node.carrier=="local" and node.kind~="declare"
-                or node.carrier=="global" and record.visible[node.name]) and node.name
+                or node.carrier=="global" and Source.ResolveLocal(source,index,node.name)) and node.name
             if name then append(projection.writes,name,index) end
         end
     end
-    for _,declaration in ipairs(b.declarations) do
+    for _,declaration in ipairs(Source.Declarations(source)) do
         if projection.definitions[declaration.name]==nil then
             projection.initializers[declaration.name]=Tree.Signature(
-                a.statements[declaration.statement].syntax,a.tokens)
+                a.statements[declaration.statement].syntax)
         end
     end
     return projection
@@ -88,17 +90,17 @@ function M.Pair(loaded,candidate)
     if not loaded.policy.reloadable or not candidate.policy.reloadable then
         return fail(loaded.policy.reason or candidate.policy.reason or "capture unsupported")
     end
-    local old,new=loaded.source.bindings,candidate.source.bindings
-    if not same(old.names,new.names) then return fail("top-level declaration order/set changed") end
-    for _,name in ipairs(old.names) do
-        local a,b=old.by_name[name],new.by_name[name]
+    local old,new=Source.DeclaredNames(loaded.source),Source.DeclaredNames(candidate.source)
+    if not same(old,new) then return fail("top-level declaration order/set changed") end
+    for _,name in ipairs(old) do
+        local a,b=Source.Declaration(loaded.source,name),Source.Declaration(candidate.source,name)
         if not a or not b or a.kind~=b.kind or a.self_visible~=b.self_visible then
             return fail("declaration kind changed",name)
         end
     end
     local pair={kind=M.Kind..".Pair",version=M.Version,
         loaded=loaded,candidate=candidate,by_name={}}
-    for _,name in ipairs(old.names) do
+    for _,name in ipairs(old) do
         local a,b=loaded.definitions[name],candidate.definitions[name]
         local item={name=name,status="preserve-state"}
         pair.by_name[name]=item
