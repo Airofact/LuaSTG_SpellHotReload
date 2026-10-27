@@ -357,7 +357,10 @@ function M.Create(body, target, visible, options)
         syntax=Tree.root
     end
     if not Syntax.IsSnapshot(Tree) or not Tree.IsNode(syntax) then return nil,"source-owned syntax reference required" end
-    local nested = nested_mentions(Tree,syntax, prefix_set)
+    -- Source bodies are mapped on demand. Refuse unsupported selected syntax
+    -- through Create's failure contract without executing the function body.
+    local walked,nested=pcall(nested_mentions,Tree,syntax,prefix_set)
+    if not walked then return nil,tostring(nested) end
     for name in pairs(nested) do
         local found = false
         for i = 1, #used do

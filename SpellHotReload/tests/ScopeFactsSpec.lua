@@ -82,7 +82,6 @@ function M.run()
     eq(resolve(source,2,"b"),nil,"declaration not visible in initializer")
 
     source,a=build("local x=1\nlocal function g() local x=2; return x end\nG=x")
-    eq(a.nodes[2].deps[1],"x","IR dependency hint remains conservative under shadowing")
     eq(#Source.Declarations(source),2,"nested local is not a top-level declaration")
     eq(resolve(source,2,"x"),declaration(source,"x"),"outer x visible at function definition")
     eq(resolve(source,3,"x"),declaration(source,"x"),"body-local shadow does not escape")

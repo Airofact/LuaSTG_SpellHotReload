@@ -83,31 +83,6 @@ local function classify(ast,Tree,line,options)
     return nodes
 end
 
--- Dependency hints come from identifier-expression nodes. They are not scope proofs.
-function M._link(Tree,nodes)
-    local visible={}
-    local i=1
-    while i<=#nodes do
-        local j=i
-        while j<=#nodes and nodes[j].syntax==nodes[i].syntax do j=j+1 end
-        for k=i,j-1 do
-            local n=nodes[k]
-            if n.carrier=="local" then
-                local names,seen={},{}
-                for _,ref in ipairs(Tree.Names(n.syntax)) do
-                    local name=Tree.Identifier(ref)
-                    if visible[name] and not seen[name] then seen[name]=true;names[#names+1]=name end
-                    if n.kind=="function" and name==n.name then n.recursive=true end
-                end
-                table.sort(names);n.deps=names
-            end
-        end
-        for k=i,j-1 do if nodes[k].carrier=="local" then visible[nodes[k].name]=true end end
-        i=j
-    end
-    return nodes
-end
-
 --------------------------------------------------------------------------------
 --- public surface
 --------------------------------------------------------------------------------
@@ -164,7 +139,6 @@ local function analyze(content, options, previous_syntax,owned)
         end
     end
 
-    M._link(Tree, nodes)
     -- Native spans use BOM-stripped source; public ranges use the original file.
     return nodes, nil, {
         source = content, source_offset = source_offset,

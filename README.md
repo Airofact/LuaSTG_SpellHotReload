@@ -330,6 +330,15 @@ refuse unsupported mapping shapes; they do not repeat Lua break/vararg legality
 checks over every function body. Literal decoding retains the supported escape
 and numeral subset without evaluating literals.
 
+TopLevelIR does not compute dependency hints or recursive flags. Whole-input
+compilation and native ERROR/MISSING checks still happen before discovery.
+Bodies in unconsumed initializers are not traversed just to build IR metadata;
+unsupported mapping or literal syntax is refused when a consumer queries it.
+Selected functions still traverse their complete original syntax for capture
+safety, and traversal failures return through the existing preparation refusal
+contract. Unexecuted initializer changes can remain pending while supported
+independent definitions publish; they are never replayed or acknowledged as applied.
+
 Normal first load establishes the file's parser session. Plugin retains that
 session and advances a separate baseline only after a successful FileAnalysis
 Build. A compilation or analysis failure leaves the previous baseline intact;
