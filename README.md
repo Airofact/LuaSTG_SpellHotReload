@@ -2,7 +2,7 @@
 
 LuaSTG Editor Sharp 的 **Spell Practice（符卡练习）热重载** 调试插件。
 支持直接在符卡节点下编写逻辑，也支持回调调用同文件的具名局部函数；
-普通符卡练习与共同发布路径已有历史限定实机证据；本次原生解析后端切换仍待目标引擎验收。
+普通符卡练习与共同发布路径已有历史限定实机证据；本次语法快照迁移仍待目标引擎验收。
 SC Debugger 有定位支持，完整切关路径仍待验收。
 
 编辑器重新生成 `*_Boss.lua` 后，插件等待两次读取字节一致，再显示候选。
@@ -45,7 +45,7 @@ v0.21.111 / LuaJIT 2.1.1744887079。生产发布和本次共享状态回归均�
 DLL 包含固定 tree-sitter 核心、Lua grammar 和指针式 FFI 桥接，不依赖引擎
 导出 Lua C API。缺失 DLL 或 ABI 不匹配会拒绝分析，没有另一解析器回退。
 版本、许可证和重建说明见 [native/README.md](native/README.md)。
-这次后端切换的目标引擎验收与同输入 Apply 性能结果仍待取得。
+本次语法快照迁移的目标引擎验收与同输入 Apply 性能结果仍待取得。
 
 
 ## 使用
@@ -87,9 +87,11 @@ DLL 包含固定 tree-sitter 核心、Lua grammar 和指针式 FFI 桥接，不�
 不会加载所指文件，也不记为已发布。动态参数、别名、同名 local 遮蔽或控制块内调用
 不在此排除范围；原有身份、词法绑定、依赖及活体目标校验不变。
 两种 Apply 成功后都按实际发布版本核对整份候选：参与热重载的改动全部已经发布，
-或仅有注释/空白等无语义变化时，移除该份候选；仍有未发布或无法确认的内容则保留，
+或仅有语句范围外的注释/空白变化时，移除该份候选；仍有未发布或无法确认的内容则保留，
 Result 和候选行显示上次核对的剩余种类、字节位置与原因，不需要先 Inspect。
 名字、构造、列表、注册和状态初始化不会因定义发布而被一并接受。
+内容比较直接使用原生语法范围内的原文；范围内的排版或注释变化也会作为内容变化处理。
+回调/局部函数可以因此产生新的定义版本；尚未重放的初始化或结构变化继续保留候选。
 完成记忆与首载字节、部分发布、Dismiss 分开；有效的完成字节不会被 Rescan、
 周期扫描或同字节再导出复活。新字节、实际版本或活体绑定变化会作废记忆。
 提交后检查失败时保留候选，已提交的定义不会假装回滚。此检查复用当次完整
@@ -319,26 +321,14 @@ update 只轮询，Apply 在启用窗口的 layout 发起；关闭/折叠窗口�
 
 ### Source statement boundaries and diagnostics
 
-`Source/Lexer.lua` owns complete number, string and compound-symbol tokens.
-Numeric spelling is validated once, without evaluation; unary minus remains a
-separate operator. All consumers share these token categories and byte offsets.
-Card policy accepts number tokens directly and still refuses arithmetic or calls.
-
-`Source/SyntaxTree.lua` is the stable public entry. Its source-level
-`implementation = "TreeSitter"` selects once when the module is loaded and
-returns `Source.SyntaxTreeImpl.TreeSitter` directly. Unknown names are errors;
-there is no runtime backend switch or fallback. The returned table and functions
-are the implementation itself, so snapshot identity and test spies stay shared.
-`Source/SyntaxTreeImpl/TreeSitter.lua` owns parsing, private node mapping, syntax
-queries and immutable snapshots. `Source/Native.lua` owns FFI access, parser
-sessions and tree pins; the handwritten LuaSyntax backend is removed. Lexer
-still provides the supported literals and exact token/source evidence. Native
-ERROR/MISSING nodes and unsupported syntax produce no partial analysis.
-FileAnalysis also compiles the entire source with the current LuaJIT compiler
-without executing it; a native tree alone is not proof of valid Lua. Selected
-closure/capture checks still run in preparation. LuaJIT-only labels/goto, cdata
-and hex-float numerals remain unsupported; nesting over 160 analysis levels is
-refused. No old AST is projected for consumers.
+`Source/SyntaxTree.lua` returns the single TreeSitter implementation directly.
+`Parse` compiles the complete input once with the current host compiler, never
+executes it, and creates an explicit query snapshot owning the native revision.
+`Source/Native.lua` supplies FFI access and parser/tree lifetime; no DLL rebuild
+or backend fallback is involved. Native ERROR/MISSING rejects the parse. Queries
+refuse unsupported mapping shapes; they do not repeat Lua break/vararg legality
+checks over every function body. Literal decoding retains the supported escape
+and numeral subset without evaluating literals.
 
 Normal first load establishes the file's parser session. Plugin retains that
 session and advances a separate baseline only after a successful FileAnalysis
@@ -354,7 +344,7 @@ alive independently and cannot reopen a retired parser.
 Analysis baselines are not published versions or cached permission. Actual
 version comparison, Fresh, live-object checks, Guard, the common transaction and
 post-publication discovery still execute. Incremental parsing reuses syntax;
-full lexical context and binding analysis remain part of every Build.
+full lexical context and declaration facts remain part of every Build.
 
 `Source/StatementAlignment.lua` provides ordered exact-signature evidence for
 file policy and remainder diagnostics. Unique signatures anchor unchanged
@@ -375,19 +365,39 @@ The shared syntax tree records declarations, assignment targets/values, calls an
 arguments, members/indices, function parameters/bodies, table fields and control
 blocks. Source.SyntaxTree supplies structural queries and byte extraction over its
 native backend; those facts grant no runtime permission. FileAnalysis builds the shared whole-file
-IR and binding facts; LocalDefinitions owns Local matching/support, while
+IR and scope facts. Its local IR nodes are the canonical declaration identities;
+each statement stores a declaration frontier, queried on demand through
+FileAnalysis.Declarations/DeclaredNames/Declaration/ResolveLocal/VisibleBefore.
+Visible retains direct top-level function context (including local-function
+self visibility). Source version 4 has no separate Binding analysis or bindings
+model. These are top-level facts, not complete nested binding or upvalue proof.
+LocalDefinitions owns Local matching/support, while
 FunctionPlan prepares only owner-selected descriptors with full lexical context.
 Card discovery/registrations, file wiring/Include policy and closure nested-reference
 checks consume these nodes. Their token-position grammar matchers are removed.
-Lexer decodes string literals once without compiling them; raw spelling remains
-available for conservative signatures. Name comparisons are adapter policy,
-while signatures and source slices retain exact token/source evidence. Binding
-confidence, ownership, final guards and actual upvalue checks remain separate.
+Snapshot-owned facts decode literals when requested/materialized. Signatures use
+raw source spans (excluding optional statement separators), with exact string
+equality; formatting within a span participates. Binding confidence, ownership,
+final guards and actual upvalue checks remain separate.
 
 String decoding uses the supported Lua 5.1 escape subset; unknown escapes are
 refused explicitly. GeneratedBossScanner's class
 key hint also consumes index-expression nodes; header/SC Debug text checks are
 format hints and confer no structural or publication authority.
 
-Function and callback version signatures reuse shared node/token ranges, including
+Function and callback version signatures reuse native byte spans, including
 method receiver normalization; they do not tokenize extracted bodies again.
+
+
+## 原生语法快照（FileAnalysis v4）
+
+`analysis.syntax` 是显式查询快照，持有原生树及附加事实；`syntax.root` 和查询返回值是原生TSNode cdata。
+使用 `syntax.Match(node, pattern)`、`syntax.Range(node)` 等查询；读取旧节点时必须保留它的快照或查询函数。
+同一原生实体可以同时提供声明/函数、语句调用/表达式视图，空函数体没有伪造的block节点。
+范围是字节而不是token下标；`Source.ByteRange(source,node,"function")` 明确请求函数关键字到end的视图。
+Local/Card继续使用既有unit_ref和业务定位，签名不充当业务身份。
+
+每次完整输入只在SyntaxTree.Parse进行一次宿主编译，不执行候选，再调用原生解析。
+不再重复检查break/vararg的Lua语言上下文；ERROR/MISSING、实际查询的映射及既有支持范围仍会拒绝不支持的结构。
+没有全文件Lexer/token索引、逐节点Lua包装或旧解析接口回退。Source.Build复用编译证明，文件完成核算消费现有语句和owner声明。
+候选快照及原生节点（含其cdata副本）不能进入发布态元数据。Fresh、Guard、共同事务、实际版本与发布后发现保持各自职责。
