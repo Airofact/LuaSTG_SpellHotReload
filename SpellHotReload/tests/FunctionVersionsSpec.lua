@@ -150,7 +150,7 @@ function M.run()
         for _,cell in ipairs(local_initial.authority.cells) do
             check(cell.name~="alias" and cell.name~="counter" and cell.name~="config","no setter authority for state or alias")
         end
-        eq(#entry.source.bindings.names,8,"shared inspection declaration count")
+        eq(#Source.DeclaredNames(entry.source),8,"shared inspection declaration count")
         local inspection=must(Definitions.Match(must(Source.Build(source.."\nerror('chunk ran')"))))
         eq(#inspection.definitions.helper,1,"inspection never executes chunk")
         refuse(function() return Source.Build("local function f( end") end,"compile","inspection syntax")
@@ -160,7 +160,7 @@ function M.run()
         eq(seal(noop).proposed_snapshot,initial_snapshot,"no-op keeps actual snapshot")
         eq(describe(noop).functions[2].action,"keep-definition","unchanged action")
         local whitespace="-- leading comment\n"..source:gsub("counter%+n","counter + -- inside literal\n n").."\n-- trailing comment"
-        list(view(must(discover(f,whitespace))).version_view.changed,"","comments and whitespace ignored")
+        list(view(must(discover(f,whitespace))).version_view.changed,"helper","in-span comments and whitespace are content changes")
         local strings=fixture("local function f() return 'a -- b' end")
         list(view(must(discover(strings,"local function f() return 'a -- c' end"))).version_view.changed,"f","opaque string bytes preserved")
         list(view(must(discover(strings,'local function f() return "a -- b" end'))).version_view.changed,"f","literal spelling conservatively changed")

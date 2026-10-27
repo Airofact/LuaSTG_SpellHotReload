@@ -125,9 +125,9 @@ function M.run()
 
         -- Complete facts/Local projections exist BEFORE selected preparation.
         local IR=require("SpellHotReload.Source.TopLevelIR")
-        local Bindings=require("SpellHotReload.Source.Binding")
-        local Lexer=require("SpellHotReload.Source.Lexer")
+        local Syntax=require("SpellHotReload.Source.SyntaxTree")
         local facts=must(Source.Build(candidate))
+        local original_analysis=facts.analysis
         local loaded=must(Definitions.Match(entry.source))
         local projection=must(Definitions.Match(facts))
         local pair=must(Definitions.Pair(loaded,projection))
@@ -137,8 +137,8 @@ function M.run()
         -- A genuine Local-only common scope, not a production two-owner fixture.
         local contribution=must(Local.Capture(entry,"FunctionPlan:scope"))
         local common=must(Files.Capture(entry,"FunctionPlan:scope",{contribution}))
-        local slots={{Source,"Build"},{IR,"Analyze"},{Bindings,"Analyze"},
-            {Lexer,"Tokenize"},{Definitions,"Match"}}
+        local slots={{Source,"Build"},{IR,"Analyze"},
+            {Syntax,"Parse"},{Definitions,"Match"}}
         local apis,scans={},{}
         for i,slot in ipairs(slots) do
             local index=i;apis[i]=slot[1][slot[2]];scans[i]=0
@@ -203,7 +203,7 @@ function M.run()
         for i,slot in ipairs(slots) do slot[1][slot[2]]=apis[i] end
         Compose.Plan=compose_plan
         entry.slots.counter,entry.loaded_source=counter_slot,source
-        facts.content,facts.analysis=candidate,projection.source.bindings.analysis
+        facts.content,facts.analysis=candidate,original_analysis
         must(scoped_ok,scoped_error)
         -- A new comparison explicitly constructs a new source. Old probes cannot
         -- cross that source identity even when the bytes and definition match.

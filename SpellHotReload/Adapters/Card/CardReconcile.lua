@@ -1,6 +1,5 @@
 -- Card-owned source evidence. No live reads, compilation, execution or writes.
 -- Full source/list identity and binding safety remain Locate/commit obligations.
-local Tree=require("SpellHotReload.Source.SyntaxTree")
 local CardSyntax=require("SpellHotReload.Adapters.Card.CardSyntax")
 local M={}
 local CALLBACKS={"before","init","frame","render","beforedel","del","after"}
@@ -9,11 +8,11 @@ local function label(v) return type(v)=="string" and v or "" end
 -- Class implementations/metadata are NOT Card callback writes. They stay in
 -- the complete file effect policy, and deletion requires the genuine first-load
 -- class identities to be rechecked before and after invalidation. No setters run.
-function M.ClassWriteKey(ast)
+function M.ClassWriteKey(Tree,ast)
     local target,value=Tree.SingleAssignment(ast)
     local member=Tree.Match(target,"member")
     if not member or member.separator~="." then return nil end
-    local key=CardSyntax.ClassKey(member.base)
+    local key=CardSyntax.ClassKey(Tree,member.base)
     if not key or key=="" then return nil end
     local name=member.name
     if (name=="init" or name=="frame" or name=="render" or name=="kill") and Tree.Is(value,"function") then return key end
@@ -40,6 +39,7 @@ local function class_signature(keys)
     return table.concat(pieces)
 end
 local function rows_for(previous,candidate,context)
+    local Tree=candidate.common.source.analysis.syntax
     local Card=require("SpellHotReload.Adapters.Card.Card")
     local base=previous.state
     local entries={}
@@ -70,12 +70,12 @@ local function rows_for(previous,candidate,context)
         local ast=statement.syntax
         local modeled=callback_points[statement.source_range.first]
             or perform_points[statement.source_range.first]==1
-        local class_key=M.ClassWriteKey(ast)
+        local class_key=M.ClassWriteKey(Tree,ast)
         if class_key and not class_seen[class_key] then
             class_seen[class_key]=true;class_keys[#class_keys+1]=class_key
         end
         local function written(target)
-            if not Tree.IsName(target,"_tmp_sc") and not CardSyntax.ClassKey(target) and not CardSyntax.CardList(target) then
+            if not Tree.IsName(target,"_tmp_sc") and not CardSyntax.ClassKey(Tree,target) and not CardSyntax.CardList(Tree,target) then
                 local touches=false
                 Tree.Walk(target,function(n)
                     if Tree.IsName(n,"_tmp_sc") or Tree.IsName(n,"_editor_class") then touches=true end
@@ -83,7 +83,7 @@ local function rows_for(previous,candidate,context)
                 if touches and not modeled and not class_key then unmodeled(statement) end
             end
         end
-        if CardSyntax.Callback(ast) and not modeled then unmodeled(statement) end
+        if CardSyntax.Callback(Tree,ast) and not modeled then unmodeled(statement) end
         local assignment=Tree.Match(ast,"assignment")
         local definition=Tree.Match(ast,"definition")
         if assignment then for _,target in ipairs(assignment.targets) do written(target) end

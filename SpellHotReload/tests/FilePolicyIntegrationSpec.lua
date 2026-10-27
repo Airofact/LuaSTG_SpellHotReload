@@ -14,7 +14,6 @@ function M.run()
     local FileApply=require("SpellHotReload.Apply.FileApply")
     local Compose=require("SpellHotReload.Source.Compose")
     local IR=require("SpellHotReload.Source.TopLevelIR")
-    local Binding=require("SpellHotReload.Source.Binding")
     local names={"before","init","frame","render","beforedel","del","after"}
     local defaults={};for _,name in ipairs(names) do defaults[name]=function() end end
     local saved={boss=rawget(_G,"boss"),classes=rawget(_G,"_editor_class"),tmp=rawget(_G,"_tmp_sc")}
@@ -113,13 +112,12 @@ function M.run()
         return receipt,err
     end
     local function no_scan(body)
-        local create,analyze,bind=Compose.Create,IR.Analyze,Binding.Analyze
+        local create,analyze=Compose.Create,IR.Analyze
         local count=0
         Compose.Create=function(...) count=count+1;return create(...) end
         IR.Analyze=function() error("Card five hooks repeated full-file IR") end
-        Binding.Analyze=function() error("Card five hooks repeated full-file binding") end
         local ok,err=pcall(body,function() return count end)
-        Compose.Create,IR.Analyze,Binding.Analyze=create,analyze,bind
+        Compose.Create,IR.Analyze=create,analyze
         if not ok then error(err,0) end
     end
 

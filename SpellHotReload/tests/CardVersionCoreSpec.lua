@@ -17,7 +17,6 @@ function M.run()
     local Compose=require("SpellHotReload.Source.Compose")
     local Tree=require("SpellHotReload.Source.SyntaxTree")
     local IR=require("SpellHotReload.Source.TopLevelIR")
-    local Binding=require("SpellHotReload.Source.Binding")
     local names={"before","init","frame","render","beforedel","del","after"}
     local defaults={};for _,name in ipairs(names) do defaults[name]=function() end end
     local saved={boss=rawget(_G,"boss"),_editor_class=rawget(_G,"_editor_class"),_tmp_sc=rawget(_G,"_tmp_sc")}
@@ -68,7 +67,7 @@ function M.run()
             ownership[#ownership+1]={class_key=key,class=class,list=class.cards,slots=slots}
         end
         local card_piece=must(Cards.Seed(Card,entry,session,loaded,owners,ownership,_editor_class,defaults,function(binding)
-            eq(entry.source.bindings.by_name[binding.name],binding,"first-load provider uses canonical Binding")
+            eq(Source.Declaration(entry.source,binding.name),binding,"first-load provider uses canonical Binding")
             return local_piece.state.by_name[binding.name].unit_ref
         end))
         local capture=must(Files.Capture(entry,session,{local_piece,card_piece}))
@@ -88,13 +87,12 @@ function M.run()
         return must(Cards.Compare(group,initial.evidence,s,m,locations,rows)),s
     end
     local function no_scan(body)
-        local create,analyze,bind=Compose.Create,IR.Analyze,Binding.Analyze
+        local create,analyze=Compose.Create,IR.Analyze
         local count=0
         Compose.Create=function(...) count=count+1;return create(...) end
         IR.Analyze=function() error("Card preparation repeated full-file parsing") end
-        Binding.Analyze=function() error("Card preparation repeated full-file binding") end
         local ok,err=pcall(body,function() return count end)
-        Compose.Create,IR.Analyze,Binding.Analyze=create,analyze,bind
+        Compose.Create,IR.Analyze=create,analyze
         if not ok then error(err,0) end
     end
     local function dependencies(v,facts,roots)

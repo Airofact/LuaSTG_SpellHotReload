@@ -24,11 +24,11 @@ function M.Match(source,common)
     local projection,err=Definitions.Match(source)
     if not projection then return nil,err end
     local units,claims,by_name,declarations={},{},{},{}
-    for _,declaration in ipairs(source.bindings.declarations) do
+    for _,declaration in ipairs(Source.Declarations(source)) do
         local ranges=declarations[declaration.name] or {};declarations[declaration.name]=ranges
         ranges[#ranges+1]=declaration.source_range
     end
-    for _,name in ipairs(source.bindings.names) do
+    for _,name in ipairs(Source.DeclaredNames(source)) do
         local ranges=declarations[name]
         for _,definition in ipairs(projection.definitions[name] or {}) do
             if definition.source_range~=ranges[1] then ranges[#ranges+1]=definition.source_range end
@@ -131,10 +131,10 @@ function M.Locate(unit,context)
     return {kind="SpellHotReload.Local.Handle",version=1,operation=context.operation,view=context.view,unit=unit,item=item,reads=reads}
 end
 -- Binding-to-unit mapping only. Card may map its actual captures through this
--- canonical Binding object; it cannot choose or prepare Local definitions here.
+-- canonical declaration object; it cannot choose or prepare Local definitions here.
 function M.Provider(view,binding)
     if not plain(view) or view.kind~=VIEW or not plain(binding)
-        or view.source.bindings.by_name[binding.name]~=binding then return nil end
+        or Source.Declaration(view.source,binding.name)~=binding then return nil end
     local item=view.by_name[binding.name]
     if not item then return nil end
     return {unit_ref=item.unit.unit_ref,condition_ref=item.token}
@@ -144,7 +144,7 @@ function M.CapturedProvider(group,binding)
     local state=plain(group) and group.state
     if not plain(state) or group.owner~=M or state.owner~=M or not plain(binding)
         or not plain(state.entry) or not plain(state.entry.source)
-        or state.entry.source.bindings.by_name[binding.name]~=binding then return nil end
+        or Source.Declaration(state.entry.source,binding.name)~=binding then return nil end
     local unit=state.by_name[binding.name]
     return unit and unit.unit_ref
 end

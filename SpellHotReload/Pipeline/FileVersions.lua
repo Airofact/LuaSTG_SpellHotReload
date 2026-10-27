@@ -1,5 +1,6 @@
 -- Single file publication ledger. Owners supply private records, never commits.
 local Anchor=require("SpellHotReload.Load.Anchor")
+local Source=require("SpellHotReload.Source.FileAnalysis")
 local M={Kind="SpellHotReload.FileCapture",SnapshotKind="SpellHotReload.FileSnapshot",Version=1}
 local function plain(v) return type(v)=="table" and getmetatable(v)==nil end
 local function dense(v)
@@ -139,7 +140,8 @@ end
 -- No callback and no live mutation here. The kernel alone installs this snapshot.
 function M.Propose(operation,fragments)
     local capture=plain(operation) and operation.capture
-    if not M.Validate(capture) or operation.base_snapshot~=capture.snapshot or not dense(fragments)
+    if not M.Validate(capture) or not Source.Validate(operation.source)
+        or operation.base_snapshot~=capture.snapshot or not dense(fragments)
         or #fragments~=#capture.snapshot.owners then return fail("complete file fragments required") end
     local base,groups,changed=capture.snapshot,{},false
     for i,old in ipairs(base.owners) do
@@ -175,10 +177,11 @@ function M.Propose(operation,fragments)
     end
     local memo={}
     local function clone(value)
-        if type(value)~="table" or identities[value] then return value end
-        if value==operation.source or value==operation.source.analysis or value==operation.source.bindings then
+        if type(value)=="table" and identities[value] then return value end
+        if Source.ContainsFact(operation.source,value) then
             error("publication cannot retain candidate source",0)
         end
+        if type(value)~="table" then return value end
         if not plain(value) then error("publication metadata must be plain",0) end
         if memo[value] then return memo[value] end
         local out={};memo[value]=out

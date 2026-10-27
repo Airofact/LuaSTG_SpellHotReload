@@ -11,11 +11,10 @@ function M.run()
     local Load=require("SpellHotReload.Load.AnchorLoad")
     local Source=require("SpellHotReload.Source.FileAnalysis")
     local IR=require("SpellHotReload.Source.TopLevelIR")
-    local Binding=require("SpellHotReload.Source.Binding")
-    local Lexer=require("SpellHotReload.Source.Lexer")
+    local Syntax=require("SpellHotReload.Source.SyntaxTree")
     local Compose=require("SpellHotReload.Source.Compose")
     local saved={boss=_G.boss,classes=_G._editor_class,tmp=_G._tmp_sc}
-    local build,analyze,bind,lex,create=Source.Build,IR.Analyze,Binding.Analyze,Lexer.Tokenize,Compose.Create
+    local build,analyze,lex,create=Source.Build,IR.Analyze,Syntax.Parse,Compose.Create
     local passed=0
     local function eq(a,b,label) assert(rawequal(a,b),label);passed=passed+1 end
     local function must(v,e) assert(v,type(e)=="table" and e.message or e);return v end
@@ -78,8 +77,7 @@ function M.run()
         -- Every later preflight must consume existing complete facts and proof.
         Source.Build=function() error("deletion guard rebuilt source") end
         IR.Analyze=function() error("deletion guard reparsed source") end
-        Binding.Analyze=function() error("deletion guard rebuilt bindings") end
-        Lexer.Tokenize=function() error("deletion guard lexed source") end
+        Syntax.Parse=function() error("deletion guard parsed source") end
         Compose.Create=function() error("deletion guard constructed a callback") end
         eq(Guard.Check(sealed,capture,live()),true,"all-owner sealed preflight without rebuilding or construction")
         local function refused(label)
@@ -115,13 +113,13 @@ function M.run()
         eq(constructions,1,"all guard checks preserve specific initial card construction count")
         eq(capture.snapshot,base,"all preflights remain read-only")
         eq(_G._editor_class.K.cards[1].frame,state.units[key].callbacks.frame.fn,"saved default is not installed by preflight")
-        Source.Build,IR.Analyze,Binding.Analyze,Lexer.Tokenize,Compose.Create=build,analyze,bind,lex,create
+        Source.Build,IR.Analyze,Syntax.Parse,Compose.Create=build,analyze,lex,create
         local empty=must(Planning.Discover(f,must(Source.Build("")),2))
         local unresolved=must(Evidence.Index(capture,empty.snapshot))
         eq(unresolved[key..":frame"].status,"unresolved","zero-match is not callback deletion")
         eq(unresolved[key..":frame"].tombstone,nil,"zero-match has no default restoration evidence")
     end)
-    Source.Build,IR.Analyze,Binding.Analyze,Lexer.Tokenize,Compose.Create=build,analyze,bind,lex,create
+    Source.Build,IR.Analyze,Syntax.Parse,Compose.Create=build,analyze,lex,create
     _G.boss,_G._editor_class,_G._tmp_sc=saved.boss,saved.classes,saved.tmp
     if not ok then error(type(problem)=="table" and problem.message or problem,0) end
     print("CardDeletionEvidenceSpec: "..passed.." passed, 0 failed")

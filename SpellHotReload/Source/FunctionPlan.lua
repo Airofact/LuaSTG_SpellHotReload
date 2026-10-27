@@ -2,7 +2,6 @@
 -- Local owns definition discovery, support, matching, versions and selection.
 -- No whole-file compile/parse/index, cache, join, write, receipt or restart here.
 local Source=require("SpellHotReload.Source.FileAnalysis")
-local Tree=require("SpellHotReload.Source.SyntaxTree")
 local Anchor=require("SpellHotReload.Load.Anchor")
 local Compose=require("SpellHotReload.Source.Compose")
 local M={Kind="SpellHotReload.FunctionPlan",Version=2}
@@ -27,7 +26,7 @@ local function same(a,b)
 end
 local function descriptor(source,d)
     if not plain(d) or d.source~=source or type(d.name)~="string"
-        or not Source.Owns(source,d.syntax) or not Tree.Is(d.syntax,"function") then
+        or not Source.Owns(source,d.syntax) or not source.analysis.syntax.Is(d.syntax,"function") then
         return fail("unsupported","selected source-owned function descriptor required")
     end
     local visible,err=Source.Visible(source,d.syntax)
@@ -35,7 +34,8 @@ local function descriptor(source,d)
     if not same(visible,d.visible) then
         return fail("unsupported","descriptor disagrees with definition-point visibility",nil,d.name)
     end
-    local site=source.sites[d.syntax]
+    local Tree=source.analysis.syntax
+    local site=Source.Site(source,d.syntax)
     local definition=Tree.Match(source.analysis.statements[site.statement].syntax,"definition")
     local target=definition and definition.target
     if not target or Tree.Identifier(target)~=d.name then
@@ -50,12 +50,12 @@ local function descriptor(source,d)
 end
 -- A probe is operation-owned syntax evidence only, never a live permission.
 -- Anonymous expression lowering preserves local-function self visibility by
--- using the FULL definition-point prefix supplied by Binding, including self.
+-- using the FULL definition-point prefix supplied by Source, including self.
 function M.Probe(source,definition)
     local valid,err=descriptor(source,definition)
     if not valid then return nil,err end
-    local created,why=Compose.Create(Tree.FunctionSource(definition.syntax,false),
-        nil,definition.visible,{form="expression",syntax=definition.syntax,name="SelectedFunction:"..definition.name})
+    local created,why=Compose.Create(source.analysis.syntax.FunctionSource(definition.syntax,false),
+        nil,definition.visible,{form="expression",tree=source.analysis.syntax,syntax=definition.syntax,name="SelectedFunction:"..definition.name})
     if not created then return fail("compile",why,nil,definition.name) end
     local final,problem=Source.Validate(source)
     if not final then return nil,problem end

@@ -1,7 +1,7 @@
 --- Full-file discovery only: no candidate execution or publication.
 --- Inputs/outputs are read-only by contract, not protected Lua tables.
---- Every snapshot also carries the shared TopLevelIR analysis and the Binding
---- declaration/visibility model; neither is a binding-safety proof.
+--- Every snapshot also carries the shared TopLevelIR analysis with canonical
+--- declarations and statement scope frontiers; these are not a binding-safety proof.
 local Source = require("SpellHotReload.Source.FileAnalysis")
 local Adapter = require("SpellHotReload.Pipeline.Adapter")
 local M = {}
@@ -61,7 +61,7 @@ end
 ---common is shallow-copied; file/session/generation/version references survive.
 ---Each Match sees the same full source facts, including unchanged/unselected units.
 ---unit.key is snapshot-local only; context/deps stay adapter-owned, while
----source.bindings is the shared lexical declaration/visibility model.
+---Source queries expose the canonical declarations and statement scope frontiers.
 function M.Discover(registry, source, supplied)
     if supplied ~= nil and not plain(supplied) then
         return failure("analyze", "unsupported", "common must be a plain table")

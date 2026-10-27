@@ -1,6 +1,6 @@
 local FileMatch = require("SpellHotReload.Pipeline.FileMatch")
 local Registry = require("SpellHotReload.Pipeline.NodeRegistry")
-local Lexer = require("SpellHotReload.Source.Lexer")
+local Syntax = require("SpellHotReload.Source.SyntaxTree")
 local IR = require("SpellHotReload.Source.TopLevelIR")
 local Source = require("SpellHotReload.Source.FileAnalysis")
 local M = {}
@@ -61,9 +61,9 @@ function M.run()
         eq(facts, common.source, "common shares complete source")
         eq(facts.content, source, "Match gets exact complete bytes")
         eq(#analysis.statements, 3, "full-file statements include effect")
-        eq(#analysis.nodes, 4, "multi-local keeps two legacy nodes")
-        eq(analysis.tokens[1].value, "local", "comment does not become trigger")
-        eq(analysis.binding_complete, false, "no binding-safety claim")
+        eq(#analysis.nodes, 4, "multi-local keeps two carrier nodes")
+        eq(analysis.syntax.Is(analysis.statements[1].syntax,"local"),true,"comment does not become trigger")
+        eq(analysis.binding_complete, nil, "no obsolete binding-model field")
         eq(analysis.source_offset, 0, "plain-source offset")
         return { units = { first }, claims = { claim("slot-a", "a") }, context = fc }
     end
@@ -77,17 +77,17 @@ function M.run()
         loaded_source = "loaded", registry_entry = {}, base_revision = 2,
         capture = {}, trace_context = "caller marker",
     }
-    local old_tokenize, lex_count = Lexer.Tokenize, 0
-    Lexer.Tokenize = function(content)
-        lex_count = lex_count + 1
-        return old_tokenize(content)
+    local old_parse, parse_count = Syntax.Parse, 0
+    Syntax.Parse = function(content,previous)
+        parse_count = parse_count + 1
+        return old_parse(content,previous)
     end
     local ok, snapshot = pcall(discover, registry(adapter("b", match_b),
         adapter("a", match_a)), source, supplied)
-    Lexer.Tokenize = old_tokenize
+    Syntax.Parse = old_parse
     assert(ok, snapshot)
     assert(snapshot)
-    eq(lex_count, 1, "shared lexer called once")
+    eq(parse_count, 1, "shared native snapshot parsed once")
     eq(table.concat(calls, ","), "a,b", "all registered adapters run")
     eq(#snapshot.units, 2, "all units retained without target selection")
     eq(snapshot.units[2], second, "original unit preserved")
@@ -110,15 +110,15 @@ function M.run()
     eq(snapshot.claim_owners["callback:6:slot-a"], snapshot.by_key.a, "canonical owner index")
 
     local nodes, err, analysis = IR.Analyze("\239\187\191local a, b = 1, 2\r\nG=2")
-    eq(err, nil, "legacy success error still nil")
-    eq(nodes, analysis.nodes, "legacy nodes share snapshot")
+    eq(err, nil, "analysis success error still nil")
+    eq(nodes, analysis.nodes, "carrier nodes share snapshot")
     eq(analysis.source_offset, 3, "BOM offset")
-    eq(analysis.tokens[1].pos, 1, "tokens use normalized positions")
+    eq(analysis.syntax.Range(analysis.statements[1].syntax),1,"snapshot uses BOM-stripped byte coordinates")
     eq(analysis.statements[1].source_range.first, 4, "public range includes BOM offset")
     eq(analysis.statements[1].source_range.last, 20, "public range end")
     eq(analysis.statements[2].line, 2, "CRLF line number")
     eq(analysis.statements[2].text, "G=2", "statement text excludes CRLF")
-    eq(analysis.statements[1].tok.first, nodes[2].tok.first, "multi-local statement shared")
+    eq(analysis.statements[1].syntax,nodes[2].syntax,"multi-local statement shared")
     local bom = "\239\187\191G=2"
     local bom_snapshot = assert(discover(registry(adapter("bom", function(a, c)
         eq(a.content, bom, "source preserves BOM")
@@ -131,13 +131,13 @@ function M.run()
     eq(#assert(discover(registry())).units, 0, "empty registry succeeds")
     eq(#assert(discover(registry(), "")).common.source.analysis.statements, 0, "empty file succeeds")
     local blank_nodes, blank_err, blank = IR.Analyze("")
-    eq(#blank_nodes, 0, "empty legacy nodes")
-    eq(blank_err, nil, "empty legacy error")
-    eq(#blank.tokens, 0, "empty lexical snapshot")
+    eq(#blank_nodes, 0, "empty carrier nodes")
+    eq(blank_err, nil, "empty analysis error")
+    eq(#blank.syntax.Statements(blank.syntax.root),0,"empty native statement sequence")
     local empty = assert(discover(registry(adapter("empty", function()
         return result()
     end)), " -- comment only"))
-    eq(#empty.common.source.analysis.tokens, 0, "comment-only file has no tokens")
+    eq(#empty.common.source.analysis.statements,0,"comment-only file has no statements")
     eq(empty.adapter_contexts.empty.all, true, "empty Match retains context")
     eq(#empty.units, 0, "empty Match is not an error")
     local host = assert(discover(registry(), "Call()", nil, { host_calls = { Call = true } }))

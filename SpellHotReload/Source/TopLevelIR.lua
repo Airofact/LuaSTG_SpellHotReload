@@ -13,12 +13,10 @@
 ---   effect     require / Include / New 等     -> 无载体副作用，不可重放
 ---
 --- The module never executes the analyzed source. Everything is derived from the
---- shared engine-independent Lexer, so it can be exercised under plain Lua
---- and LuaJIT without an engine.
+--- native snapshot and its byte spans. Whole input compilation belongs to Parse.
 --------------------------------------------------------------------------------
 
-local Lexer = require("SpellHotReload.Source.Lexer")
-local Tree = require("SpellHotReload.Source.SyntaxTree")
+local Syntax = require("SpellHotReload.Source.SyntaxTree")
 
 local M = {}
 
@@ -28,34 +26,18 @@ local M = {}
 ---@type table<string, boolean>
 M.HostCalls = {}
 
--- Parse full Lua 5.1 statements; whitespace never chooses a boundary.
+-- Source discovery enumerates native statements; it does not reconstruct a token partition.
 local function split(content, previous_syntax)
-    local tokens, lexical_error = Lexer.Tokenize(content)
-    if lexical_error then return nil, lexical_error end
-    local lines, line, cursor = {}, 1, 1
-    for i, token in ipairs(tokens) do
-        while cursor < token.pos do
-            local c = content:sub(cursor,cursor)
-            if c == "\r" or c == "\n" then
-                line = line + 1
-                local nextc = content:sub(cursor+1,cursor+1)
-                if nextc ~= c and (nextc == "\r" or nextc == "\n") then cursor=cursor+1 end
-            end
-            cursor=cursor+1
-        end
-        lines[i]=line
-    end
-    local syntax, reason = Tree.Parse(content,tokens,previous_syntax)
-    if not syntax then return nil, reason end
-    return tokens, lines, Tree.Statements(syntax), syntax
+    local tree, reason,code = Syntax.Parse(content,previous_syntax)
+    if not tree then return nil,reason,code end
+    return tree
 end
 
--- Classification consumes the parser's nodes; token text is used only for display.
-local function classify(ast,tokens,line,options)
+-- Classification consumes existing native nodes and source spans.
+local function classify(ast,Tree,line,options)
     local nodes={}
-    local first,last=Tree.Range(ast)
     local function push(n)
-        n.line=line;n.tok={first=first,last=last};n.syntax=ast;nodes[#nodes+1]=n;return n
+        n.line=line;n.syntax=ast;nodes[#nodes+1]=n;return n
     end
     local declaration=Tree.Match(ast,"declaration")
     local definition=Tree.Match(ast,"definition")
@@ -64,7 +46,8 @@ local function classify(ast,tokens,line,options)
     if declaration then
         for slot,binding in ipairs(declaration.names) do
             push({carrier="local",kind=declaration.self_visible and "function" or (#declaration.values>0 and "value" or "declare"),
-                name=Tree.Identifier(binding),slot=not declaration.self_visible and slot or nil})
+                name=Tree.Identifier(binding),slot=not declaration.self_visible and slot or nil,
+                name_syntax=binding,self_visible=declaration.self_visible==true})
         end
     elseif definition and definition.form=="function-statement" then
         local target=definition.target
@@ -101,7 +84,7 @@ local function classify(ast,tokens,line,options)
 end
 
 -- Dependency hints come from identifier-expression nodes. They are not scope proofs.
-function M._link(tokens,nodes)
+function M._link(Tree,nodes)
     local visible={}
     local i=1
     while i<=#nodes do
@@ -135,7 +118,7 @@ end
 ---@return table[]? nodes
 ---@return string? error
 ---@return table? analysis -- shared lexical/syntax snapshot, NOT binding proof
-function M.Analyze(content, options, previous_syntax)
+local function analyze(content, options, previous_syntax,owned)
     options = options or {}
     if type(content) ~= "string" then
         return nil, "content must be a string"
@@ -146,55 +129,65 @@ function M.Analyze(content, options, previous_syntax)
         source_offset = 3
     end
 
-    local tokens, lines, spans, syntax = split(content, previous_syntax)
-    if not tokens then return nil, lines end
+    local Tree, spans,code = split(content, previous_syntax)
+    if not Tree then return nil,spans,nil,code end
+    owned.tree=Tree
+    spans=Tree.Statements(Tree.root)
     local nodes, statements = {}, {}
+    local declarations, declaration_names, declarations_by_name = {}, {}, {}
     for k = 1, #spans do
         local first, last = Tree.Range(spans[k])
-        local first_byte = tokens[first].pos
-        local last_byte = tokens[last].pos + #tokens[last].value - 1
+        local first_byte,last_byte = first,last
         local text = content:sub(first_byte, last_byte)
         statements[#statements + 1] = {
-            tok = { first = first, last = last }, line = lines[first], text = text, syntax = spans[k],
+            line = Tree.Line(spans[k]), text = text, syntax = spans[k],
+            scope_before = #declarations,
             source_range = {
                 first = first_byte + source_offset, last = last_byte + source_offset,
             },
         }
-        for _, node in ipairs(classify(spans[k], tokens, lines[first], options)) do
-            node.text = text
+        for _, node in ipairs(classify(spans[k], Tree, Tree.Line(spans[k]), options)) do
+            node.text = text;node.statement=k
             nodes[#nodes + 1] = node
+            if node.carrier == "local" then
+                node.statement, node.ordinal = k, #declarations + 1
+                node.source_range = statements[k].source_range
+                declarations[node.ordinal] = node
+                local named = declarations_by_name[node.name]
+                if not named then
+                    named = {}; declarations_by_name[node.name] = named
+                    declaration_names[#declaration_names + 1] = node.name
+                end
+                named[#named + 1] = node
+                if node.self_visible then statements[k].self_declaration = node end
+            end
         end
     end
 
-    M._link(tokens, nodes)
-    -- Token positions refer to BOM-stripped source; public byte ranges refer to
-    -- the original content. Syntax boundaries do not make name deps a binding proof.
+    M._link(Tree, nodes)
+    -- Native spans use BOM-stripped source; public ranges use the original file.
     return nodes, nil, {
         source = content, source_offset = source_offset,
-        tokens = tokens, token_lines = lines, statements = statements, syntax = syntax,
-        nodes = nodes, binding_complete = false,
+        statements = statements, syntax = Tree,
+        nodes = nodes, scope_complete = true,
+        declarations = declarations, declaration_names = declaration_names,
+        declarations_by_name = declarations_by_name,
     }
 end
 
----Split into top-level statements and return their source text. Exposed
----separately so the statement boundaries can be tested without classification.
----@param content string
----@return table[]?  -- { { line = integer, text = string } }
----@return string? error
-function M.SplitStatements(content)
-    if type(content) ~= "string" then return nil, "content must be a string" end
-    if content:sub(1, 3) == "\239\187\191" then content = content:sub(4) end
-    local tokens, lines, spans, syntax = split(content)
-    if not tokens then return nil, lines end
-    local result = {}
-    for k = 1, #spans do
-        local first, last = Tree.Range(spans[k])
-        result[#result + 1] = {
-            line = lines[first],
-            text = content:sub(tokens[first].pos, tokens[last].pos + #tokens[last].value - 1),
-        }
-    end
-    return result
+function M.Analyze(content,options,previous_syntax)
+    local owned={}
+    local ok,nodes,err,analysis,code=pcall(analyze,content,options,previous_syntax,owned)
+    if not ok then if owned.tree then owned.tree.Discard() end;return nil,tostring(nodes),nil,"unsupported" end
+    return nodes,err,analysis,code
 end
 
+-- Reuse the same complete analysis contract for this diagnostic helper.
+function M.SplitStatements(content)
+    local nodes,err,analysis=M.Analyze(content)
+    if not nodes then return nil,err end
+    local result={}
+    for i,row in ipairs(analysis.statements) do result[i]={line=row.line,text=row.text} end
+    return result
+end
 return M

@@ -41,8 +41,7 @@
 --------------------------------------------------------------------------------
 
 local Anchor = require("SpellHotReload.Load.Anchor")
-local Lexer = require("SpellHotReload.Source.Lexer")
-local Tree = require("SpellHotReload.Source.SyntaxTree")
+local Syntax = require("SpellHotReload.Source.SyntaxTree")
 local CodeCache = require("SpellHotReload.Source.CodeCache")
 
 local M = {}
@@ -217,7 +216,7 @@ end
 
 ---Conservative nested-function identifier mentions from the shared syntax tree.
 ---Field labels and declarations are distinct nodes. Scope shadowing is not proved.
-local function nested_mentions(ast,declared)
+local function nested_mentions(Tree,ast,declared)
     local mentions={}
     Tree.Walk(ast,function(n,parent,functions)
         if Tree.Is(n,"name") and functions>=2 then
@@ -350,16 +349,15 @@ function M.Create(body, target, visible, options)
     -- reading a fresh cell. Over-approximating here can only over-refuse.
     local prefix_set = {}
     for i = 1, #prefix do prefix_set[prefix[i]] = true end
-    local syntax=options.syntax
+    local syntax,Tree=options.syntax,options.tree
     if not syntax then
         local fragment=form=="expression" and ("return "..body) or body
-        local tokens,lexerr=Lexer.Tokenize(fragment)
-        if lexerr then return nil,lexerr end
-        local reason;syntax,reason=Tree.Parse(fragment,tokens)
-        if not syntax then return nil,reason end
+        local reason;Tree,reason=Syntax.Parse(fragment)
+        if not Tree then return nil,reason end
+        syntax=Tree.root
     end
-    if not Tree.IsNode(syntax) then return nil,"source-owned syntax reference required" end
-    local nested = nested_mentions(syntax, prefix_set)
+    if not Syntax.IsSnapshot(Tree) or not Tree.IsNode(syntax) then return nil,"source-owned syntax reference required" end
+    local nested = nested_mentions(Tree,syntax, prefix_set)
     for name in pairs(nested) do
         local found = false
         for i = 1, #used do

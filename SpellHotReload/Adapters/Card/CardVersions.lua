@@ -1,7 +1,6 @@
 -- Card-owned callback versions and private capture mappings. No Local ledger,
 -- recursive provider selection, file revision, source execution or publication.
 local Source=require("SpellHotReload.Source.FileAnalysis")
-local Tree=require("SpellHotReload.Source.SyntaxTree")
 local CardSyntax=require("SpellHotReload.Adapters.Card.CardSyntax")
 local Compose=require("SpellHotReload.Source.Compose")
 local Anchor=require("SpellHotReload.Load.Anchor")
@@ -66,14 +65,14 @@ local function literal(source,descriptor,name,entry,defaults,providers,state,key
     local node=descriptor.callback_syntax[name]
     local visible,err=Source.Visible(source,node)
     if not visible then return nil,err end
-    local created,why=Compose.Create(body,nil,visible,{form="expression",syntax=node,name="CardVersions:"..key..":"..name})
+    local created,why=Compose.Create(body,nil,visible,{form="expression",tree=source.analysis.syntax,syntax=node,name="CardVersions:"..key..":"..name})
     if not created then return fail("compile",type(why)=="string" and why or "callback construction failed",state,key) end
     local plan,perr=Compose.Plan(created,entry)
     if not plan then return fail("unsupported",type(perr)=="string" and perr or "callback binding unavailable",state,key) end
     local deps=copy(created.used);table.sort(deps)
     local refs={}
     for _,dep in ipairs(deps) do
-        if not plain(providers[dep]) or source.bindings.by_name[dep]==nil then
+        if not plain(providers[dep]) or Source.Declaration(source,dep)==nil then
             return fail("ownership","callback capture has no original provider",state,key)
         end
         refs[dep]=providers[dep]
@@ -103,7 +102,7 @@ local function project(state)
     end
     return group
 end
--- provider(binding) is a genuine first-load owner's canonical Binding -> unit
+-- provider(binding) is a genuine first-load owner's canonical declaration -> unit
 -- mapping. Store references only, never that owner's records, versions or state.
 function M.Seed(owner,entry,session,match,owners,ownership,classes,defaults,provider)
     if not plain(owner) or type(owner.Id)~="string" or not plain(entry) or not Source.Validate(entry.source)
@@ -118,8 +117,8 @@ function M.Seed(owner,entry,session,match,owners,ownership,classes,defaults,prov
         if type(rawget(defaults,name))~="function" then return fail("ownership","seven saved defaults required",state) end
         state.defaults[name]=rawget(defaults,name);authority.forbidden[#authority.forbidden+1]=rawget(defaults,name)
     end
-    for _,name in ipairs(entry.source.bindings.names) do
-        local binding=entry.source.bindings.by_name[name]
+    for _,name in ipairs(Source.DeclaredNames(entry.source)) do
+        local binding=Source.Declaration(entry.source,name)
         if not binding then return fail("ownership","unique original binding required",state) end
         local ref=provider(binding)
         if not plain(ref) or not plain(ref.owner) then return fail("ownership","original capture provider unavailable",state) end
@@ -190,7 +189,7 @@ function M.Seed(owner,entry,session,match,owners,ownership,classes,defaults,prov
     for key in next,by_key do if not consumed[key] then return fail("ownership","unrecognized combat owner",state,key) end end
     local Evidence=require("SpellHotReload.Adapters.Card.CardReconcile")
     for _,statement in ipairs(entry.source.analysis.statements) do
-        local class=Evidence.ClassWriteKey(statement.syntax)
+        local class=Evidence.ClassWriteKey(entry.source.analysis.syntax,statement.syntax)
         if class then initial.class_bindings[class]=rawget(classes,class);identity(rawget(classes,class)) end
     end
     local group=project(state);group.initial=initial;group.identity_objects=identities;group.authority=authority
@@ -238,7 +237,7 @@ function M.Compare(group,initial,source,match,locations,rows)
     view.generated=next(state.layout)~=nil or next(view.candidate_layout)~=nil or view.before_facts.wiring~="" or view.after_facts.wiring~=""
     if view.generated then
         for _,name in ipairs({"_tmp_sc","_sc_table","_editor_class","boss","table"}) do
-            if initial.source.bindings.by_name[name] or source.bindings.by_name[name] then
+            if Source.Declaration(initial.source,name) or Source.Declaration(source,name) then
                 view.blocked={code="unsupported",message="generated wiring name is shadowed: "..name}
             end
         end
@@ -391,7 +390,7 @@ function M.Next(plan)
     return project(next_state)
 end
 
-local function safe_wiring(ast)
+local function safe_wiring(Tree,ast)
     local function scalar(n,numeric)
         if not n then return false end
         local unary=Tree.Match(n,"unary")
@@ -405,7 +404,7 @@ local function safe_wiring(ast)
             (literal.category=="string" or literal.category=="boolean" or literal.category=="nil"))
     end
     local function constructor(n)
-        local kind,call=CardSyntax.Constructor(n)
+        local kind,call=CardSyntax.Constructor(Tree,n)
         if kind~="card" and kind~="move" then return false end
         for argument,arg in ipairs(call.args) do
             local tuple=Tree.Match(arg,"table")
@@ -427,13 +426,13 @@ local function safe_wiring(ast)
         return literal~=nil and literal.category=="boolean"
     end
     local list=Tree.Match(rhs,"table")
-    if CardSyntax.CardList(target) and list then
+    if CardSyntax.CardList(Tree,target) and list then
         for _,field in ipairs(list.fields) do if not field.array or not item(field.value) then return false end end
         return true
     end
     local call=Tree.Match(ast,"call_statement")
     if not call or Tree.Path(call.callee)~="table.insert" or #call.args~=2 then return false end
-    if CardSyntax.CardList(call.args[1]) then return item(call.args[2]) end
+    if CardSyntax.CardList(Tree,call.args[1]) then return item(call.args[2]) end
     local record=Tree.Match(call.args[2],"table")
     if not Tree.IsName(call.args[1],"_sc_table") or not record or #record.fields~=5 then return false end
     local values={}
@@ -445,7 +444,7 @@ local function safe_wiring(ast)
     local final=Tree.Match(values[5],"literal")
     return Tree.String(values[1])~=nil and Tree.String(values[2])~=nil
         and Tree.IsName(values[3],"_tmp_sc")
-        and length~=nil and length.operator=="#" and CardSyntax.CardList(length.operand)~=nil
+        and length~=nil and length.operator=="#" and CardSyntax.CardList(Tree,length.operand)~=nil
         and final~=nil and final.category=="boolean"
 end
 -- Card facts cover only exact owned callback statements and safe generated
@@ -454,6 +453,7 @@ end
 function M.Facts(source,match,pending_classes)
     local valid,err=Source.Validate(source)
     if not valid then return nil,err end
+    local Tree=source.analysis.syntax
     if not plain(match) or not dense(match.units) or not plain(pending_classes or {}) then
         return fail("ownership","complete Card source match required")
     end
@@ -461,19 +461,19 @@ function M.Facts(source,match,pending_classes)
     for _,unit in ipairs(match.units) do
         for _,desc in ipairs(unit.context.layout) do
             for name,node in next,desc.callback_syntax or {} do
-                local site=source.sites[node]
+                local site=Source.Site(source,node)
                 if not allowed[name] or not site or not site.statement then
                     return fail("ownership","callback syntax is not owned by this source")
                 end
                 local statement=source.analysis.statements[site.statement]
-                local callback,fn=CardSyntax.Callback(statement.syntax)
-                if callback~=name or fn~=node then return fail("ownership","callback is not a whole statement") end
+                local callback,fn=CardSyntax.Callback(Tree,statement.syntax)
+                if callback~=name or not Tree.SameNode(fn,node) then return fail("ownership","callback is not a whole statement") end
                 excluded[site.statement]=true
             end
         end
     end
     for index,statement in ipairs(source.analysis.statements) do
-        local ast=statement.syntax;local wire=safe_wiring(ast)
+        local ast=statement.syntax;local wire=safe_wiring(Tree,ast)
         if wire then
             wiring[#wiring+1]=Tree.Signature(ast)
             excluded[index]=true
@@ -505,7 +505,7 @@ function M.Facts(source,match,pending_classes)
     end
     return {source=source,excluded=excluded,wiring=table.concat(wiring,"\n"),binding_reads=binding_reads,structures=structures}
 end
-function M.Bindings(root,classes,state,key,pending_classes,wiring_changed)
+function M.Bindings(Tree,root,classes,state,key,pending_classes,wiring_changed)
     if not root then return {} end
     local reads,refusal={}
     Tree.Walk(root,function(n,parent)
@@ -549,14 +549,14 @@ function M.Constraints(view,dependencies)
     end
     for _,fact in ipairs(dependencies.source_facts) do
         if not plain(fact) or fact.source~=view.source or not Source.Owns(view.source,fact.node)
-            or not Tree.Is(fact.node,"function")
+            or not view.source.analysis.syntax.Is(fact.node,"function")
             or not roots[fact.root_id] then return fail("ownership","foreign selected function fact",view.base) end
         local root=result.by_root[fact.root_id]
         root.facts[#root.facts+1]=fact
         if not root.blocked then
             local reads,err
             if view.blocked then err=view.blocked
-            else reads,err=M.Bindings(fact.node,view.initial.classes,view.base,nil,view.pending_classes,view.wiring_changed) end
+            else reads,err=M.Bindings(view.source.analysis.syntax,fact.node,view.initial.classes,view.base,nil,view.pending_classes,view.wiring_changed) end
             if not reads then root.blocked=err
             else for _,read in ipairs(reads) do root.reads[#root.reads+1]=read end end
         end
@@ -682,11 +682,12 @@ function M.Coverage(view,plan)
         initial_source=view.initial.source,before=side(view.before_facts),after=side(view.after_facts),
         function_names={},pending={},scope=plan,requires_top_level=plan.requires_file_check==true}
     local function claim(side,node,name,key)
+        local Tree=side.scan.analysis.syntax
         if not node then return true end
-        local site=side.scan.sites[node];local statement=site and side.scan.analysis.statements[site.statement]
+        local site=Source.Site(side.scan,node);local statement=site and side.scan.analysis.statements[site.statement]
         local callback,fn
-        if statement then callback,fn=CardSyntax.Callback(statement.syntax) end
-        if callback~=name or fn~=node or side.claims[site.statement] then
+        if statement then callback,fn=CardSyntax.Callback(Tree,statement.syntax) end
+        if callback~=name or not Tree.SameNode(fn,node) or side.claims[site.statement] then
             return fail("ownership","Card coverage requires one whole owned callback statement",view.base,key)
         end
         side.claims[site.statement]=key;return true

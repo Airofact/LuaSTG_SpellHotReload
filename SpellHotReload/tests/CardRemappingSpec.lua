@@ -9,8 +9,7 @@ function M.run(opts)
     local Source=require("SpellHotReload.Source.FileAnalysis")
     local Evidence=require("SpellHotReload.Adapters.Card.CardReconcile")
     local IR=require("SpellHotReload.Source.TopLevelIR")
-    local Binding=require("SpellHotReload.Source.Binding")
-    local Lexer=require("SpellHotReload.Source.Lexer")
+    local Syntax=require("SpellHotReload.Source.SyntaxTree")
     local Compose=require("SpellHotReload.Source.Compose")
     local Card=require("SpellHotReload.Adapters.Card.Card")
     local Callbacks=require("SpellHotReload.Adapters.Card.CardCallbacks")
@@ -31,7 +30,7 @@ function M.run(opts)
     local function corrupt_analysis(snapshot,field,value)
         snapshot.common=copy(snapshot.common)
         local facts=copy(snapshot.common.source);local analysis=copy(facts.analysis)
-        facts.analysis=analysis;facts.bindings=copy(facts.bindings);facts.bindings.analysis=analysis
+        facts.analysis=analysis
         facts.sites=copy(facts.sites);facts.sites.analysis=analysis
         analysis[field]=value;snapshot.common.source=facts
     end
@@ -43,11 +42,11 @@ function M.run(opts)
     local saved={}
     for _,n in ipairs({"boss","_editor_class","_tmp_sc","REMAPPING_EFFECT"}) do saved[n]=rawget(_G,n) end
     local saved_apis={read=Callbacks.Read,match=Card.Match,build=Source.Build,analyze=IR.Analyze,
-        bind=Binding.Analyze,tokenize=Lexer.Tokenize,create=Compose.Create}
+        tokenize=Syntax.Parse,create=Compose.Create}
     local function restore_apis()
         Callbacks.Read,Card.Match= saved_apis.read,saved_apis.match
-        Source.Build,IR.Analyze,Binding.Analyze,Lexer.Tokenize,Compose.Create=
-            saved_apis.build,saved_apis.analyze,saved_apis.bind,saved_apis.tokenize,saved_apis.create
+        Source.Build,IR.Analyze,Syntax.Parse,Compose.Create=
+            saved_apis.build,saved_apis.analyze,saved_apis.tokenize,saved_apis.create
     end
     local callbacks={"before","init","frame","render","beforedel","del","after"}
     local defaults={};for _,n in ipairs(callbacks) do defaults[n]=function() end end
@@ -217,8 +216,7 @@ function M.run(opts)
         Card.Match=function() error("re-match forbidden") end
         Source.Build=function() error("source rebuild forbidden") end
         IR.Analyze=function() error("IR rebuild forbidden") end
-        Binding.Analyze=function() error("binding rebuild forbidden") end
-        Lexer.Tokenize=function() error("lexing forbidden") end
+        Syntax.Parse=function() error("parsing forbidden") end
         Compose.Create=function() error("callback construction forbidden") end
         local ran,value=pcall(function()
             local found=must(pure.LocateDiscovery(t,renamed,b,c,l))

@@ -4,10 +4,9 @@ local Registry = require("SpellHotReload.Pipeline.NodeRegistry")
 local Index = require("SpellHotReload.Pipeline.UnitIndex")
 local IR = require("SpellHotReload.Source.TopLevelIR")
 local Source = require("SpellHotReload.Source.FileAnalysis")
-local Binding = require("SpellHotReload.Source.Binding")
 local Card = require("SpellHotReload.Adapters.Card.Card")
 local Callbacks = require("SpellHotReload.Adapters.Card.CardCallbacks")
-local Lexer = require("SpellHotReload.Source.Lexer")
+local Syntax = require("SpellHotReload.Source.SyntaxTree")
 local M = {}
 function M.run(options)
     local DriverAPI = options and options.driver or Driver
@@ -147,15 +146,15 @@ function M.run(options)
     eq(touched,0,"thrown object not stringified")
     -- Discovery/selection consume the existing input, not an internal parse cache.
     shared,shared_common=nil,nil
-    local old_build,old_ir,old_binding,old_lexer=Source.Build,IR.Analyze,Binding.Analyze,Lexer.Tokenize
+    local old_build,old_ir,old_lexer=Source.Build,IR.Analyze,Syntax.Parse
     local function forbidden() error("Driver rebuilt supplied FileAnalysis") end
-    Source.Build,IR.Analyze,Binding.Analyze,Lexer.Tokenize=forbidden,forbidden,forbidden,forbidden
+    Source.Build,IR.Analyze,Syntax.Parse=forbidden,forbidden,forbidden
     local reused,reuse_error=pcall(function()
         local next_scan=assert(driver:Discover("F.lua",discovery.source,supplied))
         eq(next_scan.source,discovery.source,"fresh discovery reuses exact complete facts")
         eq(#assert(driver:SelectDiscovery(next_scan,{"early"})).entries,1,"selection needs no analysis")
     end)
-    Source.Build,IR.Analyze,Binding.Analyze,Lexer.Tokenize=old_build,old_ir,old_binding,old_lexer
+    Source.Build,IR.Analyze,Syntax.Parse=old_build,old_ir,old_lexer
     assert(reused,reuse_error)
     -- Real Card discovery: full file and both classes, independent of practice.
     local source = [[
@@ -175,15 +174,15 @@ DRIVER_DISCOVERY_EFFECT()
     _G.DRIVER_DISCOVERY_EFFECT = function() effects=effects+1 end
     local card_driver = DriverAPI.New()
     assert(card_driver:RegisterDiscovery(Card))
-    local old_lex, lex_calls = Lexer.Tokenize, 0
-    Lexer.Tokenize = function(...) lex_calls=lex_calls+1; return old_lex(...) end
+    local old_lex, lex_calls = Syntax.Parse, 0
+    Syntax.Parse = function(...) lex_calls=lex_calls+1; return old_lex(...) end
     local found, real = pcall(function()
         return card_driver:Discover("Boss.lua",assert(Source.Build(source)))
     end)
-    Lexer.Tokenize = old_lex
+    Syntax.Parse = old_lex
     _G.DRIVER_DISCOVERY_EFFECT = old_effect
     assert(found, real); assert(real)
-    eq(lex_calls,1,"one full-file lex for both real Card classes")
+    eq(lex_calls,1,"one full-file parse for both real Card classes")
     eq(effects,0,"candidate initialization never executed")
     eq(real.index.unit_count,2,"all real card classes discovered")
     local current = assert(card_driver:SelectDiscovery(real,{"card:B"}))
@@ -192,13 +191,13 @@ DRIVER_DISCOVERY_EFFECT()
     eq(real.snapshot.by_key["card:A"].unit.context.class_key,"A","other class remains accessible")
     eq(next(Card)~=nil,true,"adapter retained without hook execution")
     lex_calls = 0
-    Lexer.Tokenize = function(...) lex_calls=lex_calls+1; return old_lex(...) end
+    Syntax.Parse = function(...) lex_calls=lex_calls+1; return old_lex(...) end
     local bom_ok, bom = pcall(function()
         return card_driver:Discover("Boss.lua",assert(Source.Build("\239\187\191"..source)))
     end)
-    Lexer.Tokenize = old_lex
+    Syntax.Parse = old_lex
     assert(bom_ok,bom); assert(bom)
-    eq(lex_calls,1,"one BOM full-file lex across classes")
+    eq(lex_calls,1,"one BOM full-file parse across classes")
     eq(bom.source.content,"\239\187\191"..source,"BOM byte identity retained")
     eq(bom.index.unit_count,2,"BOM real discovery")
     for _,d in ipairs({real,bom}) do

@@ -53,7 +53,7 @@ function M.run()
         local _,inserted=refused("A() B() C()","INSERTED() A() B() C()","insertion points to actual new statement")
         has(inserted.message,"bytes 1-10;","inserted source range")
         refused("A() B()","B() A()","effect order remains semantic")
-        allowed("KEEP()","-- comment\nKEEP ( ) ;","opaque call formatting")
+        refused("KEEP()","-- comment\nKEEP ( ) ;","in-span opaque-call formatting is a content change")
         allowed("KEEP()","\239\187\191KEEP()","BOM is not an executable change")
         for i,pair in ipairs({
             {"KEEP()","KEEP()\nInclude 'new.lua'"},
@@ -136,10 +136,10 @@ function M.run()
         r=report("OWNED()\nKEEP()","OWNED()\nKEEP()")
         r.file_facts.before.excluded[1]=true
         r.file_facts.after.excluded[1]=true
-        r.file_facts.before.scan.analysis.statements[1].tok.last=0
+        r.file_facts.before.scan.analysis.statements={}
         value,err=FileApply.CheckTopLevel(r)
-        eq(value,nil,"excluded statement still requires complete token partition")
-        has(err and err.message,"source token partition is incomplete","excluded partition refusal")
+        eq(value,nil,"excluded statement cannot replace the canonical source sequence")
+        has(err and err.message,"source syntax/scope components disagree","excluded source provenance refusal")
         eq(calls,0,"no Include or candidate chunk execution")
         eq(card_requires,0,"file policy independent of Card version implementation")
         eq(r.base.revision,nil,"policy does not invent a publication revision")

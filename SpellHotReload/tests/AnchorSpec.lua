@@ -203,11 +203,11 @@ function M.run()
         -- A targeted opacity-marker fault over REAL complete source facts.
         -- This exercises policy's refusal, not the parser's opaque classification.
         local opaque=facts("local a = 1\n")
-        local old_opacity=opaque.bindings.opaque
-        opaque.bindings.opaque=true
+        local old_opacity=opaque.analysis.scope_complete
+        opaque.analysis.scope_complete=false
         truthy(Source.Validate(opaque),"policy: opacity fault keeps complete source provenance")
         local blocked = Anchor.Policy(opaque)
-        opaque.bindings.opaque=old_opacity
+        opaque.analysis.scope_complete=old_opacity
         check(blocked ~= nil, "policy: an opaque snapshot analyzes")
         if blocked ~= nil then
             falsy(blocked.reloadable, "policy: an opaque statement blocks capture")
@@ -234,27 +234,26 @@ function M.run()
         -- Partial snapshots and mismatched provenance are not public inputs.
         local function copy(value) local out={};for k,v in pairs(value) do out[k]=v end;return out end
         local complete=facts("local a = 1\n")
-        local partial=copy(complete);partial.bindings={names={"a"}}
+        local partial=facts(complete.content);partial.analysis.declarations={}
         local bad,reason=Anchor.Policy(partial)
-        reject(bad,reason,"policy: a partial bindings model","components disagree")
-        partial=copy(complete);partial.analysis="snapshot"
+        reject(bad,reason,"policy: a replaced declaration index","components disagree")
+        partial=facts(complete.content);partial.analysis="snapshot"
         bad,reason=Anchor.Policy(partial)
         reject(bad,reason,"policy: a non-table analysis","complete FileAnalysis required")
-        partial=copy(complete);partial.bindings="declarations"
+        partial=facts(complete.content);partial.sites="scope sites"
         bad,reason=Anchor.Policy(partial)
-        reject(bad,reason,"policy: a non-table bindings","complete FileAnalysis required")
+        reject(bad,reason,"policy: non-table scope sites","complete FileAnalysis required")
         bad,reason=Anchor.Policy(false)
         reject(bad,reason,"policy: a non-source value","complete FileAnalysis required")
         bad,reason=Anchor.Policy("local a = 1\n")
         reject(bad,reason,"policy: raw source must be analyzed first","complete FileAnalysis required")
-        partial=copy(complete);partial.content=complete.content.." "
+        partial=facts(complete.content);partial.content=complete.content.." "
         bad,reason=Anchor.Policy(partial)
         reject(bad,reason,"policy: content/AST mismatch","components disagree")
-        partial=copy(complete);partial.bindings=copy(complete.bindings)
-        partial.bindings.analysis=facts("local other=1").analysis
+        partial=facts(complete.content);partial.analysis.declarations_by_name=facts("local other=1").analysis.declarations_by_name
         bad,reason=Anchor.Policy(partial)
-        reject(bad,reason,"policy: foreign binding provenance","components disagree")
-        partial=copy(complete);partial.sites=copy(complete.sites)
+        reject(bad,reason,"policy: foreign declaration index","components disagree")
+        partial=facts(complete.content);partial.sites=copy(complete.sites)
         partial.sites.analysis=facts("local other=1").analysis
         bad,reason=Anchor.Policy(partial)
         reject(bad,reason,"policy: foreign site provenance","components disagree")
@@ -264,10 +263,9 @@ function M.run()
         -- Build once at the input boundary. Policy consumes the same facts and
         -- does not scan, bind, compile or execute the source again.
         local IR=require("SpellHotReload.Source.TopLevelIR")
-        local Binding=require("SpellHotReload.Source.Binding")
-        local Lexer=require("SpellHotReload.Source.Lexer")
+        local Syntax=require("SpellHotReload.Source.SyntaxTree")
         local input=facts("local x = 1\nerror('policy executed')\n")
-        local slots={{Source,"Build"},{IR,"Analyze"},{Binding,"Analyze"},{Lexer,"Tokenize"}}
+        local slots={{Source,"Build"},{IR,"Analyze"},{Syntax,"Parse"}}
         local saved,calls={},{}
         for i,slot in ipairs(slots) do
             local index=i;saved[i]=slot[1][slot[2]];calls[i]=0

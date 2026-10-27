@@ -1,7 +1,6 @@
 -- Card-only layout interpretation of one validated common FileAnalysis.
 -- Syntax captures are public facts; no parser fields or fallback analysis.
 local Source=require("SpellHotReload.Source.FileAnalysis")
-local Tree=require("SpellHotReload.Source.SyntaxTree")
 local CardSyntax=require("SpellHotReload.Adapters.Card.CardSyntax")
 local M={}
 local allowed={}
@@ -10,9 +9,9 @@ function M.Read(source,class_key)
     local valid,err=Source.Validate(source)
     if not valid then return nil,err end
     if type(class_key)~="string" or class_key=="" then return nil,"class key required" end
-    local analysis=source.analysis
+    local analysis=source.analysis;local Tree=analysis.syntax
     local function descriptor(expression,visible)
-        local kind,call=CardSyntax.Constructor(expression)
+        local kind,call=CardSyntax.Constructor(Tree,expression)
         return {kind=kind or "other",name=kind and (Tree.String(call.args[1]) or "") or "",
             constructor=Tree.Signature(expression),callbacks={},callback_points={},callback_syntax={},callback_signatures={},
             locals=visible or {},perform=""}
@@ -26,9 +25,9 @@ function M.Read(source,class_key)
             for _,binding in ipairs(declaration.names) do locals[Tree.Identifier(binding)]=true end
         end
         local target,rhs=Tree.SingleAssignment(ast)
-        local list_key=CardSyntax.CardList(target)
+        local list_key=CardSyntax.CardList(Tree,target)
         local call=Tree.Match(ast,"call_statement")
-        local callback,fn,method=CardSyntax.Callback(ast)
+        local callback,fn,method=CardSyntax.Callback(Tree,ast)
         local assignment=Tree.Match(ast,"assignment")
         if pending and assignment and (#assignment.targets~=1 or #assignment.values~=1) then
             for _,written in ipairs(assignment.targets) do
@@ -65,7 +64,7 @@ function M.Read(source,class_key)
             end
         elseif Tree.IsName(target,"_tmp_sc") then
             pending,held=nil,nil
-            if CardSyntax.Constructor(rhs) then
+            if CardSyntax.Constructor(Tree,rhs) then
                 local visible={};for name in pairs(locals) do visible[name]=true end
                 pending=descriptor(rhs,visible);held=pending
             end
@@ -75,7 +74,7 @@ function M.Read(source,class_key)
             pending.callbacks[callback]=Tree.FunctionSource(fn,method)
             pending.callback_syntax[callback]=fn
             pending.callback_signatures[callback]="literal|"..Tree.FunctionSignature(fn,method)
-            local range,range_error=Source.ByteRange(source,fn)
+            local range,range_error=Source.ByteRange(source,fn,"function")
             if not range then return nil,range_error end
             pending.callback_points[callback]={first=statement.source_range.first,last=range.last}
         elseif pending and member and Tree.IsName(member.base,"_tmp_sc") then
@@ -89,7 +88,7 @@ function M.Read(source,class_key)
                 end
             else return nil,"unsupported card assignment: "..member.name end
         elseif call and Tree.Path(call.callee)=="table.insert" and #call.args==2
-            and CardSyntax.CardList(call.args[1])==class_key then
+            and CardSyntax.CardList(Tree,call.args[1])==class_key then
             if not found then return nil,"card registration before class card list" end
             if pending and Tree.IsName(call.args[2],"_tmp_sc") then layout[#layout+1]=pending
             else layout[#layout+1]=descriptor(call.args[2]) end

@@ -1,5 +1,6 @@
 -- Native tree-sitter access. Parser lifetime is independent of tree pins.
 local ffi=require('ffi')
+local bit=require('bit')
 ffi.cdef[[
 typedef struct TSParser TSParser;
 typedef struct TSTree TSTree;
@@ -77,9 +78,22 @@ function Revision:Field(node,index)
  assert(not self.closed,'closed native tree')
  local name=self.session.lib.dims_field(node,index);return name~=nil and ffi.string(name) or ''
 end
-function Revision:Key(node)
- local n=node[0]
- return tostring(n.id)..':'..tonumber(n.context[0])..':'..tonumber(n.context[1])..':'..tonumber(n.context[2])..':'..tonumber(n.context[3])
+-- Bucket only: callers must verify the complete identity inside one snapshot.
+-- Read the six exact uint32 words (context + id), never round a pointer to double.
+local NodeArray=ffi.typeof('TSNode[1]')
+function M.IsNode(node) return type(node)=='cdata' and ffi.istype(NodeArray,node) end
+function M.Hash(node)
+ local words=ffi.cast('const uint32_t *',node);local hash=0
+ for i=0,5 do hash=bit.tobit(hash*21+tonumber(words[i])) end
+ return hash
+end
+function M.Equal(a,b)
+ local x,y=a[0],b[0]
+ return x.id==y.id and x.tree==y.tree and x.context[0]==y.context[0]
+  and x.context[1]==y.context[1] and x.context[2]==y.context[2] and x.context[3]==y.context[3]
+end
+function Revision:Owns(node)
+ return not self.closed and M.IsNode(node) and node[0].tree==self.pointer
 end
 -- Only failed/unexposed trees are closed explicitly. Exposed snapshots use GC pins.
 function Revision:Close()

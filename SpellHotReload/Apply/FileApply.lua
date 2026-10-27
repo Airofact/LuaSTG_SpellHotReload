@@ -4,7 +4,6 @@
 --- This module merges it, gates unknown effects and accounts for the remainder.
 --- Exclusion, preparation and partial receipts never mean whole-file completion.
 local Alignment=require("SpellHotReload.Source.StatementAlignment")
-local Tree=require("SpellHotReload.Source.SyntaxTree")
 local Source=require("SpellHotReload.Source.FileAnalysis")
 local Files=require("SpellHotReload.Pipeline.FileVersions")
 local M={}
@@ -24,32 +23,15 @@ local function fail(code,message,state)
 end
 -- This exclusion is never evidence that the included file has been loaded.
 local function ignored_include(scan,index)
-    local statement=scan.analysis.statements[index]
-    local record=scan.bindings.statements[index]
-    if not statement or not record or not record.visible or record.unparsed
-        or record.visible.Include then return false end
+    local Tree=scan.analysis.syntax
+    local statement=Source.Statement(scan,index)
+    if not statement or Source.ResolveLocal(scan,index,"Include") then return false end
     local ast=statement.syntax
     local call=Tree.Match(ast,"call_statement")
     return call and Tree.IsName(call.callee,"Include") and #call.args==1
         and Tree.String(call.args[1])~=nil or false
 end
 
-
--- Even excluded/claimed tokens must form one complete source partition.
-local function partition(scan,state)
-    if not Source.Validate(scan) then return fail("unsupported","complete shared source required",state) end
-    local next_token=1
-    for index,statement in ipairs(scan.analysis.statements) do
-        if statement.tok.first~=next_token or statement.tok.last<statement.tok.first
-            or statement.tok.last>#scan.analysis.tokens or not scan.bindings.statements[index]
-            or not plain(scan.bindings.statements[index].visible) then
-            return fail("unsupported","source token partition is incomplete",state)
-        end
-        next_token=statement.tok.last+1
-    end
-    if next_token~=#scan.analysis.tokens+1 then return fail("unsupported","source has unaccounted tokens",state) end
-    return true
-end
 
 ---Whole-file preflight. Adapter exclusions do NOT mean those bytes were
 ---published; only the separate coverage/remaining path can establish completion.
@@ -65,17 +47,12 @@ function M.CheckTopLevel(report)
             or type(side.wiring)~="string" then
             return fail("unsupported","file Apply statement evidence unavailable",state)
         end
-        local valid,err=partition(scan,state);if not valid then return nil,err end
+        local valid,err=Source.Validate(scan);if not valid then return nil,err end
+        local Tree=scan.analysis.syntax
         for index,statement in ipairs(scan.analysis.statements) do
             if not side.excluded[index] and not ignored_include(scan,index) then
-                local pieces,visible={},{}
-                local tokens,last=scan.analysis.tokens,Tree.ContentLast(statement.syntax)
-                for i=statement.tok.first,last do
-                    pieces[#pieces+1]=tokens[i].kind..":"..#tokens[i].value..":"..tokens[i].value
-                end
-                for name in next,scan.bindings.statements[index].visible do visible[#visible+1]=name end
-                table.sort(visible)
-                rows[#rows+1]={signature=table.concat(pieces,"|").."@"..table.concat(visible,","),
+                local visible=Source.VisibleBefore(scan,index)
+                rows[#rows+1]={signature=Tree.Signature(statement.syntax).."@"..table.concat(visible,","),
                     first=statement.source_range.first,last=statement.source_range.last,
                     binding_read=side.binding_reads[index]}
             end
@@ -124,7 +101,7 @@ function M.Collect(prepared)
         if not plain(source) or source.scan~=target.scan or not plain(source.claims)
             or not plain(source.excluded) or not plain(source.structures) or not plain(source.binding_reads)
             or type(source.wiring)~="string" then return fail("ownership","complete same-source owner statement evidence required",base) end
-        local ok,err=partition(source.scan,base);if not ok then return nil,err end
+        local ok,err=Source.Validate(source.scan);if not ok then return nil,err end
         for _,field in ipairs({"claims","excluded","structures","binding_reads"}) do
             for index,value in next,source[field] do
                 if type(index)~="number" or index~=math.floor(index) or not source.scan.analysis.statements[index]
@@ -265,49 +242,24 @@ function M.Remaining(report)
             previous_label=previous and previous.label,previous_line=previous and previous.line}
     end
     local function residual(scan, claims, structures)
-        local rows, declarations, labels, next_token = {}, {}, {}, 1
-        -- Diagnostic names from the existing IR; never claim or ignore a statement.
-        for _, node in ipairs(scan.analysis.nodes) do
-            labels[node.tok.first] = labels[node.tok.first] or node.path or node.name or node.callee
+        local valid,err=Source.Validate(scan);if not valid then return nil,err end
+        local Tree=scan.analysis.syntax
+        local rows,declarations,labels={},{},{}
+        for _,node in ipairs(scan.analysis.nodes) do
+            labels[node.statement]=labels[node.statement] or node.path or node.name or node.callee
         end
-        for _, declaration in ipairs(scan.bindings.declarations) do
-            if not evidence.function_names[declaration.name] then
-                declarations[declaration.statement] = declaration.name
-            end
+        for _,declaration in ipairs(Source.Declarations(scan)) do
+            if not evidence.function_names[declaration.name] then declarations[declaration.statement]=declaration.name end
         end
-        for index, statement in ipairs(scan.analysis.statements) do
-            local tokens, first, last = scan.analysis.tokens, statement.tok.first, statement.tok.last
-            -- Every lexer token must belong to one whole statement, claimed or
-            -- retained. An analysis gap/overlap cannot silently count as coverage.
-            if first ~= next_token or last < first or last > #tokens then
-                return fail("unsupported", "source token partition is incomplete", state)
-            end
-            next_token = last + 1
+        for index,statement in ipairs(scan.analysis.statements) do
             if not claims[index] and not ignored_include(scan,index) then
-                local pieces = {}
-                for i=first,Tree.ContentLast(statement.syntax) do
-                    local token=tokens[i]
-                    pieces[#pieces+1]=token.kind .. ":" .. #token.value .. ":" .. token.value
-                end
-                if #pieces > 0 then
-                    local visible = {}
-                    for name in next, scan.bindings.statements[index].visible do visible[#visible+1]=name end
-                    table.sort(visible)
-                    local kind = declarations[index] and "initializer" or "unknown"
-                    -- Classification is diagnostic only: these tokens are NEVER
-                    -- discarded even if they match the safe-wiring grammar.
-                    if structures[index] then
-                        kind = "structure"
-                    end
-                    rows[#rows+1]={signature=table.concat(pieces,"|") .. "@" .. table.concat(visible,","),
-                        kind=kind, key=declarations[index] and ("local:" .. declarations[index]) or ("file:" .. state.file),
-                        first=statement.source_range.first,last=statement.source_range.last,
-                        label=labels[first],line=statement.line}
-                end
+                local visible=Source.VisibleBefore(scan,index)
+                local kind=declarations[index] and "initializer" or "unknown"
+                if structures[index] then kind="structure" end
+                rows[#rows+1]={signature=Tree.Signature(statement.syntax).."@"..table.concat(visible,","),
+                    kind=kind,key=declarations[index] and ("local:"..declarations[index]) or ("file:"..state.file),
+                    first=statement.source_range.first,last=statement.source_range.last,label=labels[index],line=statement.line}
             end
-        end
-        if next_token ~= #scan.analysis.tokens + 1 then
-            return fail("unsupported", "source has unaccounted tokens", state)
         end
         return rows
     end

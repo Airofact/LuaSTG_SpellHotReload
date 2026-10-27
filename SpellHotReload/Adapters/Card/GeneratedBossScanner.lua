@@ -10,7 +10,6 @@
 --------------------------------------------------------------------------------
 
 local Source=require("SpellHotReload.Source.FileAnalysis")
-local Tree=require("SpellHotReload.Source.SyntaxTree")
 local CardSyntax=require("SpellHotReload.Adapters.Card.CardSyntax")
 local Scanner = {}
 
@@ -58,9 +57,9 @@ end
 function Scanner.ClassKeys(source)
     local valid,err=Source.Validate(source)
     if not valid then return nil,err end
-    local keys={}
-    Tree.Walk(source.analysis.syntax,function(n)
-        local key=CardSyntax.ClassKey(n);if key then keys[key]=true end
+    local keys={};local Tree=source.analysis.syntax
+    Tree.Walk(Tree.root,function(n)
+        local key=CardSyntax.ClassKey(Tree,n);if key then keys[key]=true end
     end)
     return keys
 end

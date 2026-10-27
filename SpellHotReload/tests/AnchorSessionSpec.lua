@@ -257,8 +257,8 @@ function M.run()
         calls = calls + 1
         local facts, reason = original_build(content, options)
         if facts then
-            falsy(facts.bindings.opaque, "opaque: real fixture is not opaque")
-            facts.bindings.opaque = true
+            truthy(facts.analysis.scope_complete, "opaque: real fixture has complete scope facts")
+            facts.analysis.scope_complete = false
             truthy(Source.Validate(facts), "opaque: fault keeps source provenance")
         end
         return facts, reason

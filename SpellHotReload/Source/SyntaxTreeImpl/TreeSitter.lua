@@ -1,7 +1,8 @@
--- Public syntax queries over immutable native snapshots from any file parser.
--- Private entries retain handles/ranges, never a projected kind/children AST.
-local Native=require("SpellHotReload.Source.Native")
-local DLL_PATH=".\\plugin\\SpellHotReload\\native\\dims_tree_sitter_lua.dll"
+-- One query snapshot owns the native tree and its additional facts.
+-- Nodes are canonical TSNode cdata, never per-node Lua wrappers.
+local Native=require('SpellHotReload.Source.Native')
+local M,Snapshot={},{}
+local DLL_PATH='.\\plugin\\SpellHotReload\\native\\dims_tree_sitter_lua.dll'
 local roles={chunk=true,block=true,name=true,binding=true,literal=true,vararg=true,
  member=true,index=true,call=true,paren=true,['function']=true,unary=true,binary=true,
  ['table']=true,field=true,['local']=true,local_function=true,assign=true,
@@ -9,465 +10,337 @@ local roles={chunk=true,block=true,name=true,binding=true,literal=true,vararg=tr
  ['do']=true,['while']=true,['repeat']=true,for_numeric=true,for_generic=true,['if']=true}
 local patterns={declaration=true,assignment=true,definition=true,member=true,index=true,
  call=true,call_statement=true,literal=true,unary=true,['table']=true,['function']=true,['return']=true}
-local keywords={}
-for w in ('and break do else elseif end false for function if in local nil not or repeat return then true until while'):gmatch('%S+') do keywords[w]=true end
-local binaries={['or']=1,['and']=2,['<']=3,['>']=3,['<=']=3,['>=']=3,['~=']=3,['==']=3,['..']=4,['+']=5,['-']=5,['*']=6,['/']=6,['%']=6,['^']=8}
-local unaries={['not']=true,['-']=true,['#']=true}
-local native_roles={identifier='name',['nil']='literal',['true']='literal',['false']='literal',
+local native_roles={chunk='chunk',block='block',identifier='name',['nil']='literal',['true']='literal',['false']='literal',
  number='literal',string='literal',vararg_expression='vararg',dot_index_expression='member',
  method_index_expression='member',bracket_index_expression='index',function_call='call',
  parenthesized_expression='paren',function_definition='function',unary_expression='unary',
  binary_expression='binary',table_constructor='table',field='field',variable_declaration='local',
  assignment_statement='assign',return_statement='return',break_statement='break',do_statement='do',
  while_statement='while',repeat_statement='repeat',if_statement='if'}
-local function check(value,message) if not value then error('syntax: '..message,0) end;return value end
-local function append(out,values) for _,v in ipairs(values) do out[#out+1]=v end;return out end
-local T={}
-local snapshots=setmetatable({},{__mode='k'})
-local function owner(node)
- local s=type(node)=='table' and rawget(node,1)
- if not s or not snapshots[s] or not s.entries[node] or s.revision.closed then error('syntax: foreign or invalid node reference',3) end
- return s
+local function check(value,why) if not value then error('syntax: '..why,0) end;return value end
+local function append(a,b) for _,v in ipairs(b) do a[#a+1]=v end;return a end
+local function add(a,b) if b then a[#a+1]=b end;return a end
+local function decode(raw)
+ if raw:sub(1,1)=='[' then
+  local open=assert(raw:find('[',2,true));local value=raw:sub(open+1,#raw-open)
+  value=value:gsub('\r\n','\n'):gsub('\n\r','\n'):gsub('\r','\n')
+  return value:sub(1,1)=='\n' and value:sub(2) or value
+ end
+ local escapes={a='\a',b='\b',f='\f',n='\n',r='\r',t='\t',v='\v'}
+ local out,i={},2
+ while i<#raw do
+  local c=raw:sub(i,i)
+  if c~='\\' then out[#out+1]=c;i=i+1
+  else
+   i=i+1;c=raw:sub(i,i)
+   if c:match('%d') then
+    local digits=raw:sub(i):match('^%d%d?%d?');local value=tonumber(digits)
+    check(value<=255,'string escape out of range');out[#out+1]=string.char(value);i=i+#digits
+   elseif c=='\r' or c=='\n' then
+    out[#out+1]='\n';i=i+1;local nextc=raw:sub(i,i)
+    if nextc~=c and (nextc=='\r' or nextc=='\n') then i=i+1 end
+   else
+    check(escapes[c] or c=='\\' or c=="'" or c=='"','unsupported string escape')
+    out[#out+1]=escapes[c] or c;i=i+1
+   end
+  end
+ end
+ return table.concat(out)
 end
-function T.IsNode(node)
- local s=type(node)=='table' and rawget(node,1)
- return s~=nil and snapshots[s]==true and s.entries[node]~=nil and not s.revision.closed or false
+local function numeral(value)
+ if value:match('^0[xX]') then return value:match('^0[xX]%x+$')~=nil end
+ local base=value:match('^(.-)[eE][+-]?%d+$') or value
+ return base:match('^%d+%.?%d*$')~=nil or base:match('^%.%d+$')~=nil
 end
-function T.SameSnapshot(a,b) return T.IsNode(a) and T.IsNode(b) and rawget(a,1)==rawget(b,1) or false end
-function T.MatchesInput(root,source,tokens)
- if not T.IsNode(root) then return false end
- local s=owner(root);return s.root==root and s.source==source and s.tokens==tokens
-end
-function T.Parse(source,tokens,previous)
- if type(source)~='string' or type(tokens)~='table' then return nil,'syntax: source/tokens required' end
- local revision,s,session,fresh_session
+function M.IsSnapshot(value) return type(value)=='table' and getmetatable(value)==Snapshot end
+function M.Parse(source,previous)
+ if type(source)~='string' or source:find('\0',1,true) or source:sub(1,1)=='\27' then return nil,'text Lua source required','unsupported' end
+ local compiler=rawget(_G,'loadstring') or rawget(_G,'load')
+ local get=rawget(_G,'getfenv');local env=type(get)=='function' and get(0) or _G
+ if type(compiler)~='function' then return nil,'Lua compiler unavailable','capability' end
+ local compiled,chunk,why=pcall(compiler,source,'@FileAnalysis:syntax')
+ if not compiled or type(chunk)~='function' then return nil,type(why)=='string' and why or (not compiled and type(chunk)=='string' and chunk) or 'source compilation failed','compile' end
+ chunk=nil -- Compile the whole input once. Never execute it or recheck Lua control flow.
+ local revision,session,fresh
  local ok,result=pcall(function()
-  local prior
-  if previous then local p=owner(previous);check(p.root==previous,'previous root required');prior=p.revision end
-  if prior then session=prior.session
-  else session=Native.Open(DLL_PATH);fresh_session=true end
-  revision=session:Parse(source,prior)
-  s={revision=revision,source=source,tokens=tokens,entries={},handles={}}
-  local starts,ends={},{}
-  for i,token in ipairs(tokens) do
-   check(type(token.pos)=='number' and token.pos%1==0 and token.pos>=1 and type(token.value)=='string' and #token.value>0
-    and source:sub(token.pos,token.pos+#token.value-1)==token.value and (i==1 or token.pos>ends[i-1]),'token/source mismatch')
-   starts[token.pos]=i;ends[i]=token.pos+#token.value-1
+  if previous then check(M.IsSnapshot(previous),'previous snapshot required');session=previous.revision.session
+  else session=Native.Open(DLL_PATH);fresh=true end
+  revision=session:Parse(source,previous and previous.revision)
+  local s=setmetatable({revision=revision,source=source,
+   syntax_check={compiler=compiler,runtime_key=env,environment_api=get}},Snapshot)
+  local buckets,facts,by_node={},{},{}
+  local expected_root
+  local function entry(node) return check(by_node[node] and not revision.closed and by_node[node],'foreign or unknown native node') end
+  local function record(node)
+   check(revision:Owns(node),'foreign native node')
+   local hash=Native.Hash(node);local bucket=buckets[hash]
+   for _,e in ipairs(bucket or {}) do if Native.Equal(e.node,node) then return e end end
+   local info=revision:Info(node)
+   check(not info.invalid and info.a>=0 and info.b>=info.a and info.b<=#source,'invalid native range or ERROR/MISSING')
+   local e={node=node,info=info};bucket=bucket or {};buckets[hash]=bucket;bucket[#bucket+1]=e
+   facts[e]=true;by_node[node]=e;return e
   end
-  local function span(native)
-   local info=revision:Info(native);local first=starts[info.a+1]
-   check(first,'node starts outside token boundary: '..info.kind)
-   local low,high=first,#tokens
-   while low<high do local mid=math.floor((low+high+1)/2);if ends[mid]<=info.b then low=mid else high=mid-1 end end
-   check(ends[low]<=info.b,'node cuts token: '..info.kind)
-   return first,low,info
-  end
-  local function named(native)
-   local out={};if not native then return out end
-   for i=0,revision:Info(native).count-1 do
-    local child=revision:Child(native,i);local info=revision:Info(child)
-    if info.named and not info.extra then out[#out+1]=child end
+  local function parts(node)
+   local e=entry(node)
+   if not e.parts then
+    local values,named,fields={},{},{}
+    for i=0,e.info.count-1 do
+     local child=record(revision:Child(e.node,i));local key=revision:Field(e.node,i)
+     values[#values+1]=child.node
+     if child.info.named and not child.info.extra then named[#named+1]=child.node end
+     if key~='' then local list=fields[key] or {};fields[key]=list;list[#list+1]=child.node end
+    end
+    e.parts,e.named,e.fields=values,named,fields;facts[values],facts[named],facts[fields]=true,true,true
    end
-   return out
+   return e
   end
-  local function fields(native,name)
-   local out={}
-   for i=0,revision:Info(native).count-1 do
-    if revision:Field(native,i)==name then out[#out+1]=revision:Child(native,i) end
-   end
-   return out
-  end
-  local function get(native,name,required)
-   local values=fields(native,name);check(#values<=1,'ambiguous field '..name)
-   if required then check(values[1],'missing field '..name) end
+  local function named(node) return node and parts(node).named or {} end
+  local function fields(node,key) return parts(node).fields[key] or {} end
+  local function get(node,key,required)
+   local values=fields(node,key);check(#values<=1,'ambiguous field '..key)
+   if required then check(values[1],'missing field '..key) end
    return values[1]
   end
-  local function one(native,kind)
+  local function one(node,kind)
    local found
-   for _,child in ipairs(named(native)) do if revision:Info(child).kind==kind then check(not found,'duplicate '..kind);found=child end end
+   for _,child in ipairs(named(node)) do
+    if entry(child).info.kind==kind then check(not found,'duplicate '..kind);found=child end
+   end
    return check(found,'missing '..kind)
   end
-  local function marker(native,kind)
-   local found
-   for i=0,revision:Info(native).count-1 do
-    local child=revision:Child(native,i);local info=revision:Info(child)
-    if info.kind==kind and not info.extra then check(not found,'duplicate marker '..kind);found=child end
+  local function kind(node)
+   local e=entry(node)
+   if not e.kind then
+    local k=native_roles[e.info.kind]
+    if e.info.kind=='function_declaration' then k=source:sub(e.info.a+1,e.info.a+5)=='local' and 'local_function' or 'function_statement'
+    elseif e.info.kind=='for_statement' then k=entry(get(node,'clause',true)).info.kind=='for_numeric_clause' and 'for_numeric' or 'for_generic' end
+    e.kind=check(k,'unsupported native node '..e.info.kind)
    end
-   return span(check(found,'missing marker '..kind))
+   return e.binding and 'binding' or e.kind
   end
-  local function identifier(native)
-   local first,last,info=span(native);local token=tokens[first]
-   check(info.kind=='identifier' and first==last and token.kind=='word' and not keywords[token.value]
-    and token.pos-1==info.a and ends[last]==info.b,'identifier spelling/boundary')
-   return token.value
-  end
-  local ref,statement,block,match,children
-  local function entry(node) return check(s.entries[node],'node belongs to another snapshot') end
-  ref=function(native,role,first,last,content_last,block_native)
-   local info=revision:Info(native)
-   if not first then first,last=span(native) end
-   if not role then
-    role=native_roles[info.kind]
-    if info.kind=='function_declaration' then role=tokens[first].value=='local' and 'local_function' or 'function_statement'
-    elseif info.kind=='for_statement' then role=revision:Info(get(native,'clause',true)).kind=='for_numeric_clause' and 'for_numeric' or 'for_generic' end
-    check(role,'unsupported native node '..info.kind)
+  local function node(value,binding)
+   if not value then return nil end
+   local e=entry(value)
+   if binding then check(e.info.kind=='identifier','identifier binding required');e.binding=true end
+   local k=kind(e.node)
+   if k=='literal' and not e.literal_ready then
+    local raw=source:sub(e.info.a+1,e.info.b)
+    if e.info.kind=='string' then e.literal=decode(raw)
+    elseif e.info.kind=='number' then check(numeral(raw),'unsupported numeral spelling') end
+    e.literal_ready=true
    end
-   local key=revision:Key(native)..'/'..role..':'..first..':'..last
-   local node=s.handles[key]
-   if not node then
-    node={s};s.handles[key]=node
-    s.entries[node]={native=native,kind=role,first=first,last=last,content_last=content_last or last,info=info,block_native=block_native}
-   end
-   return node
+   return e.node
   end
-  statement=function(native)
-   local first,last,info=span(native);if tokens[last].value==';' then last=last-1 end
-   local content_last=last
-   if tokens[last+1] and tokens[last+1].value==';' then last=last+1 end
-   return ref(native,info.kind=='function_call' and 'call_statement' or nil,first,last,content_last)
+  local function refs(value,binding)
+   local out={};for _,child in ipairs(named(value)) do out[#out+1]=node(child,binding) end;return out
   end
-  block=function(native,parent,first,boundary,role)
-   return ref(native or parent,role or 'block',first,boundary-1,boundary-1,native or false)
+  local function text(value)
+   local e=entry(value)
+   if not e.text then e.text=source:sub(e.info.a+1,e.info.b) end
+   return e.text
   end
-  local function refs(native,binding)
-   local out={};for _,child in ipairs(named(native)) do out[#out+1]=ref(child,binding and 'binding' or nil) end;return out
+  local function is_function(value)
+   local k=kind(value);return k=='function' or k=='local_function' or k=='function_statement'
   end
-  local function assignment(native) return one(native,'variable_list'),one(native,'expression_list') end
-  local function declarations(n)
-   if n.kind=='local_function' then
-    return {names={ref(get(n.native,'name',true),'binding')},values={ref(n.native,'function',n.first+1,n.content_last)},self_visible=true}
-   end
-   local parts=named(n.native);check(#parts==1,'local declaration shape')
+  local function declarations(value)
+   if kind(value)=='local_function' then return {names={node(get(value,'name',true),true)},values={value},self_visible=true} end
+   local p=named(value);check(#p==1,'local declaration shape')
    local variables,values
-   if revision:Info(parts[1]).kind=='assignment_statement' then variables,values=assignment(parts[1])
-   else check(revision:Info(parts[1]).kind=='variable_list','local variable list');variables=parts[1] end
+   if entry(p[1]).info.kind=='assignment_statement' then variables,values=one(p[1],'variable_list'),one(p[1],'expression_list')
+   else variables=p[1];check(entry(variables).info.kind=='variable_list','local variable list') end
    return {names=refs(variables,true),values=refs(values),self_visible=false}
   end
-  local function function_parts(n)
-   local parameters=get(n.native,'parameters',true);local open,close=span(parameters)
-   check(tokens[open].value=='(' and tokens[close].value==')','function parameter delimiters')
-   local params,vararg={},false
+  local function function_parts(value)
+   local parameters=get(value,'parameters',true);local params,vararg={},false
    for _,p in ipairs(named(parameters)) do
-    check(not vararg,'parameter after vararg')
-    if revision:Info(p).kind=='vararg_expression' then vararg=true else params[#params+1]=ref(p,'binding') end
+    if entry(p).info.kind=='vararg_expression' then vararg=true else params[#params+1]=node(p,true) end
    end
-   check(tokens[n.last].value=='end','function end')
-   return {params=params,vararg=vararg,body=block(get(n.native,'body'),n.native,close+1,n.last)},open
+   return {params=params,vararg=vararg,body=node(get(value,'body'))},parameters
   end
-  local function call(node,native)
-   local callee=ref(get(native,'name',true));local args=refs(get(native,'arguments',true))
-   return {node=node,callee=callee,args=args,method=entry(callee).info.kind=='method_index_expression'}
-  end
-  local function if_parts(n)
-   local alternatives=fields(n.native,'alternative');local clauses={}
-   local then_at=marker(n.native,'then');local boundary=alternatives[1] and span(alternatives[1]) or n.content_last
-   clauses[1]={condition=ref(get(n.native,'condition',true)),body=block(get(n.native,'consequence'),n.native,then_at+1,boundary)}
-   local otherwise
-   for i,alternative in ipairs(alternatives) do
-    local first=span(alternative);local stop=alternatives[i+1] and span(alternatives[i+1]) or n.content_last
-    if revision:Info(alternative).kind=='elseif_statement' then
-     check(not otherwise,'elseif after else');then_at=marker(alternative,'then')
-     clauses[#clauses+1]={condition=ref(get(alternative,'condition',true)),body=block(get(alternative,'consequence'),alternative,then_at+1,stop)}
-    else
-     check(revision:Info(alternative).kind=='else_statement' and not otherwise and i==#alternatives,'else shape')
-     otherwise=block(get(alternative,'body'),alternative,first+1,stop)
-    end
+  function s.IsNode(value) return by_node[value]~=nil and not revision.closed end
+  function s.SameNode(a,b) return s.IsNode(a) and s.IsNode(b) and Native.Equal(a,b) or false end
+  function s.Owns(value) return revision:Owns(value) end
+  function s.ContainsFact(value) return value==s or value==s.syntax_check or value==revision or facts[value]==true or revision:Owns(value) end
+  function s.MatchesInput(value) return s.revision==revision and s.source==source and s.root==expected_root and not revision.closed and source==value end
+  function s.Range(value) local e=entry(value);return e.info.a+1,e.info.b end
+  function s.Text(value) return text(value) end
+  function s.Display(value) return text(value) end
+  -- Lua strings provide hashing/interning plus exact equality on collision.
+  -- Formatting inside the span participates; this is content identity, not a unit id.
+  function s.Signature(value)
+   local e=entry(value)
+   if e.signature==nil then
+    local last=e.info.b
+    if e.statement and source:sub(last,last)==';' then last=last-1 end
+    e.signature=source:sub(e.info.a+1,last)
    end
-   return clauses,otherwise
+   return e.signature
   end
-  local function for_parts(n)
-   local clause=get(n.native,'clause',true);local names,values
-   if n.kind=='for_numeric' then
-    names={ref(get(clause,'name',true),'binding')};values={ref(get(clause,'start',true)),ref(get(clause,'end',true))}
-    local step=get(clause,'step');if step then values[#values+1]=ref(step) end
-   else
-    check(revision:Info(clause).kind=='for_generic_clause','for clause')
-    names=refs(one(clause,'variable_list'),true);values=refs(one(clause,'expression_list'))
-   end
-   local start=marker(n.native,'do')
-   return names,values,block(get(n.native,'body'),n.native,start+1,n.content_last)
+  function s.Is(value,role)
+   check(roles[role],'unknown role '..tostring(role));if value==nil then return false end
+   if role=='function' then return is_function(value) end
+   if role=='call_statement' then return kind(value)=='call' and entry(value).statement==true end
+   return kind(value)==role
   end
-  match=function(node,pattern)
-   local n=entry(node);local native=n.native
-   if pattern=='declaration' then
-    if n.kind=='local' or n.kind=='local_function' then return declarations(n) end
-   elseif pattern=='assignment' then
-    if n.kind=='assign' then local variables,values=assignment(native);return {targets=refs(variables),values=refs(values)} end
-   elseif pattern=='definition' then
-    local target,fn,method,self_visible,form
-    if n.kind=='local_function' then
-     local d=declarations(n);target,fn,self_visible,form=d.names[1],d.values[1],true,'local-function'
-    elseif n.kind=='function_statement' then
-     target=ref(get(native,'name',true));fn=ref(native,'function',n.first,n.content_last)
-     method=entry(target).info.kind=='method_index_expression';form='function-statement'
-    elseif n.kind=='local' then
-     local d=declarations(n)
-     if #d.names==1 and #d.values==1 and entry(d.values[1]).kind=='function' then target,fn,form=d.names[1],d.values[1],'local-initializer' end
-    elseif n.kind=='assign' then
-     local a=match(node,'assignment')
-     if #a.targets==1 and #a.values==1 and entry(a.values[1]).kind=='function' then target,fn,form=a.targets[1],a.values[1],'assignment' end
-    end
-    if fn then return {target=target,fn=fn,method=method==true,self_visible=self_visible==true,form=form} end
-   elseif pattern=='member' then
-    if n.kind=='member' then
-     local method=n.info.kind=='method_index_expression'
-     return {base=ref(get(native,'table',true)),name=identifier(get(native,method and 'method' or 'field',true)),separator=method and ':' or '.'}
-    end
-   elseif pattern=='index' then
-    if n.kind=='index' then return {base=ref(get(native,'table',true)),key=ref(get(native,'field',true))} end
-   elseif pattern=='call' then if n.kind=='call' then return call(node,native) end
-   elseif pattern=='call_statement' then if n.kind=='call_statement' then return call(ref(native,'call'),native) end
-   elseif pattern=='literal' then
-    if n.kind=='literal' then
-     local token=tokens[n.first];local kind=n.info.kind
-     check(n.first==n.last and ends[n.last]==n.info.b,'literal boundary')
-     if kind=='nil' then check(token.value=='nil','nil token')
-     elseif kind=='true' or kind=='false' then check(token.value==kind,'boolean token');kind='boolean'
-     else check((kind=='number' or kind=='string') and token.kind==kind,'literal kind') end
-     return {category=kind,value=token.literal,raw=token.value}
-    end
-   elseif pattern=='unary' then if n.kind=='unary' then return {operator=tokens[n.first].value,operand=ref(get(native,'operand',true))} end
-   elseif pattern=='table' then
-    if n.kind=='table' then
-     local out={}
-     for _,field in ipairs(named(native)) do
-      check(revision:Info(field).kind=='field','table field required')
-      local field_node=ref(field);local e=entry(field_node);local key,label
-      local native_key=get(field,'name')
-      if native_key then if tokens[e.first].value=='[' then key=ref(native_key) else label=identifier(native_key) end end
-      local value=ref(get(field,'value',true));check(e.last==entry(value).last,'field boundary')
-      out[#out+1]={node=field_node,key=key,name=label,array=key==nil and label==nil,value=value}
-     end
-     return {fields=out}
-    end
-   elseif pattern=='function' then if n.kind=='function' then local f=function_parts(n);return f end
-   elseif pattern=='return' then
-    if n.kind=='return' then local p=named(native);check(#p<=1,'return shape');return {values=refs(p[1])} end
-   end
+  function s.Identifier(value)
+   if value~=nil then local k=kind(value);if k=='name' or k=='binding' then return text(value),k=='binding' end end
   end
-  local function statements(node)
-   local n=entry(node);check(n.kind=='block' or n.kind=='chunk','statement sequence required')
+  function s.IsName(value,name) return s.Is(value,'name') and s.Identifier(value)==name or false end
+  function s.Statements(value)
+   if value==nil then return {} end -- No synthetic node for an absent empty block.
+   local k=kind(value);check(k=='block' or k=='chunk','statement sequence required')
    local out={}
-   for _,child in ipairs(named(n.block_native)) do if revision:Info(child).kind~='empty_statement' then out[#out+1]=statement(child) end end
+   for _,child in ipairs(named(value)) do
+    if entry(child).info.kind~='empty_statement' then entry(child).statement=true;out[#out+1]=node(child) end
+   end
    return out
   end
-  children=function(node)
-   local n=entry(node);local native=n.native;local kind=n.kind
-   if kind=='chunk' or kind=='block' then return statements(node)
-   elseif kind=='local' or kind=='local_function' then local d=declarations(n);return append(d.names,d.values)
-   elseif kind=='assign' then local a=match(node,'assignment');return append(a.targets,a.values)
-   elseif kind=='function_statement' then local d=match(node,'definition');return {d.target,d.fn}
-   elseif kind=='function' then local f=function_parts(n);f.params[#f.params+1]=f.body;return f.params
-   elseif kind=='call_statement' then return {ref(native,'call')}
-   elseif kind=='call' then local c=call(node,native);return append({c.callee},c.args)
-   elseif kind=='member' then return {ref(get(native,'table',true))}
-   elseif kind=='index' then return {ref(get(native,'table',true)),ref(get(native,'field',true))}
-   elseif kind=='paren' then local parts=named(native);check(#parts==1,'parenthesized expression');return {ref(parts[1])}
-   elseif kind=='unary' then return {ref(get(native,'operand',true))}
-   elseif kind=='binary' then return {ref(get(native,'left',true)),ref(get(native,'right',true))}
-   elseif kind=='table' then local out={};for _,f in ipairs(match(node,'table').fields) do out[#out+1]=f.node end;return out
-   elseif kind=='field' then
-    local key=get(native,'name');local value=ref(get(native,'value',true))
-    return key and tokens[n.first].value=='[' and {ref(key),value} or {value}
-   elseif kind=='return' then return match(node,'return').values
-   elseif kind=='do' then return {block(get(native,'body'),native,n.first+1,n.content_last)}
-   elseif kind=='while' then local at=marker(native,'do');return {ref(get(native,'condition',true)),block(get(native,'body'),native,at+1,n.content_last)}
-   elseif kind=='repeat' then local at=marker(native,'until');return {block(get(native,'body'),native,n.first+1,at),ref(get(native,'condition',true))}
-   elseif kind=='for_numeric' or kind=='for_generic' then local names,values,body=for_parts(n);append(names,values);names[#names+1]=body;return names
-   elseif kind=='if' then
-    local clauses,otherwise=if_parts(n);local out={}
-    for _,clause in ipairs(clauses) do out[#out+1]=clause.condition;out[#out+1]=clause.body end
-    if otherwise then out[#out+1]=otherwise end;return out
+  function s.Match(value,pattern)
+   check(patterns[pattern],'unknown pattern '..tostring(pattern));if value==nil then return nil end
+   local e=entry(value);local k=kind(value)
+   if pattern=='declaration' then if k=='local' or k=='local_function' then return declarations(value) end
+   elseif pattern=='assignment' then if k=='assign' then return {targets=refs(one(value,'variable_list')),values=refs(one(value,'expression_list'))} end
+   elseif pattern=='definition' then
+    local target,fn,method,self_visible,form
+    if k=='local_function' then target,fn,self_visible,form=node(get(value,'name',true),true),value,true,'local-function'
+    elseif k=='function_statement' then target,fn,form=node(get(value,'name',true)),value,'function-statement';method=entry(target).info.kind=='method_index_expression'
+    elseif k=='local' then local d=declarations(value);if #d.names==1 and #d.values==1 and is_function(d.values[1]) then target,fn,form=d.names[1],d.values[1],'local-initializer' end
+    elseif k=='assign' then local a=s.Match(value,'assignment');if #a.targets==1 and #a.values==1 and is_function(a.values[1]) then target,fn,form=a.targets[1],a.values[1],'assignment' end end
+    if fn then return {target=target,fn=fn,method=method==true,self_visible=self_visible==true,form=form} end
+   elseif pattern=='member' then if k=='member' then
+    local method=e.info.kind=='method_index_expression'
+    return {base=node(get(value,'table',true)),name=text(get(value,method and 'method' or 'field',true)),separator=method and ':' or '.'}
+   end
+   elseif pattern=='index' then if k=='index' then return {base=node(get(value,'table',true)),key=node(get(value,'field',true))} end
+   elseif pattern=='call' or pattern=='call_statement' then
+    if k=='call' and (pattern=='call' or e.statement) then local callee=node(get(value,'name',true));return {node=value,callee=callee,args=refs(get(value,'arguments',true)),method=entry(callee).info.kind=='method_index_expression'} end
+   elseif pattern=='literal' then if k=='literal' then
+    local raw=text(value);local category=e.info.kind
+    if category=='true' or category=='false' then category='boolean' end
+    if category=='string' and e.literal==nil then e.literal=decode(raw) end
+    return {category=category,value=e.literal,raw=raw}
+   end
+   elseif pattern=='unary' then if k=='unary' then
+    local operator
+    for _,child in ipairs(parts(value).parts) do local i=entry(child).info
+     if not i.named and not i.extra then operator=i.kind;break end
+    end
+    check(operator=='not' or operator=='#' or operator=='-','unsupported unary operator')
+    return {operator=operator,operand=node(get(value,'operand',true))}
+   end
+   elseif pattern=='table' then if k=='table' then
+    local out={}
+    for _,f in ipairs(named(value)) do
+     check(entry(f).info.kind=='field','table field required');node(f)
+     local key,label;local native_key=get(f,'name')
+     if native_key then if text(f):sub(1,1)=='[' then key=node(native_key) else label=text(native_key) end end
+     out[#out+1]={node=f,key=key,name=label,array=key==nil and label==nil,value=node(get(f,'value',true))}
+    end
+    return {fields=out}
+   end
+   elseif pattern=='function' then if is_function(value) then return (function_parts(value)) end
+   elseif pattern=='return' then if k=='return' then local p=named(value);check(#p<=1,'return shape');return {values=refs(p[1])} end end
+  end
+  function s.String(value) local v=s.Match(value,'literal');if v and v.category=='string' then return v.value end end
+  local function children(value)
+   local k=kind(value)
+   if k=='chunk' or k=='block' then return s.Statements(value)
+   elseif is_function(value) then
+    local f=function_parts(value);local out={}
+    if k=='local_function' then add(out,node(get(value,'name',true),true))
+    elseif k=='function_statement' then add(out,node(get(value,'name',true))) end
+    append(out,f.params);return add(out,f.body)
+   elseif k=='local' then local d=declarations(value);return append(d.names,d.values)
+   elseif k=='assign' then local a=s.Match(value,'assignment');return append(a.targets,a.values)
+   elseif k=='member' then return {s.Match(value,'member').base}
+   elseif k=='index' then local v=s.Match(value,'index');return {v.base,v.key}
+   elseif k=='call' then local v=s.Match(value,'call');return append({v.callee},v.args)
+   elseif k=='paren' then return refs(value)
+   elseif k=='unary' then return {s.Match(value,'unary').operand}
+   elseif k=='binary' then return {node(get(value,'left',true)),node(get(value,'right',true))}
+   elseif k=='table' then local out={};for _,f in ipairs(s.Match(value,'table').fields) do add(out,f.key);add(out,f.value) end;return out
+   elseif k=='return' then return s.Match(value,'return').values
+   elseif k=='do' then return add({},node(get(value,'body')))
+   elseif k=='while' then return add({node(get(value,'condition',true))},node(get(value,'body')))
+   elseif k=='repeat' then local out=add({},node(get(value,'body')));return add(out,node(get(value,'condition',true)))
+   elseif k=='for_numeric' or k=='for_generic' then
+    local c=get(value,'clause',true);local out
+    if k=='for_numeric' then out={node(get(c,'name',true),true),node(get(c,'start',true)),node(get(c,'end',true))};add(out,node(get(c,'step')))
+    else out=append(refs(one(c,'variable_list'),true),refs(one(c,'expression_list'))) end
+    return add(out,node(get(value,'body')))
+   elseif k=='if' then
+    local out={node(get(value,'condition',true))};add(out,node(get(value,'consequence')))
+    for _,alternative in ipairs(fields(value,'alternative')) do
+     if entry(alternative).info.kind=='elseif_statement' then add(out,node(get(alternative,'condition',true)));add(out,node(get(alternative,'consequence')))
+     else check(entry(alternative).info.kind=='else_statement','if alternative');add(out,node(get(alternative,'body'))) end
+    end
+    return out
    end
    return {}
   end
-  -- One full support pass, without constructing a second recursive tree.
-  local expression,core,prefix,validate_block,validate_statement,validate_function
-  local function budget(level) check(level<=160,'analysis nesting limit exceeded');return level end
-  local function check_bindings(values) for _,node in ipairs(values) do identifier(entry(node).native) end end
-  validate_function=function(node,level)
-   local f=function_parts(entry(node));check_bindings(f.params);validate_block(f.body,level,0,f.vararg)
-  end
-  prefix=function(node,level,loops,vararg)
-   local chain={};local n=entry(node)
-   while n.kind=='member' or n.kind=='index' or n.kind=='call' do
-    chain[#chain+1]=node
-    node=n.kind=='call' and match(node,'call').callee or ref(get(n.native,'table',true));n=entry(node)
+  function s.Walk(value,visit)
+   if value==nil then return end;check(type(visit)=='function','visitor required')
+   local function walk(current,parent,functions,calls)
+    if is_function(current) then functions=functions+1 end
+    if kind(current)=='call' then calls=calls+1 end
+    if visit(current,parent,functions,calls)==false then return end
+    for _,child in ipairs(children(current)) do walk(child,current,functions,calls) end
    end
-   if n.kind=='name' then identifier(n.native)
-   elseif n.kind=='paren' then expression(children(node)[1],level,loops,vararg)
-   else check(false,'unsupported prefix '..n.kind) end
-   for i=#chain,1,-1 do
-    node=chain[i];n=entry(node)
-    if n.kind=='member' then match(node,'member')
-    elseif n.kind=='index' then expression(match(node,'index').key,level,loops,vararg)
-    else
-     local args=get(n.native,'arguments',true);local open=span(args);local call_parts=match(node,'call')
-     if tokens[open].value=='(' then
-      local before=check(tokens[open-1],'call prefix')
-      check(not source:sub(before.pos+#before.value,tokens[open].pos-1):find('[\r\n]'),'ambiguous newline before call arguments')
-      for _,arg in ipairs(call_parts.args) do expression(arg,level,loops,vararg) end
-     else
-      check(#call_parts.args==1,'call sugar arguments');local arg=call_parts.args[1];local k=entry(arg).kind
-      check(k=='table' or (k=='literal' and entry(arg).info.kind=='string'),'call sugar type');core(arg,level,loops,vararg)
-     end
-    end
+   walk(value,nil,0,0)
+  end
+  function s.Names(value)
+   local out={};s.Walk(value,function(n) if s.Is(n,'name') then out[#out+1]=n end end);return out
+  end
+  function s.Path(value)
+   if s.Is(value,'name') then return s.Identifier(value) end
+   local m=s.Match(value,'member');if m then local p=s.Path(m.base);if p then return p..m.separator..m.name end end
+  end
+  function s.Root(value)
+   if s.Is(value,'name') then return s.Identifier(value) end
+   local m=s.Match(value,'member') or s.Match(value,'index');if m then return s.Root(m.base) end
+  end
+  function s.SingleAssignment(value)
+   local a=s.Match(value,'assignment');if a and #a.targets==1 and #a.values==1 then return a.targets[1],a.values[1] end
+  end
+  function s.FunctionRange(value)
+   check(is_function(value),'function required');local first,last
+   for _,child in ipairs(parts(value).parts) do
+    local info=entry(child).info
+    if info.kind=='function' then first=info.a+1 elseif info.kind=='end' then last=info.b end
    end
+   return check(first,'function keyword missing'),check(last,'function end missing')
   end
-  core=function(node,level,loops,vararg)
-   local n=entry(node);local kind=n.kind
-   if kind=='name' or kind=='paren' or kind=='member' or kind=='index' or kind=='call' then prefix(node,level,loops,vararg)
-   elseif kind=='literal' then match(node,'literal')
-   elseif kind=='vararg' then check(vararg and n.first==n.last and tokens[n.first].value=='...','vararg outside vararg function')
-   elseif kind=='function' then validate_function(node,level)
-   elseif kind=='table' then
-    check(tokens[n.first].value=='{' and tokens[n.last].value=='}','table delimiters')
-    for _,f in ipairs(match(node,'table').fields) do
-     if f.key then expression(f.key,level,loops,vararg) end
-     expression(f.value,level,loops,vararg)
-    end
-   elseif kind=='unary' then local u=match(node,'unary');check(unaries[u.operator],'unsupported unary operator');expression(u.operand,level,loops,vararg)
-   elseif kind=='binary' then
-    local chain={}
-    while entry(node).kind=='binary' do chain[#chain+1]=node;node=ref(get(entry(node).native,'left',true)) end
-    core(node,level,loops,vararg)
-    for i=#chain,1,-1 do
-     local e=entry(chain[i]);local left,right=ref(get(e.native,'left',true)),ref(get(e.native,'right',true))
-     local at=entry(right).first;check(binaries[tokens[at-1].value] and entry(left).last+2==at,'unsupported binary operator/boundary')
-     expression(right,level,loops,vararg)
-    end
-   else check(false,'unsupported expression '..kind) end
+  function s.FunctionSource(value,method)
+   check(is_function(value),'function required');local f,parameters=function_parts(value)
+   local open=entry(parameters).info.a+1;local _,last=s.FunctionRange(value);local tail=source:sub(open+1,last)
+   if method then tail='self'..((#f.params>0 or f.vararg) and ',' or '')..tail end
+   return 'function('..tail
   end
-  expression=function(node,level,loops,vararg) core(node,budget(level+1),loops,vararg) end
-  validate_statement=function(node,level,loops,vararg)
-   local n=entry(node);local kind=n.kind
-   if kind=='local' then
-    local d=declarations(n);check_bindings(d.names);for _,value in ipairs(d.values) do expression(value,level,loops,vararg) end
-   elseif kind=='local_function' or kind=='function_statement' then
-    local d=match(node,'definition')
-    if kind=='local_function' then identifier(entry(d.target).native) else prefix(d.target,level,loops,vararg) end
-    validate_function(d.fn,level)
-   elseif kind=='assign' then
-    local a=match(node,'assignment')
-    for _,target in ipairs(a.targets) do local k=entry(target).kind;check(k=='name' or k=='member' or k=='index','assignment target');prefix(target,level,loops,vararg) end
-    for _,value in ipairs(a.values) do expression(value,level,loops,vararg) end
-   elseif kind=='call_statement' then prefix(match(node,'call_statement').node,level,loops,vararg)
-   elseif kind=='return' then for _,value in ipairs(match(node,'return').values) do expression(value,level,loops,vararg) end;return true
-   elseif kind=='break' then check(loops>0,'break outside loop');return true
-   elseif kind=='do' then validate_block(children(node)[1],level,loops,vararg)
-   elseif kind=='while' then local c=children(node);expression(c[1],level,loops,vararg);validate_block(c[2],level,loops+1,vararg)
-   elseif kind=='repeat' then local c=children(node);validate_block(c[1],level,loops+1,vararg);expression(c[2],level,loops,vararg)
-   elseif kind=='for_numeric' or kind=='for_generic' then
-    local names,values,body=for_parts(n);check_bindings(names)
-    for _,value in ipairs(values) do expression(value,level,loops,vararg) end
-    validate_block(body,level,loops+1,vararg)
-   elseif kind=='if' then
-    local clauses,otherwise=if_parts(n)
-    for _,c in ipairs(clauses) do expression(c.condition,level,loops,vararg);validate_block(c.body,level,loops,vararg) end
-    if otherwise then validate_block(otherwise,level,loops,vararg) end
-   else check(false,'unsupported statement '..kind) end
-  end
-  validate_block=function(node,level,loops,vararg)
-   level=budget(level+1);local n=entry(node);local cursor,laststat,prior=n.first,false,nil
-   for _,child in ipairs(named(n.block_native)) do
-    local begin,finish,info=span(child)
-    if info.kind=='empty_statement' then check(begin==finish and prior and entry(prior).last==begin and cursor==begin+1,'independent/repeated semicolon')
-    else
-     check(not laststat and begin==cursor,'non-contiguous statement or statement after return/break')
-     local current=statement(child);check(entry(current).last<=n.last,'statement overlaps block delimiter')
-     laststat=validate_statement(current,level,loops,vararg);cursor=entry(current).last+1;prior=current
+  s.FunctionSignature=s.FunctionSource
+  local line_starts
+  function s.Line(value)
+   if not line_starts then
+    line_starts={1};local at=1
+    while true do local a=source:find('[\r\n]',at);if not a then break end
+     at=a+1;local c,n=source:sub(a,a),source:sub(at,at)
+     if c~=n and (n=='\r' or n=='\n') then at=at+1 end
+     line_starts[#line_starts+1]=at
     end
    end
-   check(cursor==n.last+1,'uncovered block tokens')
+   local first=s.Range(value);local low,high=1,#line_starts
+   while low<high do local mid=math.floor((low+high+1)/2);if line_starts[mid]<=first then low=mid else high=mid-1 end end
+   return low
   end
-  s.match,s.children,s.statements,s.function_parts=match,children,statements,function_parts
-  s.identifier=function(node) local n=entry(node);if n.kind=='name' or n.kind=='binding' then return identifier(n.native),n.kind=='binding' end end
-  local native=revision:Root();local info=revision:Info(native)
-  check(info.kind=='chunk' and not info.invalid and info.a>=0 and info.b<=#source,'invalid native whole tree')
-  s.root=block(native,native,1,#tokens+1,'chunk');validate_block(s.root,0,0,true)
-  return s.root
+  function s.RetainParser() return Native.Retain(session) end
+  -- Only the builder may discard an analysis that has not been returned to a reader.
+  function s.Discard()
+   revision:Close();if fresh then session:Close() end
+  end
+  s.root=record(revision:Root()).node;expected_root=s.root
+  check(entry(s.root).info.kind=='chunk','whole native tree required');kind(s.root)
+  return s
  end)
- if not ok then
-  if revision then revision:Close() end
-  if fresh_session and session then session:Close() end
-  return nil,tostring(result)
- end
- snapshots[s]=true;return result
+ if not ok then if revision then revision:Close() end;if fresh and session then session:Close() end;return nil,tostring(result),'unsupported' end
+ return result
 end
-function T.Match(node,pattern)
- if not patterns[pattern] then error('syntax: unknown match pattern '..tostring(pattern),2) end
- if node==nil then return nil end
- return owner(node).match(node,pattern)
-end
-function T.Is(node,role)
- if not roles[role] then error('syntax: unknown node role '..tostring(role),2) end
- if node==nil then return false end
- return owner(node).entries[node].kind==role
-end
-function T.Identifier(node) if node~=nil then return owner(node).identifier(node) end end
-function T.IsName(node,name) return T.Is(node,'name') and T.Identifier(node)==name or false end
-function T.String(node) local v=T.Match(node,'literal');if v and v.category=='string' then return v.value end end
-function T.Range(node) local n=owner(node).entries[node];return n.first,n.last,n.content_last end
-function T.ContentLast(node) local _,_,last=T.Range(node);return last end
-function T.Statements(node) return owner(node).statements(node) end
-function T.Walk(node,visit)
- if node==nil then return end
- assert(type(visit)=='function','syntax visitor required')
- local s=owner(node)
- local function walk(current,parent,functions,calls)
-  local kind=s.entries[current].kind
-  if kind=='function' then functions=functions+1 end
-  if kind=='call' then calls=calls+1 end
-  if visit(current,parent,functions,calls)==false then return end
-  for _,child in ipairs(s.children(current)) do walk(child,current,functions,calls) end
- end
- walk(node,nil,0,0)
-end
-function T.Names(node)
- local out={};T.Walk(node,function(n) if T.Is(n,'name') then out[#out+1]=n end end);return out
-end
-function T.Path(node)
- if T.Is(node,'name') then local name=T.Identifier(node);return name end
- local m=T.Match(node,'member');if m then local base=T.Path(m.base);if base then return base..m.separator..m.name end end
-end
-function T.Root(node)
- if T.Is(node,'name') then local name=T.Identifier(node);return name end
- local m=T.Match(node,'member') or T.Match(node,'index');if m then return T.Root(m.base) end
-end
-function T.SingleAssignment(node)
- local a=T.Match(node,'assignment');if a and #a.targets==1 and #a.values==1 then return a.targets[1],a.values[1] end
-end
-local function signature(s,first,last)
- local out={};for i=first,last do local t=s.tokens[i];out[#out+1]=t.kind..':'..#t.value..':'..t.value end
- return table.concat(out,'|')
-end
-function T.Text(node)
- local s=owner(node);local n=s.entries[node]
- if n.first>n.last then return '' end
- local first,last=s.tokens[n.first],s.tokens[n.last];return s.source:sub(first.pos,last.pos+#last.value-1)
-end
-function T.Display(node)
- local s=owner(node);local n=s.entries[node];local out={}
- for i=n.first,n.last do out[#out+1]=s.tokens[i].value end;return table.concat(out)
-end
-function T.Signature(node) local s=owner(node);local n=s.entries[node];return signature(s,n.first,n.content_last) end
-local function function_text(node,method,as_signature)
- local s=owner(node);local n=s.entries[node];check(n.kind=='function','function required')
- local f,open=s.function_parts(n)
- if as_signature then
-  local prefix='word:8:function|symbol:1:('
-  if method then prefix=prefix..'|word:4:self';if #f.params>0 or f.vararg then prefix=prefix..'|symbol:1:,' end end
-  return prefix..'|'..signature(s,open+1,n.last)
- end
- local last=s.tokens[n.last];local tail=s.source:sub(s.tokens[open].pos+1,last.pos+#last.value-1)
- if method then tail='self'..((#f.params>0 or f.vararg) and ',' or '')..tail end
- return 'function('..tail
-end
-function T.FunctionSource(node,method) return function_text(node,method,false) end
-function T.FunctionSignature(node,method) return function_text(node,method,true) end
-function T.RetainParser(root)
- local s=owner(root)
- check(s.root==root,'source root required')
- return Native.Retain(s.revision.session)
-end
-return T
+return M

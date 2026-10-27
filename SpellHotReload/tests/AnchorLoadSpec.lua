@@ -425,8 +425,8 @@ function M.run()
             calls = calls + 1
             local facts, reason = original_build(content, options)
             if facts then
-                falsy(facts.bindings.opaque, "opaque: real fixture is not opaque")
-                facts.bindings.opaque = true
+                truthy(facts.analysis.scope_complete, "opaque: real fixture has complete scope facts")
+                facts.analysis.scope_complete = false
                 truthy(Source.Validate(facts), "opaque: fault keeps source provenance")
             end
             return facts, reason
@@ -571,11 +571,11 @@ function M.run()
             truthy(entry.captured, "analysis: the map is harvested")
             eq(entry.source, observed, "analysis: exact built source retained")
             truthy(Source.Validate(entry.source), "analysis: retained source is complete")
-            eq(entry.source.bindings.analysis, entry.source.analysis,
-                "analysis: bindings retain exact AST provenance")
+            eq(Source.Declarations(entry.source)[1], entry.source.analysis.nodes[1],
+                "analysis: declarations share exact IR identity")
             eq(entry.source.content, FIXTURE, "analysis: exact loaded bytes retained")
-            eq(table.concat(entry.names, ","), table.concat(entry.source.bindings.names, ","),
-                "analysis: names come from the retained public bindings")
+            eq(table.concat(entry.names, ","), table.concat(Source.DeclaredNames(entry.source), ","),
+                "analysis: names come from retained Source facts")
         end
     end
 
