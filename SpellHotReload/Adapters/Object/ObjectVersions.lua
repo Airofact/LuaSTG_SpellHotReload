@@ -205,46 +205,62 @@ function M.Compare(group,initial,p)
     end
     return view
 end
-function M.Reads(state)
-    local result={read_set={},capture_reads={}}
+local function live(state)
     if not Anchor.Live(state.entry) then return fail('Object Anchor is no longer live',state) end
-    if #state.order==0 then return result end
-    if rawget(_G,'_editor_class')~=state.registry or rawget(_G,'all_class')~=state.all_class then
+    if #state.order>0 and (rawget(_G,'_editor_class')~=state.registry or rawget(_G,'all_class')~=state.all_class) then
         return fail('class registry or registration table identity changed',state)
     end
-    for _,key in ipairs(state.order) do
-        local u=state.by_key[key]
-        if rawget(state.registry,key)~=u.class or rawget(u.class,'base')~=u.base
-            or rawget(_G,u.base_name)~=u.base or getmetatable(u.class)~=nil
-            or rawget(u.class,'is_class')~=true or rawget(u.class,'default_function')~=u.default_function
-            or rawget(u.class,'.render')~=u.render_flag then return fail('live Object class identity/base/flags changed',state,key) end
-        local membership=0
-        for _,child in ipairs(u.descendants) do
-            if rawget(child.class,'base')~=child.base then return fail('known derived class provenance changed',state,key) end
+    return true
+end
+-- Locate checks one class. Only owner preparation builds the complete read set.
+local function check_unit(state,u,result)
+    local key=u.key
+    if rawget(state.registry,key)~=u.class or rawget(u.class,'base')~=u.base
+        or rawget(_G,u.base_name)~=u.base or getmetatable(u.class)~=nil
+        or rawget(u.class,'is_class')~=true or rawget(u.class,'default_function')~=u.default_function
+        or rawget(u.class,'.render')~=u.render_flag then return fail('live Object class identity/base/flags changed',state,key) end
+    local membership=0
+    for _,child in ipairs(u.descendants) do
+        if rawget(child.class,'base')~=child.base then return fail('known derived class provenance changed',state,key) end
+    end
+    for _,cls in next,state.all_class do if cls==u.class then membership=membership+1 end end
+    if membership~=1 then return fail('live class registration changed',state,key) end
+    for other,cls in next,state.registry do
+        if other~=key and cls==u.class then return fail('live registry alias was introduced',state,key) end
+    end
+    for slot,name in ipairs(D.Callbacks) do
+        local cb=u.callbacks[name]
+        -- Expected final slot comes from genuine named evidence, not zero.
+        -- This does not revise source history when InitAllClass runs later.
+        if rawget(u.class,name)~=cb.fn or rawget(u.class,slot)~=cb.fn then
+            return fail('class dispatch not finalized or published method/slot drifted',state,key)
         end
-        for _,cls in next,state.all_class do if cls==u.class then membership=membership+1 end end
-        if membership~=1 then return fail('live class registration changed',state,key) end
-        for other,cls in next,state.registry do
-            if other~=key and cls==u.class then return fail('live registry alias was introduced',state,key) end
-        end
-        for slot,name in ipairs(D.Callbacks) do
-            local cb=u.callbacks[name]
-            -- Expected final slot comes from genuine named evidence, not zero.
-            -- This does not revise source history when InitAllClass runs later.
-            if rawget(u.class,name)~=cb.fn or rawget(u.class,slot)~=cb.fn then
-                return fail('class dispatch not finalized or published method/slot drifted',state,key)
-            end
-            if cb.owned then
+        if cb.owned then
+            local proof,err=shared(cb.fn,state.entry,cb.dependencies)
+            if not proof then return fail(err,state,key) end
+            if result then
                 result.read_set[#result.read_set+1]={owner=state.owner,unit_ref=u.unit_ref,target=u.class,key=name,value=cb.fn}
                 result.read_set[#result.read_set+1]={owner=state.owner,unit_ref=u.unit_ref,target=u.class,key=slot,value=cb.fn}
-                local proof,err=shared(cb.fn,state.entry,cb.dependencies)
-                if not proof then return fail(err,state,key) end
                 for _,join in ipairs(proof) do
                     local r=copy(join);r.owner=state.owner;r.unit_ref=u.unit_ref
                     result.capture_reads[#result.capture_reads+1]=r
                 end
             end
         end
+    end
+    return true
+end
+function M.CheckUnit(state,key)
+    local ok,err=live(state);if not ok then return nil,err end
+    local unit=state.by_key[key]
+    if not unit then return fail('original Object class required',state,key) end
+    return check_unit(state,unit)
+end
+function M.Reads(state)
+    local ok,err=live(state);if not ok then return nil,err end
+    local result={read_set={},capture_reads={}}
+    for _,key in ipairs(state.order) do
+        ok,err=check_unit(state,state.by_key[key],result);if not ok then return nil,err end
     end
     return result
 end

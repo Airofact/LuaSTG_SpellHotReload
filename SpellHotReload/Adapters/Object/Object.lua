@@ -101,8 +101,9 @@ local function scope(context)
 end
 function M.Locate(unit,context)
     if not scope(context) or context.scope~='unit' or context.phase~='locate'
-        or not plain(unit) or context.view.items[unit.unit_ref]~=unit.private_ref then return fail('original Object unit scope required') end
-    local reads,err=V.Reads(context.view.base);if not reads then return nil,err end
+        or not plain(unit) or not plain(unit.private_ref)
+        or context.view.items[unit.unit_ref]~=unit.private_ref then return fail('original Object unit scope required') end
+    local ok,err=V.CheckUnit(context.view.base,unit.private_ref.key);if not ok then return nil,err end
     return {operation=context.operation,view=context.view,unit=unit,item=unit.private_ref}
 end
 local function resolve(handle,unit,context)

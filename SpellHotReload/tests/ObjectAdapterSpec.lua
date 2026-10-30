@@ -9,6 +9,7 @@ function M.run()
     package.loaded[modules[3]]=nil;package.loaded[modules[4]]=nil
     local Plugin=require('SpellHotReload.Runtime.Plugin')
     local Object=require('SpellHotReload.Adapters.Object.Object')
+    local Versions=require('SpellHotReload.Adapters.Object.ObjectVersions')
     local Observe=require('SpellHotReload.Adapters.Object.ObjectLoad')
     local Load=require('SpellHotReload.Load.AnchorLoad')
     local LoadHook=require('SpellHotReload.Load.LoadHook')
@@ -143,6 +144,40 @@ function M.run()
         eq(f.capture.snapshot,base,'unfinalized slot does not advance history')
         eq(f.cls[3],0,'zero slot is not overwritten to hide initialization')
         eq(pending(f),true,'candidate remains')
+    end)
+    case('unit liveness is scoped while owner reads remain complete',function()
+        local initial=source.."\n_editor_class['P']=Class(_object)\n_editor_class['P'].frame=function(self) self.p=helper(7) end"
+        local f=fixture(initial);must(f.capture,f.refusal)
+        local state=group(f).state;local other=_editor_class.P
+        eq(Versions.CheckUnit(state,'O'),true,'selected class initially live')
+        eq(Versions.CheckUnit(state,'P'),true,'second class initially live')
+        other[3]=function() end
+        eq(Versions.CheckUnit(state,'O'),true,'unrelated drift does not widen unit check')
+        eq(Versions.CheckUnit(state,'P'),nil,'selected dispatch drift is refused')
+        eq(Versions.Reads(state),nil,'complete owner read set still rejects other drift')
+        other[3]=other.frame
+        local reads=must(Versions.Reads(state))
+        eq(#reads.read_set,14,'six O methods and one P method retain both slots')
+        eq(Versions.CheckUnit(state,'missing'),nil,'unknown class cannot be located')
+    end)
+    case('unselected class drift still blocks complete owner preparation',function()
+        local initial=source.."\n_editor_class['P']=Class(_object)\n_editor_class['P'].frame=function(self) self.p=helper(7) end"
+        local f=fixture(initial);must(f.capture,f.refusal)
+        local base=f.capture.snapshot;local old=Anchor.Get(f.entry,'helper')
+        _editor_class.P[3]=function() end
+        local roots=Object.Roots
+        Object.Roots=function(view)
+            local selected={};local ref=view.base.by_key.O.unit_ref
+            for _,root in ipairs(roots(view)) do if root.unit_ref==ref then selected[#selected+1]=root end end
+            return selected
+        end
+        local ok,result=pcall(apply,f,initial:gsub('state%+n','state+n+10'))
+        Object.Roots=roots;must(ok,result)
+        assert(result:find('class dispatch not finalized or published method/slot drifted',1,true),result)
+        eq(f.commits,0,'owner preparation catches unselected drift before transaction')
+        eq(f.capture.snapshot,base,'drift does not advance common snapshot')
+        eq(Anchor.Get(f.entry,'helper'),old,'Local cannot partially publish')
+        eq(pending(f),true,'refused candidate remains available')
     end)
     case('Object and Local publish once with paired slots and original cells',function()
         local f=fixture();local cls=f.cls;local old={};cls[1](old)
