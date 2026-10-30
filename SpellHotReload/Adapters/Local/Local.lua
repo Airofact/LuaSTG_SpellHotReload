@@ -56,7 +56,7 @@ function M.Reconcile(previous,candidate,context)
         return fail("reconcile","ownership","Local full-source match required",context)
     end
     local capture=candidate.common.capture
-    local actual,initial=Files.Owner(capture,M)
+    local actual,initial=Files.GetAdapterRecords(capture,M)
     local owned=actual and previous.owner==M and previous.state==actual.state and previous.records==actual.records
     local view={kind=VIEW,version=1,source=file_context.source,projection=file_context.projection,
         base_group=owned and actual or nil,items={},by_name={},units={},choices={}}
@@ -116,7 +116,7 @@ local function scope(context)
     if not plain(context) or not plain(context.operation) or not plain(context.view)
         or not plain(context.common) or context.view.kind~=VIEW or context.view.version~=1 or not plain(context.view.base_group)
         or context.view.source~=context.operation.source or context.common.source~=context.view.source then return false end
-    local group=Files.Owner(context.operation.capture,M)
+    local group=Files.GetAdapterRecords(context.operation.capture,M)
     return group==context.view.base_group and group==context.base_group
         and context.operation.base_snapshot==context.operation.capture.snapshot
 end
@@ -207,7 +207,7 @@ local function owner_handle(handle,context)
 end
 local function guard(fragment,capture,live)
     local view=fragment.local_view
-    local group=Files.Owner(capture,M)
+    local group=Files.GetAdapterRecords(capture,M)
     if not plain(view) or group~=fragment.base_group or group~=view.base_group
         or fragment.owner~=M or fragment.operation.capture~=capture or fragment.operation.base_snapshot~=capture.snapshot
         or not plain(live) or live.entry~=view.base.entry or live.session_id~=view.base.session_id then

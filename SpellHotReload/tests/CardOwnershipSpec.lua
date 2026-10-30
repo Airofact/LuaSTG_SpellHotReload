@@ -81,7 +81,7 @@ function M.run(opts)
         debug.getupvalue,debug.setupvalue,debug.upvaluejoin,debug.upvalueid=get,set,join,id
         rawset(_G,"jit",saved_jit)
     end
-    local function group(c,owner) return must(Files.Owner(c,owner)) end
+    local function group(c,owner) return must(Files.GetAdapterRecords(c,owner)) end
     local function fragment(p,owner)
         for _,r in ipairs(p.entries) do if r.owner==owner then return r.fragment end end
         error("missing real prepared owner")
@@ -178,7 +178,7 @@ function M.run(opts)
         eq(mutations,0,"first-load metadata policy pure")
         local p,capture,live=real_fixture()
         local base=group(capture,Card).state
-        local evidence=select(2,Files.Owner(capture,Card)).evidence
+        local evidence=select(2,Files.GetAdapterRecords(capture,Card)).evidence
         local location=fragment(p,Card).card_runtime.file_location
         eq(Target.CheckFileDiscovery(location,capture,live),true,"all captured classes and placeholders checked")
         local cases={
@@ -197,7 +197,7 @@ function M.run(opts)
         }
         for _,case in ipairs(cases) do
             p,capture,live=real_fixture();base=group(capture,Card).state
-            evidence=select(2,Files.Owner(capture,Card)).evidence
+            evidence=select(2,Files.GetAdapterRecords(capture,Card)).evidence
             location=fragment(p,Card).card_runtime.file_location
             case[2](capture,live,base,evidence);forbid()
             local v,e=Target.CheckFileDiscovery(location,capture,live)

@@ -43,7 +43,7 @@ local function session(capture,live)
         return fail("unsupported","common first-load capture and fresh live required",file)
     end
     local snapshot,entry=capture.snapshot,live.entry
-    local group,initial=Files.Owner(capture,Card)
+    local group,initial=Files.GetAdapterRecords(capture,Card)
     if not group or group.state.kind~="SpellHotReload.CardVersions" or group.state.version~=2
         or not plain(initial.evidence) then return fail("ownership","original Card contribution required",file) end
     if live.released or live.poisoned or live.capture~=capture or live.snapshot~=snapshot
@@ -55,7 +55,7 @@ local function session(capture,live)
     return {base=group.state,group=group,initial=initial.evidence,snapshot=snapshot,entry=entry,file=snapshot.file}
 end
 local function ownership(base,capture,live,file)
-    local group,initial=require("SpellHotReload.Pipeline.FileVersions").Owner(capture,Card)
+    local group,initial=require("SpellHotReload.Pipeline.FileVersions").GetAdapterRecords(capture,Card)
     local evidence=initial and initial.evidence
     if not group or group.state~=base or not plain(evidence) or dense(base.order)==nil or not plain(base.units) then
         return fail("ownership","actual Card contribution required",file)
@@ -542,7 +542,7 @@ local function freeze_restart(target,capture)
         mode=target.mode,names=target.names,include_previous=target.include_previous}
     local ok,err=check(target,binding,capture,live)
     if not ok then return nil,err end
-    local group,initial=require("SpellHotReload.Pipeline.FileVersions").Owner(capture,Card)
+    local group,initial=require("SpellHotReload.Pipeline.FileVersions").GetAdapterRecords(capture,Card)
     local run={kind="versioned-card-restart",file=target.file,session_id=target.session_id,
         entry=target.entry,anchor=target.entry.anchor,capture=capture,classes=target.classes,
         class_key=target.class_key,class=target.class,list=target.list,card=target.card,
@@ -623,7 +623,7 @@ local function bind_restart(run,receipt,capture)
         if old.owner==Card then card_delta=delta end
     end
     if any~=receipt.changed then return fail("ownership","receipt change flag disagrees with owners",run.file) end
-    local group,initial=Files.Owner(capture,Card)
+    local group,initial=Files.GetAdapterRecords(capture,Card)
     local unit=group and rawget(group.state.units,run.key)
     if initial~=proof.initial or not plain(unit) or unit.unit_ref~=proof.unit_ref
         or unit.card~=run.card or unit.key~=run.key or unit.class_key~=run.class_key or unit.slot~=run.slot
@@ -655,7 +655,7 @@ local function check_restart(run,live)
     end
     -- Missing may retire the Plugin versions lookup; the committed run retains
     -- its original capture. Do not use normal session(), which rejects Missing.
-    local group,initial=Files.Owner(capture,Card)
+    local group,initial=Files.GetAdapterRecords(capture,Card)
     if group~=proof.committed_group or initial~=proof.initial
         or rawget(group.state.units,run.key)~=proof.committed_unit then
         return fail("stale","committed Card publication changed; restart game",run.file)

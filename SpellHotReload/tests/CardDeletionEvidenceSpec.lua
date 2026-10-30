@@ -46,7 +46,7 @@ function M.run()
         entry.file="Delete_Boss.lua";serial=serial+1
         local f=must(Planning.Capture(entry,"deletion:evidence:"..serial,_G._editor_class,defaults))
         local capture=f.capture;local base=capture.snapshot
-        local group,initial=Files.Owner(capture,Card);must(group,initial);initial=initial.evidence
+        local group,initial=Files.GetAdapterRecords(capture,Card);must(group,initial);initial=initial.evidence
         local state=group.state;local key=state.order[1]
         local function live()
             return {capture=capture,snapshot=capture.snapshot,entry=entry,session_id=f.session,

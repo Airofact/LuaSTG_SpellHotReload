@@ -124,10 +124,21 @@ function M.run()
         debug.setupvalue=function() writes=writes+1;error("premature write") end
         rawset(_G,"jit",{flush=function() flushes=flushes+1;error("premature flush") end})
         local f=must(Planning.Capture(entry,"session",classes,defaults));local result=f.capture
-        local snapshot=result.snapshot;local ls=must(Files.Owner(result,Local)).state
-        local cg,initial=Files.Owner(result,Card);must(cg,initial);local cs=cg.state
+        local snapshot=result.snapshot;local ls=must(Files.GetAdapterRecords(result,Local)).state
+        local cg,initial=Files.GetAdapterRecords(result,Card);must(cg,initial);local cs=cg.state
         eq(Files.Kind,"SpellHotReload.FileCapture","public capture kind")
         eq(Files.Version,1,"public capture protocol");eq(Files.Validate(result),true,"genuine complete capture")
+        local local_group,local_initial=Files.GetAdapterRecords(result,Local)
+        local unrelated=cg.records[1];local original_version=unrelated.definition_version
+        unrelated.definition_version=0
+        local current,first=Files.GetAdapterRecords(result,Local)
+        eq(current,local_group,"lookup returns selected adapter despite unrelated record drift")
+        eq(first,local_initial,"lookup retains selected first-load evidence")
+        eq(Files.Validate(result),false,"explicit full validation still rejects unrelated record drift")
+        unrelated.definition_version=original_version
+        eq(Files.Validate(result),true,"restored complete snapshot is valid")
+        eq(Files.GetAdapterRecords(result,{}),nil,"unknown adapter has no records")
+        eq(Files.GetAdapterRecords(nil,Local),nil,"missing capture is refused")
         eq(result.kind,Files.Kind,"actual capture kind");eq(result.version,Files.Version,"actual capture version")
         eq(initial.evidence.classes,classes,"registry identity retained")
         eq(snapshot.entry,entry,"same entry");eq(snapshot.anchor,entry.anchor,"same unique anchor")
@@ -263,7 +274,7 @@ function M.run()
         eq(returned.n,0,"private trailer remains hidden");eq(engine.original_calls,0,"supported load not rerun")
         eq(_versions_runs,1,"hook body once")
         for i=1,3 do eq(calls[i],1,"synchronous complete contribution "..i) end
-        local loaded=must(p:GetVersions("Seed_Boss.lua"));local loaded_local=must(Files.Owner(loaded,Local)).state
+        local loaded=must(p:GetVersions("Seed_Boss.lua"));local loaded_local=must(Files.GetAdapterRecords(loaded,Local)).state
         check(loaded~=result and loaded.snapshot~=snapshot,"independent loads have separate common captures")
         check(loaded_local.by_name.helper.fn~=ls.by_name.helper.fn,"independent load owns a different helper function")
         eq(result.snapshot,snapshot,"production load never replaces earlier capture")
@@ -338,7 +349,7 @@ function M.run()
         eq(disabled:GetVersions("Seed_Boss.lua"),nil,"capability-refused load not upgraded");must(disabled:Release())
         -- Preflight refusal must preserve actual capture and never prepare/commit.
         local plugin=new_plugin();engine_for(SOURCE,plugin).DoFile("Seed_Boss.lua")
-        local captured=must(plugin:GetVersions("Seed_Boss.lua"));local state=must(Files.Owner(captured,Card)).state
+        local captured=must(plugin:GetVersions("Seed_Boss.lua"));local state=must(Files.GetAdapterRecords(captured,Card)).state
         plugin._activated,plugin._supported,plugin._sandbox_ok=true,true,true
         local store=plugin:GetStore();local ticket=store:BeginCandidate("Seed_Boss.lua",0,"spec")
         must(store:RecordFirstRead("Seed_Boss.lua",ticket.generation,SOURCE,1))

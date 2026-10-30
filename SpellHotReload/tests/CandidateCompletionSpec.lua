@@ -86,8 +86,8 @@ function M.run()
         "table.insert(_editor_class['K'].cards,_tmp_sc)"},"\n")
     local EDIT=SOURCE:gsub("state%+n end","state+n+10 end"):gsub("helper%(n%)%+100","helper(n)+200")
     local function candidate(f,bytes) f.disk=bytes;return stable(f.p:GetStore(),bytes) end
-    local function card_group(f) return must(Files.Owner(f.capture,Card)) end
-    local function local_group(f) return must(Files.Owner(f.capture,Local)) end
+    local function card_group(f) return must(Files.GetAdapterRecords(f.capture,Card)) end
+    local function local_group(f) return must(Files.GetAdapterRecords(f.capture,Local)) end
     local function versions(f,helper_version,a_version,b_version,label)
         local local_state=local_group(f).state
         local card_state=card_group(f).state

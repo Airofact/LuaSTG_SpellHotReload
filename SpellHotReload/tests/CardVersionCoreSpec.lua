@@ -75,7 +75,7 @@ function M.run()
     end
     local function view(f,content,deleted)
         local s=must(Source.Build(content));local m=match(s);local desc=m.units[1].context.layout[1]
-        local group,initial=Files.Owner(f.capture,Card);local rows={}
+        local group,initial=Files.GetAdapterRecords(f.capture,Card);local rows={}
         if deleted then
             local previous
             for _,record in ipairs(group.records) do if record.key==f.key..":"..deleted then previous=record end end
@@ -205,7 +205,7 @@ function M.run()
     end)
     case("helper-only real common transaction and derived observation",function()
         local f=fixture();local content=source:gsub("counter%+n","counter+n+10")
-        local v,s=view(f,content);local lg,li=Files.Owner(f.capture,Local)
+        local v,s=view(f,content);local lg,li=Files.GetAdapterRecords(f.capture,Local)
         local lv=must(LV.Compare(lg,li.evidence,must(Definitions.Match(s))))
         must(LV.Resolve(lv,"helper"));local lp=must(LV.Prepare(lv,{"counter","helper"}))
         local cp=must(Cards.Prepare(v,{},{}));local old_card=v.base_group
@@ -224,7 +224,7 @@ function M.run()
         must(tx:Release());eq(ran,true,"one real common transaction returned normally");must(receipt,err)
         eq(receipt.changed,true,"helper-only transaction has real changed receipt")
         eq(f.capture.snapshot.revision,1,"common file revision advances once")
-        local card_group=must(Files.Owner(f.capture,Card))
+        local card_group=must(Files.GetAdapterRecords(f.capture,Card))
         eq(card_group,old_card,"helper-only publication retains exact Card group")
         eq(card_group.state.units[f.key].definition_version,1,"Card source version stays v1")
         eq(card_group.state.units[f.key].callbacks.init.definition_version,1,"callback source version stays v1")

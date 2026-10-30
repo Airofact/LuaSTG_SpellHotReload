@@ -243,7 +243,7 @@ function Card.DefinesCurrent(discovery,current,capture)
     -- Candidate keys route new definitions; captured ownership keeps old-only
     -- classes visible to reconciliation. Neither route is live Locate permission.
     if discovery.snapshot.by_key["card:"..current.class_key] then return true end
-    local group=Files.Owner(capture,Card)
+    local group=Files.GetAdapterRecords(capture,Card)
     if group then
         for _,key in ipairs(group.state.order) do
             local unit=group.state.units[key]
@@ -277,7 +277,7 @@ local function scope(context)
     if not plain(context) or not plain(context.common) or not plain(context.operation) or not plain(context.view)
         or context.view.kind~=VIEW or context.view.version~=1 or context.view.source~=context.operation.source
         or context.common.source~=context.view.source or context.view.discovery.common~=context.common then return false end
-    local group=Files.Owner(context.operation.capture,Card)
+    local group=Files.GetAdapterRecords(context.operation.capture,Card)
     return group==context.view.base_group and group==context.base_group
         and context.operation.base_snapshot==context.operation.capture.snapshot
 end
@@ -375,7 +375,7 @@ local function same(a,b)
 end
 local function guard(fragment,capture,live)
     local view,runtime,plan=fragment.card_view,fragment.card_runtime,fragment.card_plan
-    local group=Files.Owner(capture,Card);local op=fragment.operation
+    local group=Files.GetAdapterRecords(capture,Card);local op=fragment.operation
     if not plain(view) or not plain(runtime) or not plain(plan) or group~=view.base_group or group~=fragment.base_group
         or plan.view~=runtime.version_view or view.runtime~=runtime or fragment.owner~=Card
         or not plain(op) or op.capture~=capture or op.base_snapshot~=capture.snapshot or op.source~=view.source

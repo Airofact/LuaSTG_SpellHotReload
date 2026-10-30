@@ -191,7 +191,7 @@ function M.run(opts)
         location=must(Target.LocateDiscovery(t,renamed,b,c,l))
         eq(location.candidate_name,"Renamed","candidate name kept separate")
         eq(t.name,"B","live name not published")
-        local group,initial=Files.Owner(c,Card);must(group,initial)
+        local group,initial=Files.GetAdapterRecords(c,Card);must(group,initial)
         local rows=must(Evidence.Index(c,renamed))
         local file_location=must(Target.LocateFileDiscovery(renamed,c,l))
         local match

@@ -146,7 +146,7 @@ function M.run()
         eq(base.by_name.alias.binding_kind,"state","alias not a function definition")
         eq(base.by_name.counter.binding_kind,"state","scalar not a function definition")
         eq(base.by_name.helper.definition_version,1,"initial per-definition version")
-        local local_initial=select(2,Files.Owner(f.capture,Local))
+        local local_initial=select(2,Files.GetAdapterRecords(f.capture,Local))
         for _,cell in ipairs(local_initial.authority.cells) do
             check(cell.name~="alias" and cell.name~="counter" and cell.name~="config","no setter authority for state or alias")
         end

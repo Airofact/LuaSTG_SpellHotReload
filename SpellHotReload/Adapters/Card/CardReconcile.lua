@@ -210,7 +210,7 @@ function M.Run(previous,candidate,context)
     local Files=require("SpellHotReload.Pipeline.FileVersions")
     local source=candidate.common.source
     if not plain(context.adapter) or context.adapter.source~=source or not plain(context.adapter.units) then return nil end
-    local group,initial=Files.Owner(candidate.common.capture,Card)
+    local group,initial=Files.GetAdapterRecords(candidate.common.capture,Card)
     local owned=group and previous.owner==Card and previous.state==group.state and previous.records==group.records
     if not owned and (#previous.records~=0 or #previous.units~=0) then return nil end
     local rows=rows_for(previous,candidate,context)
@@ -259,7 +259,7 @@ function M.Index(capture,snapshot)
     local Card=require("SpellHotReload.Adapters.Card.Card")
     local Files=require("SpellHotReload.Pipeline.FileVersions")
     local Reconciliation=require("SpellHotReload.Pipeline.Reconciliation")
-    local group,initial=Files.Owner(capture,Card)
+    local group,initial=Files.GetAdapterRecords(capture,Card)
     local function fail(reason) return nil,{phase="reconcile",code="stale",message=reason,file=capture and capture.entry and capture.entry.file} end
     local report=plain(snapshot) and snapshot.reconciliation
     local publication=plain(report) and report.publication
@@ -315,7 +315,7 @@ end
 -- No new publication, default identity or old version may enter through absence.
 function M.CheckPublications(plan,capture,live,discovery)
     local state,rows,checked_classes,card_tables=plan.view.base,nil,{},nil
-    local group,initial=require("SpellHotReload.Pipeline.FileVersions").Owner(capture,state.owner)
+    local group,initial=require("SpellHotReload.Pipeline.FileVersions").GetAdapterRecords(capture,state.owner)
     if group~=plan.view.base_group or not initial then return nil,{phase="commit",code="stale",message="Card actual group changed"} end
     initial=initial.evidence
     for _,pub in ipairs(plan.publications) do

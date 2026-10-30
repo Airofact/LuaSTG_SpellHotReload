@@ -109,7 +109,7 @@ function M.run()
         return f.p:ApplyFileFromUI(file)
     end
     local function count(f) return Anchor.Get(f.entry,'init_count') end
-    local function group(f) return must(Files.Owner(f.capture,Object)) end
+    local function group(f) return must(Files.GetAdapterRecords(f.capture,Object)) end
     local function pending(f)
         return f.p:GetStore():GetCandidate(file)~=nil
     end

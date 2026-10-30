@@ -363,7 +363,7 @@ function M.run()
                 "function _tmp_sc:init(n) return helper(n)+10 end"))
             local calls=0;Restart.Handoff=function() calls=calls+1;error("defer practice") end
             has(f.p:ApplyFromUI(),"restart failed:","real changed Card is committed before failed request")
-            local run=must(f.p._pending_restart_run);local group=must(Files.Owner(f.capture,Card))
+            local run=must(f.p._pending_restart_run);local group=must(Files.GetAdapterRecords(f.capture,Card))
             eq(group==base.owners[2],false,"actual Card group advances")
             eq(group.state.units[run.key].definition_version,2,"actual Card unit version advances once")
             eq(run.receipt.owner_deltas[2].changed,true,"real Card delta is changed")
@@ -415,7 +415,7 @@ function M.run()
             local ran,receipt,err=f.p._commit:Run(function(token) return f.p:_CommitVersioned(token,prepared) end)
             must(ran,receipt);must(receipt,err)
             local function copy(v) local out={};for k,x in pairs(v) do out[k]=x end;return out end
-            local group=must(Files.Owner(f.capture,Card));local unit=group.state.units[run.key]
+            local group=must(Files.GetAdapterRecords(f.capture,Card));local unit=group.state.units[run.key]
             local foreign=group.state.units["card:1:Q:1"].unit_ref
             local wrong=copy(receipt);wrong.owner_deltas={receipt.owner_deltas[1],copy(receipt.owner_deltas[2])}
             wrong.owner_deltas[2].unit_refs={foreign}

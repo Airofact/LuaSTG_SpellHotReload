@@ -16,7 +16,7 @@ function M.run(opts)
     local Tx=require("SpellHotReload.Apply.FileCommit")
     local controllers={}
     local function state(capture)
-        local group,err=Files.Owner(capture,Card);assert(group,type(err)=="table" and err.message or err)
+        local group,err=Files.GetAdapterRecords(capture,Card);assert(group,type(err)=="table" and err.message or err)
         return group.state
     end
     local passed,failed,failures=0,0,{}
@@ -107,7 +107,7 @@ function M.run(opts)
         eq(target.key,"card:1:K:3","duplicate name selected by actual identity")
         eq(target.card,b.card,"live card");eq(target.slot,3,"live restart slot")
         eq(target.unit,state(c).units[target.key],"actual Card private unit")
-        eq(target.card_group,must(Files.Owner(c,Card)),"actual Card group")
+        eq(target.card_group,must(Files.GetAdapterRecords(c,Card)),"actual Card group")
         eq(target.capture,c,"common first-load capture")
         eq(target.snapshot,c.snapshot,"version identity");eq(target.base_revision,0,"revision copied")
         eq(target.class,l.classes.K,"class identity");eq(target.list,l.classes.K.cards,"list identity")
@@ -282,7 +282,7 @@ function M.run(opts)
         l.snapshot=c.snapshot
         reject(function() return Target.Check(target,b,c,l) end,"stale","old target after publish")
         local new=must(Target.Resolve(b,c,l));eq(new.base_revision,1,"new target uses actual revision")
-        eq(new.card_group,must(Files.Owner(c,Card)),"new target owns actual Card group")
+        eq(new.card_group,must(Files.GetAdapterRecords(c,Card)),"new target owns actual Card group")
         eq(new.unit,state(c).units[new.key],"new target owns actual private version")
         eq(new.card,b.card,"same live card after publication")
         eq(Target.Check(new,b,c,l),true,"new target recheck valid")

@@ -79,13 +79,13 @@ function M.run()
         error("original owner missing from actual snapshot")
     end
     local function local_state(f,snapshot)
-        return snapshot and state_at(snapshot,Local) or must(Files.Owner(f.capture,Local)).state
+        return snapshot and state_at(snapshot,Local) or must(Files.GetAdapterRecords(f.capture,Local)).state
     end
     local function card_state(f,snapshot)
-        return snapshot and state_at(snapshot,Card) or must(Files.Owner(f.capture,Card)).state
+        return snapshot and state_at(snapshot,Card) or must(Files.GetAdapterRecords(f.capture,Card)).state
     end
     local function observed(f,key,name)
-        local values=must(Versions.Observations(f.capture.snapshot,must(Files.Owner(f.capture,Card)),key))
+        local values=must(Versions.Observations(f.capture.snapshot,must(Files.GetAdapterRecords(f.capture,Card)),key))
         for _,value in ipairs(values) do if value.name==name then return value.version end end
     end
     local function pending(f,kind,key,label)

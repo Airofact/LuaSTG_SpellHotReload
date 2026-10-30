@@ -131,13 +131,13 @@ function M.run()
         local before=c.snapshot
         local init=l.classes.K.cards[2].init
         local helper=must(Anchor.Get(l.entry,"helper"))
-        local local_base=must(Files.Owner(c,Local))
+        local local_base=must(Files.GetAdapterRecords(c,Local))
         forbid()
         eq(Check.Check(s,c,l),true,"only reads despite mutator traps")
         eq(c.snapshot,before,"no publication");eq(c.snapshot.revision,0,"actual common revision unchanged")
         eq(l.classes.K.cards[2].init,init,"old callback retained")
         eq(Anchor.Get(l.entry,"helper"),helper,"old helper retained")
-        eq(Files.Owner(c,Local),local_base,"actual Local group retained")
+        eq(Files.GetAdapterRecords(c,Local),local_base,"actual Local group retained")
         -- Mutate through the real old setter, not through the reload plan.
         must(Anchor.Get(l.entry,"setter"))(42)
         eq(Anchor.Get(l.entry,"state"),42,"ordinary scalar evolved")
@@ -255,7 +255,7 @@ function M.run()
         p,c,l=fixture();setmetatable(p.operation,mt);forbid()
         v,e=seal(p);refusal(v,e,"commit","ownership","operation metatable","operation and fragments required")
         bad(Check.Check,function(s,c,l)
-            local evidence=select(2,Files.Owner(c,Card)).evidence
+            local evidence=select(2,Files.GetAdapterRecords(c,Card)).evidence
             setmetatable(evidence.ownership[1].list,mt)
             l.classes.K.cards=setmetatable({},mt)
         end,"locate","ownership","hostile lists never invoke equality")

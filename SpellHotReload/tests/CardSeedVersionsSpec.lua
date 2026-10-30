@@ -78,7 +78,7 @@ function M.run()
     end
     local function check_capture(capture,entry,classes,defaults,session,label)
         eq(Files.Validate(capture),true,label.." genuine common capture")
-        local lp=must(Files.Owner(capture,Local));local cp,initial=Files.Owner(capture,Card);must(cp,initial)
+        local lp=must(Files.GetAdapterRecords(capture,Local));local cp,initial=Files.GetAdapterRecords(capture,Card);must(cp,initial)
         local state=cp.state;local ownership=initial.evidence.ownership
         eq(capture.snapshot.entry,entry,label.." original entry");eq(capture.snapshot.anchor,entry.anchor,label.." original anchor")
         eq(capture.snapshot.session_id,session,label.." common session");eq(capture.snapshot.file,entry.file,label.." physical file")
@@ -153,8 +153,8 @@ function M.run()
         must(adopted,why);local captured=must(p:GetVersions(e2.file))
         check_capture(captured,e2,c2,d2,p._session_id,"production first load")
         test(captured~=direct and captured.snapshot~=direct.snapshot,"independent first loads have no module cache")
-        eq(select(2,Files.Owner(direct,Card)).evidence.classes,classes,"earlier registry not replaced")
-        eq(must(Files.Owner(direct,Card)).state.defaults.after,saved_default,"earlier saved defaults not replaced")
+        eq(select(2,Files.GetAdapterRecords(direct,Card)).evidence.classes,classes,"earlier registry not replaced")
+        eq(must(Files.GetAdapterRecords(direct,Card)).state.defaults.after,saved_default,"earlier saved defaults not replaced")
         local attempts=0
         Local.Capture=function() attempts=attempts+1;error("duplicate production capture") end
         local repeat_ok,repeat_err=pcall(function() must(p:AdoptLoad(e2.file,e2));p:_CaptureVersions(e2.file,e2) end)
@@ -184,7 +184,7 @@ function M.run()
         eq(escape_calls,0,"parsing does not execute escape");eq(argument_calls,0,"parsing does not execute arguments")
         entry,classes,defaults=fixture(escaped)
         local ef=must(Planning.Capture(entry,"escape:session",classes,defaults))
-        local cg,ci=Files.Owner(ef.capture,Card);must(cg,ci);local owned=ci.evidence.ownership
+        local cg,ci=Files.GetAdapterRecords(ef.capture,Card);must(cg,ci);local owned=ci.evidence.ownership
         eq(#owned,2,"all classes remain owned");eq(#owned[1].slots,5,"full live escape list captured")
         eq(owned[1].slots[4],classes.K.cards[4],"escape dialog identity retained")
         eq(owned[1].slots[5],classes.K.cards[5],"escape deletion identity retained")

@@ -39,10 +39,10 @@ function M.run(opts)
             saved_apis.build,saved_apis.analyze,saved_apis.tokenize,saved_apis.create
     end
     local function card_state(capture)
-        return must(Files.Owner(capture,Card)).state
+        return must(Files.GetAdapterRecords(capture,Card)).state
     end
     local function first_card(capture)
-        local group,initial=Files.Owner(capture,Card);must(group,initial)
+        local group,initial=Files.GetAdapterRecords(capture,Card);must(group,initial)
         return initial.evidence
     end
     local serial,effects,constructors,escapes=0,0,0,0
@@ -120,7 +120,7 @@ function M.run(opts)
         eq(a.target.card,f.live.classes.K.cards[1],"actual card identity")
         eq(a.target.list,f.live.classes.K.cards,"actual live list")
         eq(a.target.unit,card_state(f.capture).units[a.key],"actual private Card publication unit")
-        eq(r.card_group,must(Files.Owner(f.capture,Card)),"proof retains actual Card contribution")
+        eq(r.card_group,must(Files.GetAdapterRecords(f.capture,Card)),"proof retains actual Card contribution")
         eq(d.by_key["local:helper"].adapter.Id,"local","complete discovery retains independent Local owner")
         eq(a.target.slot,1,"live slot");eq(a.candidate_slot,1,"candidate slot")
         eq(a.target.mode,nil,"no invented practice mode")

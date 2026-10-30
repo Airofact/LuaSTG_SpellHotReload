@@ -63,7 +63,7 @@ function M.run()
     end
     local ok,problem=pcall(function()
         local f=setup(source);local capture=f.capture;local base=capture.snapshot
-        local group=must(Files.Owner(capture,Card));local state=group.state;local key=state.order[1]
+        local group=must(Files.GetAdapterRecords(capture,Card));local state=group.state;local key=state.order[1]
         local publication=must(Files.Publication(capture))
         eq(#publication.groups,2,"both genuine first-load owners published")
         eq(publication.groups[2].owner,Card,"first-load captured Card owner")
@@ -124,7 +124,7 @@ function M.run()
         eq(receipt.changed,true,"explicit joint transaction returns changed receipt")
         eq(capture.snapshot,receipt.snapshot,"receipt identifies installed common snapshot")
         eq(receipt.snapshot.revision,1,"partial actual publication advances file once")
-        local current=must(Files.Owner(capture,Card));local next_state=current.state
+        local current=must(Files.GetAdapterRecords(capture,Card));local next_state=current.state
         eq(current.owner,Card,"installed Card contribution retains original owner")
         eq(next_state.units[key].callbacks.frame.definition_version,2,"changed callback version actually advances")
         eq(f.classes.K.cards[1]:frame(5),7,"live callback uses actually published definition")

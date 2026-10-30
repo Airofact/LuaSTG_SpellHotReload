@@ -129,12 +129,21 @@ function M.Validate(capture)
     end
     return graph(base.owners)~=nil
 end
-function M.Owner(capture,owner)
-    if not M.Validate(capture) then return fail("valid file capture required") end
+-- Lookup only. Preparation and publication boundaries validate the full snapshot.
+function M.GetAdapterRecords(capture,adapter)
+    if type(adapter)~="table" or not plain(capture) or not plain(capture.entry)
+        or not plain(capture.snapshot) or not plain(capture.snapshot.owners)
+        or not plain(capture.initial_owners) then return fail("file capture and adapter required") end
     for i,group in ipairs(capture.snapshot.owners) do
-        if group.owner==owner then return group,capture.initial_owners[i] end
+        if plain(group) and group.owner==adapter then
+            local initial=capture.initial_owners[i]
+            if not plain(initial) or initial.owner~=adapter then
+                return fail("original adapter records required",capture.entry.file)
+            end
+            return group,initial
+        end
     end
-    return fail("original owner not captured",capture.entry.file)
+    return fail("original adapter not captured",capture.entry.file)
 end
 -- Every actual owner contributes one fragment, including retained read-only owners.
 -- No callback and no live mutation here. The kernel alone installs this snapshot.

@@ -163,6 +163,8 @@ function M.run()
         eq(receipt.kind,"SpellHotReload.FileCommit.Receipt","neutral receipt")
         eq(receipt.snapshot,f.capture.snapshot,"one installed file snapshot")
         eq(receipt.snapshot.revision,1,"two owners advance file revision once")
+        eq(Versions.GetAdapterRecords(f.capture,f.base.owners[1].owner),receipt.snapshot.owners[1],"lookup follows installed snapshot")
+        eq(select(2,Versions.GetAdapterRecords(f.capture,f.base.owners[1].owner)),f.capture.initial_owners[1],"lookup retains first-load records after publication")
         eq(#receipt.owner_deltas,2,"one receipt covers two owners")
         eq(f.target.callback(),12,"both owner installations effective")
         eq(select(2,get(f.capture.entry.anchor,f.capture.entry.slots.counter)),7,"scalar state preserved")
@@ -338,7 +340,7 @@ function M.run()
         f=fixture("absent",absent_module);absent_target=f.target;armed=true
         value=scoped(f);eq(value,nil,"new raw field failure has no receipt")
         unchanged(f,"nil raw preimage");eq(rawget(f.target,"callback"),nil,"rollback deletes originally absent field")
-        for _,drift in ipairs({"bytes","api","read"}) do
+        for _,drift in ipairs({"bytes","api","read","records"}) do
             f=fixture()
             local guards=0
             f.fragments[2].owner_guard=function()
@@ -346,7 +348,8 @@ function M.run()
                 if guards==2 then
                     if drift=="bytes" then f.live.content="guard changed candidate"
                     elseif drift=="api" then debug.setupvalue=function(...) return set(...) end
-                    else f.target.spare=function() return -1 end end
+                    elseif drift=="read" then f.target.spare=function() return -1 end
+                    else f.base.owners[2].records[1].definition_version=0 end
                 end
                 return true
             end

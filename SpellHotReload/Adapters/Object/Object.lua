@@ -38,7 +38,7 @@ function M.Capture(entry,session,local_group)
     return V.Seed(M,entry,session,local_group,p)
 end
 function M.Reconcile(previous,candidate,context)
-    local actual,initial=Files.Owner(candidate.common.capture,M)
+    local actual,initial=Files.GetAdapterRecords(candidate.common.capture,M)
     local p=context.adapter and context.adapter.projection
     if not p or p.source~=candidate.common.source then return fail('Object source projection required') end
     local owned=actual and previous.owner==M and previous.state==actual.state and previous.records==actual.records
@@ -96,7 +96,7 @@ local function scope(context)
     local op=context and context.operation;local view=context and context.view
     if not plain(op) or not plain(view) or view.kind~='SpellHotReload.Object.View'
         or not context.common or context.common.source~=view.source or op.source~=view.source then return false end
-    return Files.Owner(op.capture,M)==view.base_group and context.base_group==view.base_group
+    return Files.GetAdapterRecords(op.capture,M)==view.base_group and context.base_group==view.base_group
         and op.base_snapshot==op.capture.snapshot
 end
 function M.Locate(unit,context)
@@ -208,7 +208,7 @@ local function owner_handle(handle,context)
 end
 local function guard(fragment,capture,live)
     local view=fragment.object_view
-    if Files.Owner(capture,M)~=fragment.base_group or fragment.base_group~=view.base_group
+    if Files.GetAdapterRecords(capture,M)~=fragment.base_group or fragment.base_group~=view.base_group
         or fragment.operation.capture~=capture or fragment.operation.base_snapshot~=capture.snapshot
         or not plain(live) or live.entry~=view.base.entry or live.session_id~=view.base.session_id then return fail('Object session changed') end
     local reads,err=V.Reads(view.base);if not reads then return nil,err end
