@@ -160,6 +160,47 @@ function M.run()
         eq(#reads.read_set,14,'six O methods and one P method retain both slots')
         eq(Versions.CheckUnit(state,'missing'),nil,'unknown class cannot be located')
     end)
+    case('Object live checks avoid discarded plans in location and every Guard',function()
+        local Compose=require('SpellHotReload.Source.Compose')
+        for _,changed in ipairs({false,true}) do
+            local f=fixture();local state=group(f).state
+            local reads,plan=Versions.Reads,Compose.Plan
+            local function forbidden() error('Object live check built discarded read evidence') end
+            Versions.Reads,Compose.Plan=forbidden,forbidden
+            local ok,err=pcall(function()
+                eq(Versions.CheckUnit(state,'O'),true,'Object location avoids Plan')
+                eq(Versions.CheckLive(state),true,'Object complete live check returns only success')
+                f.cls[3]=function() end
+                eq(Versions.CheckLive(state),nil,'Object numeric dispatch drift refused')
+                f.cls[3]=f.cls.frame
+                local fn=f.cls.frame;local foreign=0;local function donor() return foreign end
+                debug.upvaluejoin(fn,1,donor,1)
+                eq(Versions.CheckLive(state),nil,'Object detached capture refused')
+                debug.upvaluejoin(fn,1,f.entry.anchor,Anchor.Slot(f.entry,'helper'))
+            end)
+            Versions.Reads,Compose.Plan=reads,plan;must(ok,err)
+            local inject,guards=Object.Inject,0
+            Object.Inject=function(...)
+                local result,why=inject(...)
+                if result and result.owner_guard then
+                    local guard=result.owner_guard
+                    result.owner_guard=function(...)
+                        Versions.Reads,Compose.Plan=forbidden,forbidden
+                        local ran,value,reason=pcall(guard,...)
+                        Versions.Reads,Compose.Plan=reads,plan
+                        must(ran,value);guards=guards+1
+                        return value,reason
+                    end
+                end
+                return result,why
+            end
+            local content=changed and source:gsub('helper%(3%)','helper(30)') or source..'\n-- no definition change'
+            ok,err=pcall(apply,f,content);Object.Inject=inject;must(ok,err)
+            assert(err:find('candidate complete; removed',1,true),err)
+            eq(f.receipt.changed,changed,'Object true receipt after pure live checks')
+            eq(guards>0,true,'production transaction invokes checked Object Guards')
+        end
+    end)
     case('unselected class drift still blocks complete owner preparation',function()
         local initial=source.."\n_editor_class['P']=Class(_object)\n_editor_class['P'].frame=function(self) self.p=helper(7) end"
         local f=fixture(initial);must(f.capture,f.refusal)
@@ -256,16 +297,20 @@ function M.run()
         local obj={};f.cls[3](obj);eq(obj.f,33,'independent supported method publishes')
         eq(pending(f),true,'deleted callback prevents completion')
     end)
-    case('Local helper alias cannot adopt a pending object base change',function()
+    case('Local helper uses retained class value while construction stays pending',function()
+        -- Alias retains the already loaded class; this helper only tests its
+        -- truthiness and does not require the candidate base. Pending construction
+        -- therefore supplies no reason to block this independent function update.
         local initial=source:gsub('local function helper%(n%) return state%+n end\n','')
             :gsub("_editor_class%['O'%]=Class%(_object%)", "_editor_class['O']=Class(_object)\nlocal Alias=_editor_class['O']\nlocal function helper(n) return state+n end")
-        local f=fixture(initial);local base=f.capture.snapshot
+        local f=fixture(initial);local original_class,original_base=f.cls,f.cls.base
         local edited=initial:gsub('Class%(_object%)','Class(bullet)')
             :gsub('return state%+n','return (Alias and state or 0)+n+10')
         apply(f,edited)
-        eq(f.capture.snapshot,base,'pending class alias blocks helper publication')
-        eq(Anchor.Get(f.entry,'helper')(1),4,'helper remains actual original definition')
-        eq(pending(f),true,'unsupported base/alias stays pending')
+        eq(Anchor.Get(f.entry,'Alias'),original_class,'saved class reference is retained')
+        eq(original_class.base,original_base,'pending base change is not executed')
+        eq(Anchor.Get(f.entry,'helper')(1),14,'helper publishes using the existing class value')
+        eq(pending(f),true,'unsupported construction remains pending')
     end)
     case('callback addition never takes over an inherited callback',function()
         local initial=source:gsub("_editor_class%['O'%]%.del=function%(self%) self.d=helper%(2%) end\n",'')

@@ -126,9 +126,9 @@ function M.Locate(unit,context)
         return fail("locate","ownership","original Local unit and operation scope required",context)
     end
     local item=unit.private_ref
-    local reads,err=Versions.ReadUnit(context.view.base,item.name)
-    if not reads then return nil,err end
-    return {kind="SpellHotReload.Local.Handle",version=1,operation=context.operation,view=context.view,unit=unit,item=item,reads=reads}
+    local ok,err=Versions.CheckUnit(context.view.base,item.name)
+    if not ok then return nil,err end
+    return {kind="SpellHotReload.Local.Handle",version=1,operation=context.operation,view=context.view,unit=unit,item=item}
 end
 -- Binding-to-unit mapping only. Card may map its actual captures through this
 -- canonical declaration object; it cannot choose or prepare Local definitions here.
@@ -213,8 +213,8 @@ local function guard(fragment,capture,live)
         or not plain(live) or live.entry~=view.base.entry or live.session_id~=view.base.session_id then
         return nil,{phase="commit",code="stale",message="Local actual owner/session changed"}
     end
-    local reads,err=Versions.Reads(view.read_view)
-    if not reads then return nil,err end
+    local ok,err=Versions.CheckLive(view.read_view)
+    if not ok then return nil,err end
     local next_state=fragment.proposed_group.state
     local selected={}
     for _,name in ipairs(fragment.local_names) do selected[name]=true end

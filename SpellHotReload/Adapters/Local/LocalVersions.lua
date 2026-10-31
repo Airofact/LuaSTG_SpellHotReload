@@ -6,7 +6,7 @@ local Plan=require("SpellHotReload.Source.FunctionPlan")
 local Compose=require("SpellHotReload.Source.Compose")
 local Anchor=require("SpellHotReload.Load.Anchor")
 local Source=require("SpellHotReload.Source.FileAnalysis")
-local M={Kind="SpellHotReload.LocalVersions",Version=1}
+local M={Kind="SpellHotReload.LocalVersions",Version=2}
 local function plain(v) return type(v)=="table" and getmetatable(v)==nil end
 local function copy(v) local out={};for k,x in next,v do out[k]=x end;return out end
 local function dense(v)
@@ -38,17 +38,13 @@ local function names(fn)
     table.sort(result);return result
 end
 local function sharing(fn,entry,dependencies,state,name)
-    local actual,err=Compose.Plan(fn,entry)
-    if not actual then return fail("stale",err,state,name) end
-    local sorted=copy(actual.names);table.sort(sorted)
-    if not same(sorted,dependencies) then return fail("stale","published capture set changed",state,name) end
-    if type(debug.upvalueid)=="function" then
-        for _,join in ipairs(actual.joins) do
-            local a,b=debug.upvalueid(join.fn,join.index),debug.upvalueid(join.anchor,join.donor)
-            if a==nil or b==nil or a~=b then return fail("stale","published capture no longer shares Anchor",state,name) end
-        end
-    end
-    return actual.joins
+    local plan,err=Compose.Plan(fn,entry)
+    if not plan then return fail("stale",err,state,name) end
+    local layout,why=Compose.CaptureLayout(plan,dependencies)
+    if not layout then return fail("stale",why,state,name) end
+    local ok,cerr=Compose.CheckShared(fn,entry,dependencies,layout)
+    if not ok then return fail("stale",cerr,state,name) end
+    return layout
 end
 local function observation(records,name)
     local seen,out={},{}
@@ -120,8 +116,9 @@ function M.Seed(owner,entry,session_id,loaded)
             if not dependencies then return fail("unsupported",nerr,state,name) end
             local expected=copy(probe.created.used);table.sort(expected)
             if not same(dependencies,expected) then return fail("stale","first-load source/capture mismatch",state,name) end
-            local reads,rerr=sharing(actual,entry,dependencies,state,name)
-            if not reads then return nil,rerr end
+            local layout,rerr=sharing(actual,entry,dependencies,state,name)
+            if not layout then return nil,rerr end
+            unit.capture_layout=layout
             unit.binding_kind,unit.fn,unit.dependencies="function",actual,dependencies
             unit.definition=stored(definition.definition,loaded.source)
             unit.signature=unit.definition.signature
@@ -201,8 +198,9 @@ function M.Resolve(view,name)
     return {item=item,dependencies=item.dependencies,
         changed=item.changed==true,node=item.changed and item.definition.syntax or nil,source=view.source}
 end
--- Locate one original binding without freezing ordinary state values.
-function M.ReadUnit(state,name)
+-- Live checks share the same identity/slot walk with owner preparation. Only
+-- preparation supplies a result and retains the reads needed by FileCommit.
+local function check_unit(state,name,result)
     if not plain(state) or not Anchor.Live(state.entry) or state.anchor~=state.entry.anchor then
         return fail("stale","Local Anchor scope changed",state,name)
     end
@@ -210,35 +208,40 @@ function M.ReadUnit(state,name)
     if not unit then return fail("ownership","original Local binding unavailable",state,name) end
     local slot,err=Anchor.Slot(state.entry,name)
     if not slot then return fail("stale",err,state,name) end
-    local reads,captures={},{}
     if unit.binding_kind=="function" then
         local actual,why=Anchor.Get(state.entry,name)
         if why or actual~=unit.fn then return fail("stale",why or "published function was replaced",state,name) end
-        reads[1]={owner=state.owner,unit_ref=unit.unit_ref,anchor=state.anchor,index=slot,name=name,value=unit.fn}
-        local joins,jerr=sharing(unit.fn,state.entry,unit.dependencies,state,name)
-        if not joins then return nil,jerr end
-        for _,join in ipairs(joins) do
-            local read=copy(join);read.owner=state.owner;read.unit_ref=unit.unit_ref
-            captures[#captures+1]=read
+        local ok,cerr=Compose.CheckShared(unit.fn,state.entry,unit.dependencies,unit.capture_layout)
+        if not ok then return fail("stale",cerr,state,name) end
+        if result then
+            result.read_set[#result.read_set+1]={owner=state.owner,unit_ref=unit.unit_ref,anchor=state.anchor,index=slot,name=name,value=unit.fn}
+            for _,join in ipairs(unit.capture_layout) do
+                local read=copy(join);read.owner=state.owner;read.unit_ref=unit.unit_ref
+                result.capture_reads[#result.capture_reads+1]=read
+            end
         end
     end
-    return {read_set=reads,capture_reads=captures}
+    return true
 end
--- Every actual published function is re-read, including unselected/blocked ones.
--- State values may evolve; capture reads prove names/slots/sharing, not values.
-function M.Reads(view)
+function M.CheckUnit(state,name) return check_unit(state,name) end
+local function check_live(view,result)
     local state=view.base
-    local reads,captures={},{}
     if not Anchor.Live(state.entry) or state.anchor~=state.entry.anchor then
         return fail("stale","Local Anchor scope changed",state)
     end
     for _,name in ipairs(state.names) do
-        local item,err=M.ReadUnit(state,name)
-        if not item then return nil,err end
-        for _,read in ipairs(item.read_set) do reads[#reads+1]=read end
-        for _,read in ipairs(item.capture_reads) do captures[#captures+1]=read end
+        local ok,err=check_unit(state,name,result)
+        if not ok then return nil,err end
     end
-    return {read_set=reads,capture_reads=captures}
+    return true
+end
+-- Ordinary state values may evolve. Names, slots and shared cells are re-read.
+function M.CheckLive(view) return check_live(view) end
+function M.Reads(view)
+    local result={read_set={},capture_reads={}}
+    local ok,err=check_live(view,result)
+    if not ok then return nil,err end
+    return result
 end
 -- Names are the FINAL selected union after root/dependency/owner constraints.
 -- No recursive expansion, full-file scanning, joins or setters occur here.
@@ -286,6 +289,9 @@ function M.Next(plan)
         unit.fn=item.created.fn;unit.definition=stored(item.definition,view.source)
         unit.signature=unit.definition.signature
         unit.dependencies=copy(view.by_name[item.name].dependencies)
+        local layout,err=Compose.CaptureLayout(item.join_plan,unit.dependencies)
+        if not layout then return fail("stale",err,state,item.name) end
+        unit.capture_layout=layout
         unit.definition_version=old.definition_version+1
         next_state.by_name[item.name]=unit
     end

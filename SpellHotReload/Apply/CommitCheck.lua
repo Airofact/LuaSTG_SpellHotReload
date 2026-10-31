@@ -16,10 +16,27 @@ local function fail(code,message,file)
     return nil,{phase="commit",code=code,message=message,file=file}
 end
 local function copy(v) local out={};for k,x in next,v do out[k]=x end;return out end
-local function records(v)
+---@generic T: table
+---@param v T[]
+---@return T[]?
+local function copy_records(v)
     if not dense(v) then return nil end
     local out={}
     for _,record in ipairs(v) do if not plain(record) then return nil end;out[#out+1]=copy(record) end
+    return out
+end
+-- Trusted captured first-load records; do not revalidate their shape here.
+-- Copy each permission once, grouped by stable unit identity for this operation.
+---@param permissions SpellHotReload.AuthorityRecord[]
+---@return table<SpellHotReload.UnitRef, SpellHotReload.AuthorityRecord[]>
+local function copy_authority_by_unit(permissions)
+    local out={}
+    for _,record in ipairs(permissions) do
+        local ref=record.unit_ref
+        local unit_permissions=out[ref]
+        if not unit_permissions then unit_permissions={};out[ref]=unit_permissions end
+        unit_permissions[#unit_permissions+1]=copy(record)
+    end
     return out
 end
 -- Allocate all copies and snapshot metadata before flush/refresh/Consume.
@@ -35,8 +52,9 @@ function M.Seal(operation,fragments)
     plan.forbidden[base.anchor]=true
     for i,old in ipairs(base.owners) do
         local initial=capture.initial_owners[i]
-        local authority={cells=records(initial.authority.cells),raws=records(initial.authority.raws),units={}}
-        if not authority.cells or not authority.raws or not dense(initial.authority.forbidden) then
+        local authority={cells=copy_authority_by_unit(initial.authority.cells),
+            raws=copy_authority_by_unit(initial.authority.raws),units={}}
+        if not dense(initial.authority.forbidden) then
             return fail("ownership","invalid first-load action authority",base.file)
         end
         for _,unit in ipairs(old.units) do authority.units[unit.unit_ref]=true end
@@ -51,7 +69,7 @@ function M.Seal(operation,fragments)
         f.operation=op
         if type(f.owner_guard)~="function" then return fail("ownership","owner guard required",base.file) end
         for _,key in ipairs({"joins","cell_writes","raw_writes","read_set","capture_reads"}) do
-            f[key]=records(f[key])
+            f[key]=copy_records(f[key])
             if not f[key] then return fail("ownership","dense fragment records required",base.file) end
         end
         plan.fragments[i]=f
@@ -140,10 +158,12 @@ local function mechanical(plan,capture,live)
     local function permitted(record,kind)
         local authority=plan.authority[record.owner]
         if not authority or not authority.units[record.unit_ref] then return false end
-        for _,allowed in ipairs(kind=="cell" and authority.cells or authority.raws) do
-            if allowed.unit_ref==record.unit_ref and (kind=="cell"
-                and allowed.anchor==record.anchor and allowed.index==record.index and allowed.name==record.name
-                or kind=="raw" and allowed.target==record.target and allowed.key==record.key) then return true end
+        ---@type SpellHotReload.AuthorityRecord[]?
+        local unit_permissions=(kind=="cell" and authority.cells or authority.raws)[record.unit_ref]
+        if not unit_permissions then return false end
+        for _,allowed in ipairs(unit_permissions) do
+            if kind=="cell" and allowed.anchor==record.anchor and allowed.index==record.index and allowed.name==record.name
+                or kind=="raw" and allowed.target==record.target and allowed.key==record.key then return true end
         end
         return false
     end
@@ -238,13 +258,13 @@ end
 function M.Mechanical(plan,capture,live)
     local ok,result,err=pcall(mechanical,plan,capture,live)
     if ok then return result,err end
-    return fail("stale","mechanical read failed")
+    return fail("internal",type(result)=="string" and result or "mechanical read failed")
 end
 function M.Owners(plan,capture,live)
     if not plain(plan) or not dense(plan.fragments) then return fail("ownership","sealed owner fragments required") end
     for _,f in ipairs(plan.fragments) do
         local ok,result,err=pcall(f.owner_guard,f,capture,live)
-        if not ok then return fail("stale","owner guard threw") end
+        if not ok then return fail("internal",type(result)=="string" and result or "owner guard threw") end
         if result~=true then return nil,err or {phase="commit",code="stale",message="owner guard rejected"} end
     end
     return true

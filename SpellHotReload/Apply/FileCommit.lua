@@ -97,7 +97,7 @@ function M.New(session_id)
                 return fail(type(reason.code)=="string" and reason.code or "ownership",
                     type(reason.message)=="string" and reason.message or "file preparation failed",file)
             end
-            return fail("ownership","file preparation threw",file)
+            return fail("internal",type(ready)=="string" and ready or "file preparation threw",file)
         end
         ok,problem=gate_consume(gate,token,live.session_id)
         if not ok then busy=nil;return fail("phase","file commit consumption failed",file) end

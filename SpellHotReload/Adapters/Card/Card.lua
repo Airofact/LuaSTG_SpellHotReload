@@ -369,10 +369,6 @@ local function owner_handle(handle,context)
         and handle.operation==context.operation and handle.owner==Card and handle.base_group==context.base_group
         and handle.view==context.view and plain(handle.by_ref)
 end
-local function same(a,b)
-    if not plain(a) or not plain(b) or #a~=#b then return false end
-    for i,v in ipairs(a) do if v~=b[i] then return false end end;return true
-end
 local function guard(fragment,capture,live)
     local view,runtime,plan=fragment.card_view,fragment.card_runtime,fragment.card_plan
     local group=Files.GetAdapterRecords(capture,Card);local op=fragment.operation
@@ -393,31 +389,6 @@ local function guard(fragment,capture,live)
     end
     ok,err=Versions.Guard(plan,live.classes)
     if not ok then return nil,err end
-    -- The public unit is a class; only Card can map a callback action back to
-    -- its exact selected member. Read the separate semantic publications, not
-    -- the caller's raw_writes array, so sealing still isolates later mutation.
-    if dense(fragment.raw_writes)==nil or dense(plan.publications)==nil
-        or #fragment.raw_writes~=#plan.publications then
-        return fail("commit","ownership","Card callback action set changed",{common=op})
-    end
-    local positions={}
-    for i,pub in ipairs(plan.publications) do
-        local unit=plain(pub) and view.base.units[pub.unit_key]
-        local old=plain(unit) and plain(unit.callbacks) and unit.callbacks[pub.key]
-        local cb=plain(pub) and pub.callback
-        local write=fragment.raw_writes[i]
-        if not plain(pub) or not plain(write) or not plain(old) or not plain(cb)
-            or pub.target~=unit.card or pub.before~=old.fn or cb.previous~=old or pub.value~=cb.fn
-            or write.owner~=Card or write.unit_ref~=unit.unit_ref
-            or write.target~=pub.target or write.key~=pub.key
-            or write.before~=pub.before or write.value~=pub.value then
-            return fail("commit","ownership","Card callback publication action changed",{common=op})
-        end
-        local keys=positions[unit.card]
-        if not keys then keys={};positions[unit.card]=keys end
-        if keys[pub.key] then return fail("commit","ownership","duplicate Card callback action",{common=op}) end
-        keys[pub.key]=true
-    end
     ok,err=require("SpellHotReload.Adapters.Card.CardReconcile").CheckPublications(plan,capture,live,view.discovery)
     if not ok then return nil,err end
     if plan.requires_file_check then
@@ -425,26 +396,6 @@ local function guard(fragment,capture,live)
         local FileApply=require("SpellHotReload.Apply.FileApply")
         ok,err=FileApply.CheckDeletions(op,plan,live)
         if not ok then return nil,err end
-    end
-    local proposed,why=Versions.Next(plan)
-    if not proposed then return nil,why end
-    local actual=fragment.proposed_group
-    if not plain(actual) or actual.owner~=Card or #actual.units~=#proposed.units or #actual.records~=#proposed.records then
-        return fail("commit","ownership","Card proposed projection changed")
-    end
-    for _,key in ipairs(view.base.order) do
-        local expected=proposed.state.units[key];local unit=actual.state.units[key]
-        if not plain(unit) or unit.card~=expected.card or unit.unit_ref~=expected.unit_ref
-            or unit.definition_version~=expected.definition_version then return fail("commit","ownership","Card proposed unit changed") end
-        for _,name in ipairs(CALLBACKS) do
-            local a,b=unit.callbacks[name],expected.callbacks[name]
-            if not plain(a) or a.fn~=b.fn or a.body~=b.body or a.signature~=b.signature
-                or a.definition_version~=b.definition_version or not same(a.dependencies,b.dependencies)
-                or not same(a.visible,b.visible) then return fail("commit","ownership","Card proposed callback changed") end
-            for _,dep in ipairs(b.dependencies) do
-                if a.providers[dep]~=b.providers[dep] then return fail("commit","ownership","Card proposed provider changed") end
-            end
-        end
     end
     return true
 end
@@ -506,7 +457,7 @@ function Card.Inject(handle,unit,context)
     if not registry_reads then return nil,why end
     local plan,perr=Versions.Prepare(runtime.version_view,keys,registry_reads)
     if not plan then return nil,perr end
-    local proposed,nerr=Versions.Next(plan);if not proposed then return nil,nerr end
+    local proposed=Versions.Next(plan)
     local coverage,cerr=Versions.Coverage(runtime.version_view,plan)
     if not coverage then return nil,cerr end
     return {operation=context.operation,owner=Card,base_group=view.base_group,proposed_group=proposed,

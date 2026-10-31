@@ -714,6 +714,63 @@ function M.run()
         end
     end
 
+    -- Pure live checks do not construct plans, name copies or read sets.
+    do
+        local entry = capture("local a=nil; local b=false; local function f() return b,a end", "Shared.lua")
+        local other = capture("local a=nil; local b=false; local function f() return b,a end", "Other.lua")
+        local fn, dependencies = Anchor.Get(entry, "f"), { "a", "b" }
+        local layout = assert(Compose.CaptureLayout(assert(Compose.Plan(fn, entry)), dependencies))
+        local foreign_layout = assert(Compose.CaptureLayout(assert(Compose.Plan(Anchor.Get(other, "f"), entry)), dependencies))
+        local plan, upvalues, names = Compose.Plan, Compose.Upvalues, Compose.Names
+        local get, id = debug.getupvalue, debug.upvalueid
+        local function forbidden() error("live check constructed capture evidence") end
+        Compose.Plan, Compose.Upvalues, Compose.Names = forbidden, forbidden, forbidden
+        local ok, err = pcall(function()
+            eq(Compose.CheckShared(fn, entry, dependencies, layout), true, "shared: real slot order may differ from sorted names")
+            eq(Compose.CheckShared(fn, entry, { "a" }, layout), nil, "shared: extra real capture refused")
+            eq(Compose.CheckShared(fn, entry, { "a", "b", "f" }, layout), nil, "shared: missing real capture refused")
+            eq(Compose.CheckShared(fn, entry, { "a", "a" }, layout), nil, "shared: duplicate expected name refused")
+            eq(Compose.CheckShared(fn, entry, { "b", "a" }, layout), nil, "shared: unsorted owner names refused")
+            eq(Compose.CheckShared(fn, entry, { [2] = "a" }, layout), nil, "shared: sparse owner names refused")
+            if id then
+                eq(Compose.CheckShared(Anchor.Get(other, "f"), entry, dependencies, foreign_layout), nil, "shared: equal values in different cells refused")
+            end
+            local index = layout[1].index
+            layout[1].index = layout[2].index
+            eq(Compose.CheckShared(fn, entry, dependencies, layout), nil, "shared: saved slot drift refused")
+            layout[1].index = index
+            local slot = entry.slots.a
+            entry.slots.a = entry.slots.b
+            eq(Compose.CheckShared(fn, entry, dependencies, layout), nil, "shared: drifted donor name refused")
+            entry.slots.a = nil
+            eq(Compose.CheckShared(fn, entry, dependencies, layout), nil, "shared: missing donor refused")
+            entry.slots.a = slot
+            for _,replacement in ipairs({ "", get(fn, 1) }) do
+                debug.getupvalue = function(target, index)
+                    if target == fn and index == 2 then return replacement end
+                    return get(target, index)
+                end
+                eq(Compose.CheckShared(fn, entry, dependencies, layout), nil, "shared: stripped or duplicated real name refused")
+            end
+            debug.getupvalue = get
+            debug.upvalueid = nil
+            eq(Compose.CheckShared(fn, entry, dependencies, layout), true, "shared: Local/Card optional id rule retained")
+            eq(Compose.CheckShared(fn, entry, dependencies, layout, true), nil, "shared: Object requires real cell ids")
+            eq(Compose.CheckShared(function() end, entry, {}, {}, true), true, "shared: zero captures need no id capability")
+            debug.upvalueid = function() return nil end
+            eq(Compose.CheckShared(fn, entry, dependencies, layout, true), nil, "shared: unavailable cell ids never prove sharing")
+            debug.upvalueid = id
+            debug.getupvalue = nil
+            eq(Compose.CheckShared(fn, entry, dependencies, layout), nil, "shared: enumeration capability required")
+            debug.getupvalue = get
+            entry.missing = true
+            eq(Compose.CheckShared(fn, entry, dependencies, layout), nil, "shared: missing Anchor refused")
+        end)
+        Compose.Plan, Compose.Upvalues, Compose.Names = plan, upvalues, names
+        debug.getupvalue, debug.upvalueid = get, id
+        check(ok, "shared: pure checks completed: " .. tostring(err))
+    end
+
     if failed > 0 then
         for i = 1, math.min(#failures, 25) do
             print("[SpellHotReload compose] FAIL " .. failures[i])

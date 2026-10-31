@@ -1,4 +1,16 @@
 -- Single file publication ledger. Owners supply private records, never commits.
+---@class SpellHotReload.UnitRef
+---@field owner table
+---@field id integer
+
+---@class SpellHotReload.AuthorityRecord
+---@field unit_ref SpellHotReload.UnitRef
+---@field target? table Raw-field target.
+---@field key? string|integer Raw-field key.
+---@field anchor? function Shared-cell holder.
+---@field index? integer Upvalue slot in anchor.
+---@field name? string Upvalue name at that slot.
+
 local Anchor=require("SpellHotReload.Load.Anchor")
 local Source=require("SpellHotReload.Source.FileAnalysis")
 local M={Kind="SpellHotReload.FileCapture",SnapshotKind="SpellHotReload.FileSnapshot",Version=1}

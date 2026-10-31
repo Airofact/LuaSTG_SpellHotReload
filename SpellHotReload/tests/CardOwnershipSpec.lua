@@ -26,7 +26,7 @@ function M.run(opts)
     local function copy(v) local out={};for k,x in next,v do out[k]=x end;return out end
     local names={"before","init","frame","render","beforedel","del","after"}
     local capture_ownership=Card.CaptureOwnership
-    local card_guard,card_reads=Cards.Guard,Cards.Reads
+    local card_guard,card_live=Cards.Guard,Cards.CheckLive
     local check_file,check_publications=Target.CheckFileDiscovery,Reconcile.CheckPublications
     local globals,keys={},{"boss","_editor_class","_tmp_sc","_ownership_runs"}
     for _,key in ipairs(keys) do globals[key]=rawget(_G,key) end
@@ -76,7 +76,7 @@ function M.run(opts)
     },"\n")
     local function restore()
         Card.CaptureOwnership=capture_ownership
-        Cards.Guard,Cards.Reads=card_guard,card_reads
+        Cards.Guard,Cards.CheckLive=card_guard,card_live
         Target.CheckFileDiscovery,Reconcile.CheckPublications=check_file,check_publications
         debug.getupvalue,debug.setupvalue,debug.upvaluejoin,debug.upvalueid=get,set,join,id
         rawset(_G,"jit",saved_jit)
@@ -262,13 +262,11 @@ function M.run(opts)
         -- A genuinely absent raw preimage is a neutral kernel case; see
         -- FileCommitSpec's actual absent-field first load. Never forge Card state.
 
-        -- Semantic member identity and physical write permission are distinct.
-        -- These corruptions use genuine complete fragments, not fake owners.
+        -- The common transaction enforces physical write permission.
         for _,case in ipairs({
             {"unknown key",function(w) w.key="unknown" end},
             {"non-function",function(w) w.value=false end},
             {"hostile target",function(w) w.target=hostile end},
-            {"wrong member",function(w,l) w.target=l.classes.K.cards[3];w.before=w.target.frame end},
             {"wrong preimage",function(w) w.before=function() end end},
         }) do
             p,capture,live=real_fixture()
@@ -281,30 +279,7 @@ function M.run(opts)
         fragment(p,Card).raw_writes[1].unit_ref={}
         v,e=seal(p)
         refusal(v,e,"commit","ownership","foreign write unit",nil,"Seal foreign action unit")
-        for _,case in ipairs({
-            {"publication key",function(pub) pub.key="unknown" end},
-            {"publication value",function(pub) pub.value=false end},
-            {"publication target",function(pub) pub.target=hostile end},
-            {"publication member",function(pub) pub.unit_key="unknown" end},
-            {"publication foreign",function(pub,l) pub.target=l.classes.K.cards[3] end},
-            {"publication preimage",function(pub) pub.before=function() end end},
-        }) do
-            p,capture,live=real_fixture()
-            case[2](fragment(p,Card).card_plan.publications[1],live)
-            sealed=must(seal(p));forbid()
-            v,e=Guard.Check(sealed,capture,live)
-            refusal(v,e,"commit","ownership",nil,nil,case[1])
-        end
-        p,capture,live=real_fixture()
-        local f=fragment(p,Card)
-        f.raw_writes[2]=copy(f.raw_writes[1])
-        f.card_plan.publications[2]=copy(f.card_plan.publications[1])
-        sealed=must(seal(p));forbid()
-        v,e=Guard.Check(sealed,capture,live)
-        refusal(v,e,"commit","ownership","duplicate Card callback action",nil,"duplicate semantic publication")
-
-        -- Native class authority must still reject an unknown physical slot
-        -- independently of Card's finer selected-member map.
+        -- Native class authority still rejects an unknown physical slot.
         p,capture,live=real_fixture();sealed=must(seal(p))
         sealed.journal[1].key="name";sealed.journal[1].before="A"
         v,e=Guard.Mechanical(sealed,capture,live)
@@ -359,7 +334,7 @@ function M.run(opts)
         eq(called,1,"real Card contribution consumes capture policy")
         eq(v,nil,"capture policy stops contribution");eq(e,marker,"capture policy error identity")
 
-        for _,method in ipairs({"file","versions","reads","deletions"}) do
+        for _,method in ipairs({"file","versions","live","deletions"}) do
             p,capture,live=real_fixture();sealed=must(seal(p));called=0
             local card=fragment(p,Card);local before=capture.snapshot
             marker={phase="commit",code="ownership",message="adapter refused "..method,file=live.entry.file}
@@ -371,7 +346,7 @@ function M.run(opts)
                 elseif method=="versions" then
                     eq(select(1,...),card.card_plan,"guard exact Card plan")
                     eq(select(2,...),live.classes,"guard exact registry")
-                elseif method=="reads" then eq(select(1,...),group(capture,Card).state,"guard actual callback read state")
+                elseif method=="live" then eq(select(1,...),group(capture,Card).state,"guard actual callback read state")
                 else
                     eq(select(1,...),card.card_plan,"guard exact deletion plan")
                     eq(select(2,...),capture,"guard deletion capture")
@@ -382,7 +357,7 @@ function M.run(opts)
             end
             if method=="file" then Target.CheckFileDiscovery=spy
             elseif method=="versions" then Cards.Guard=spy
-            elseif method=="reads" then Cards.Reads=spy
+            elseif method=="live" then Cards.CheckLive=spy
             else Reconcile.CheckPublications=spy end
             v,e=Guard.Check(sealed,capture,live)
             eq(called,1,"real owner consumes "..method)
@@ -391,27 +366,8 @@ function M.run(opts)
             eq(_ownership_runs,1,"guard no miniature replay")
         end
 
-        -- The same-class wrong-member input must fail in the REAL registration
-        -- path before flush/Consume, not merely in an isolated Mechanical call.
-        p,capture,live=real_fixture()
-        local before=capture.snapshot
-        local old_a,old_b=live.classes.K.cards[2].frame,live.classes.K.cards[3].frame
-        f=fragment(p,Card);f.raw_writes[1].target=live.classes.K.cards[3]
-        f.raw_writes[1].before=live.classes.K.cards[3].frame
-        local raw_count,flushes=0,0
-        local tx=controller(isolated_commit(nil,function(t,k,value)
-            raw_count=raw_count+1;return rawset(t,k,value)
-        end),live.session_id)
-        rawset(_G,"jit",{flush=function() flushes=flushes+1 end})
-        local receipt,err=Planning.Publish(live.fixture,p,tx)
-        refusal(receipt,err,"commit","ownership","Card callback publication action changed",nil,"registered wrong-member action")
-        unchanged(p,capture,live,before,old_a,old_b,"wrong-member")
-        eq(flushes,0,"wrong-member refused before cache invalidation")
-        eq(raw_count,0,"wrong-member no native raw writes")
-        eq(tx:Poisoned(),false,"wrong-member preflight not poison")
-
         p,capture,live=real_fixture();called=0
-        before=capture.snapshot;old_a,old_b=live.classes.K.cards[2].frame,live.classes.K.cards[3].frame
+        local before=capture.snapshot;local old_a,old_b=live.classes.K.cards[2].frame,live.classes.K.cards[3].frame
         local checks=copy(Guard)
         marker={phase="commit",code="ownership",message="native authority refused",file=live.entry.file}
         checks.Mechanical=function(s,c,l)
@@ -420,9 +376,9 @@ function M.run(opts)
             eq(s.base_snapshot,before,"kernel actual common base")
             return nil,marker
         end
-        tx=controller(isolated_commit(checks),live.session_id)
+        local tx=controller(isolated_commit(checks),live.session_id)
         checks.Mechanical=Guard.Mechanical
-        flushes=0;rawset(_G,"jit",{flush=function() flushes=flushes+1 end})
+        local flushes=0;rawset(_G,"jit",{flush=function() flushes=flushes+1 end})
         eq(tx:Run(function(token)
             v,e=tx:Commit(token,p.operation,fragments(p),live,live.fixture.refresh)
             refusal(v,e,"commit","ownership",marker.message,nil,"kernel mechanical policy")

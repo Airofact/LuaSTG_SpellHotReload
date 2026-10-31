@@ -4,7 +4,7 @@ local Source=require("SpellHotReload.Source.FileAnalysis")
 local CardSyntax=require("SpellHotReload.Adapters.Card.CardSyntax")
 local Compose=require("SpellHotReload.Source.Compose")
 local Anchor=require("SpellHotReload.Load.Anchor")
-local M={Kind="SpellHotReload.CardVersions",Version=2}
+local M={Kind="SpellHotReload.CardVersions",Version=3}
 local CALLBACKS={"before","init","frame","render","beforedel","del","after"}
 local allowed={};for _,name in ipairs(CALLBACKS) do allowed[name]=true end
 local function plain(v) return type(v)=="table" and getmetatable(v)==nil end
@@ -46,18 +46,13 @@ local function same_layout(a,b)
     return true
 end
 local function captures(record,entry,state,key)
-    if record.body==nil then return {} end
     local plan,err=Compose.Plan(record.fn,entry)
-    if not plan then return fail("stale",type(err)=="string" and err or "callback captures unavailable",state,key) end
-    local names=copy(plan.names);table.sort(names)
-    if not same(names,record.dependencies) then return fail("stale","published callback captures changed",state,key) end
-    for _,join in ipairs(plan.joins) do
-        if type(debug.upvalueid)=="function" then
-            local a,b=debug.upvalueid(join.fn,join.index),debug.upvalueid(join.anchor,join.donor)
-            if a==nil or b==nil or a~=b then return fail("stale","callback no longer shares Anchor",state,key) end
-        end
-    end
-    return plan.joins
+    if not plan then return fail("stale",err,state,key) end
+    local layout,why=Compose.CaptureLayout(plan,record.dependencies)
+    if not layout then return fail("stale",why,state,key) end
+    local ok,cerr=Compose.CheckShared(record.fn,entry,record.dependencies,layout)
+    if not ok then return fail("stale",cerr,state,key) end
+    return layout
 end
 local function literal(source,descriptor,name,entry,defaults,providers,state,key)
     local body=descriptor.callbacks[name]
@@ -70,6 +65,8 @@ local function literal(source,descriptor,name,entry,defaults,providers,state,key
     local plan,perr=Compose.Plan(created,entry)
     if not plan then return fail("unsupported",type(perr)=="string" and perr or "callback binding unavailable",state,key) end
     local deps=copy(created.used);table.sort(deps)
+    local layout,lerr=Compose.CaptureLayout(plan,deps)
+    if not layout then return fail("unsupported",lerr,state,key) end
     local refs={}
     for _,dep in ipairs(deps) do
         if not plain(providers[dep]) or Source.Declaration(source,dep)==nil then
@@ -78,12 +75,12 @@ local function literal(source,descriptor,name,entry,defaults,providers,state,key
         refs[dep]=providers[dep]
     end
     return {body=body,signature=signature(descriptor,name),fn=created.fn,created=created,syntax=node,
-        dependencies=deps,providers=refs,visible=visible,join_plan=plan}
+        dependencies=deps,providers=refs,visible=visible,join_plan=plan,capture_layout=layout}
 end
 local function stored(record,version,ref)
     return {body=record.body,signature=record.signature,fn=record.fn,
         dependencies=copy(record.dependencies),providers=copy(record.providers),visible=copy(record.visible),
-        definition_version=version,unit_ref=ref}
+        definition_version=version,unit_ref=ref,capture_layout=record.capture_layout}
 end
 local function project(state)
     local group={owner=state.owner,owner_id=state.owner_id,state=state,units={},records={},functions={},edges={}}
@@ -178,7 +175,10 @@ function M.Seed(owner,entry,session,match,owners,ownership,classes,defaults,prov
                     if not candidate then return nil,err end
                     if candidate.body==nil and fn~=state.defaults[name] then return fail("stale","first default identity differs",state,key) end
                     candidate.fn=fn
-                    local proof,why=captures(candidate,entry,state,key);if not proof then return nil,why end
+                    if candidate.body~=nil then
+                        local proof,why=captures(candidate,entry,state,key);if not proof then return nil,why end
+                        candidate.capture_layout=proof
+                    end
                     unit.callbacks[name]=stored(candidate,1,ref)
                     authority.raws[#authority.raws+1]={unit_ref=ref,target=unit.card,key=name}
                 end
@@ -316,23 +316,37 @@ function M.Resolve(view,key)
     end
     item.resolved=result;return result
 end
--- Every actual callback/capture is checked even when blocked, absent or unselected.
-function M.Reads(state)
-    local reads,capture_reads={},{}
+-- Check every actual callback even when blocked, absent or unselected. Only
+-- owner preparation supplies a result to retain transaction read evidence.
+local function check_live(state,result)
     for _,key in ipairs(state.order) do
         local unit=state.units[key]
         for _,name in ipairs(CALLBACKS) do
             local cb=unit.callbacks[name]
             if rawget(unit.card,name)~=cb.fn then return fail("stale","published raw callback was externally replaced",state,key) end
-            reads[#reads+1]={owner=state.owner,unit_ref=unit.unit_ref,target=unit.card,key=name,value=cb.fn}
-            local proof,err=captures(cb,state.entry,state,key);if not proof then return nil,err end
-            for _,read in ipairs(proof) do
-                local record=copy(read);record.owner=state.owner;record.unit_ref=unit.unit_ref
-                capture_reads[#capture_reads+1]=record
+            if cb.body~=nil then
+                local ok,err=Compose.CheckShared(cb.fn,state.entry,cb.dependencies,cb.capture_layout)
+                if not ok then return fail("stale",err,state,key) end
+            end
+            if result then
+                result.read_set[#result.read_set+1]={owner=state.owner,unit_ref=unit.unit_ref,target=unit.card,key=name,value=cb.fn}
+                if cb.body~=nil then
+                    for _,read in ipairs(cb.capture_layout) do
+                        local record=copy(read);record.owner=state.owner;record.unit_ref=unit.unit_ref
+                        result.capture_reads[#result.capture_reads+1]=record
+                    end
+                end
             end
         end
     end
-    return {read_set=reads,capture_reads=capture_reads}
+    return true
+end
+function M.CheckLive(state) return check_live(state) end
+function M.Reads(state)
+    local result={read_set={},capture_reads={}}
+    local ok,err=check_live(state,result)
+    if not ok then return nil,err end
+    return result
 end
 -- Final keys are supplied by the owner AFTER root constraints. No provider
 -- selection, Local preparation or recursive closure expansion takes place here.
@@ -612,8 +626,8 @@ end
 function M.Guard(plan,classes)
     if not plain(plan) or not plain(plan.view) or not plan.view.initial.empty and classes~=plan.view.initial.classes
         or not dense(plan.registry_reads) then return fail("ownership","Card final read proof required",plan and plan.view and plan.view.base) end
-    local reads,err=M.Reads(plan.view.base)
-    if not reads then return nil,err end
+    local ok,err=M.CheckLive(plan.view.base)
+    if not ok then return nil,err end
     for _,read in ipairs(plan.registry_reads) do
         if not plain(read) or read.registry~=classes or rawget(classes,read.key)~=read.value then
             return fail("stale","candidate class registry identity changed",plan.view.base)

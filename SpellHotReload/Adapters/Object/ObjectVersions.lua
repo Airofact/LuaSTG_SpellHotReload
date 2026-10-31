@@ -6,7 +6,7 @@ local Compose=require('SpellHotReload.Source.Compose')
 local Anchor=require('SpellHotReload.Load.Anchor')
 local Source=require('SpellHotReload.Source.FileAnalysis')
 local Local=require('SpellHotReload.Adapters.Local.Local')
-local M={Kind='SpellHotReload.ObjectVersions',Version=1}
+local M={Kind='SpellHotReload.ObjectVersions',Version=2}
 local plain=D.Plain
 local function copy(v) local out={};for k,x in next,v do out[k]=x end;return out end
 local function fail(message,state,key)
@@ -25,17 +25,13 @@ local function line(source,node)
     return first,first+count
 end
 local function shared(fn,entry,dependencies)
-    local proof,err=Compose.Plan(fn,entry)
-    if not proof then return nil,err end
-    local names=copy(proof.names);table.sort(names)
-    if not same(names,dependencies) then return nil,'published method captures changed' end
-    for _,j in ipairs(proof.joins) do
-        if type(debug.upvalueid)~='function'
-            or debug.upvalueid(j.fn,j.index)~=debug.upvalueid(j.anchor,j.donor) then
-            return nil,'published method no longer shares original Anchor'
-        end
-    end
-    return proof.joins
+    local plan,err=Compose.Plan(fn,entry)
+    if not plan then return nil,err end
+    local layout,why=Compose.CaptureLayout(plan,dependencies)
+    if not layout then return nil,why end
+    local ok,cerr=Compose.CheckShared(fn,entry,dependencies,layout,true)
+    if not ok then return nil,cerr end
+    return layout
 end
 local function prepared(source,definition,entry,providers)
     local created,err=Compose.Create(definition.body,nil,definition.visible,
@@ -43,13 +39,15 @@ local function prepared(source,definition,entry,providers)
     if not created then return nil,err end
     local proof,why=Compose.Plan(created,entry);if not proof then return nil,why end
     local dependencies=copy(created.used);table.sort(dependencies)
+    local layout,lerr=Compose.CaptureLayout(proof,dependencies)
+    if not layout then return nil,lerr end
     for _,name in ipairs(dependencies) do if not providers[name] then return nil,'original Local provider missing' end end
     return {fn=created.fn,created=created,signature=definition.signature,
-        dependencies=dependencies,visible=copy(definition.visible),definition=definition}
+        dependencies=dependencies,visible=copy(definition.visible),definition=definition,capture_layout=layout}
 end
 local function stored(record,version)
     return {fn=record.fn,signature=record.signature,dependencies=copy(record.dependencies),
-        visible=copy(record.visible),definition_version=version}
+        visible=copy(record.visible),definition_version=version,capture_layout=record.capture_layout}
 end
 local function project(state)
     local g={owner=state.owner,owner_id=state.owner.Id,state=state,units={},records={},functions={},edges={}}
@@ -152,6 +150,7 @@ function M.Seed(owner,entry,session,local_group,p)
                 candidate.fn=fn
                 local proof,why=shared(fn,entry,candidate.dependencies)
                 if not proof then return fail(why,state,key) end
+                candidate.capture_layout=proof
                 record=stored(candidate,1);record.owned=true
                 authority.raws[#authority.raws+1]={unit_ref=ref,target=cls,key=name}
                 authority.raws[#authority.raws+1]={unit_ref=ref,target=cls,key=slot}
@@ -212,7 +211,7 @@ local function live(state)
     end
     return true
 end
--- Locate checks one class. Only owner preparation builds the complete read set.
+-- Locate/Guard check live state; only preparation retains transaction reads.
 local function check_unit(state,u,result)
     local key=u.key
     if rawget(state.registry,key)~=u.class or rawget(u.class,'base')~=u.base
@@ -236,12 +235,12 @@ local function check_unit(state,u,result)
             return fail('class dispatch not finalized or published method/slot drifted',state,key)
         end
         if cb.owned then
-            local proof,err=shared(cb.fn,state.entry,cb.dependencies)
-            if not proof then return fail(err,state,key) end
+            local ok,err=Compose.CheckShared(cb.fn,state.entry,cb.dependencies,cb.capture_layout,true)
+            if not ok then return fail(err,state,key) end
             if result then
                 result.read_set[#result.read_set+1]={owner=state.owner,unit_ref=u.unit_ref,target=u.class,key=name,value=cb.fn}
                 result.read_set[#result.read_set+1]={owner=state.owner,unit_ref=u.unit_ref,target=u.class,key=slot,value=cb.fn}
-                for _,join in ipairs(proof) do
+                for _,join in ipairs(cb.capture_layout) do
                     local r=copy(join);r.owner=state.owner;r.unit_ref=u.unit_ref
                     result.capture_reads[#result.capture_reads+1]=r
                 end
@@ -256,12 +255,17 @@ function M.CheckUnit(state,key)
     if not unit then return fail('original Object class required',state,key) end
     return check_unit(state,unit)
 end
-function M.Reads(state)
+local function check_live(state,result)
     local ok,err=live(state);if not ok then return nil,err end
-    local result={read_set={},capture_reads={}}
     for _,key in ipairs(state.order) do
         ok,err=check_unit(state,state.by_key[key],result);if not ok then return nil,err end
     end
+    return true
+end
+function M.CheckLive(state) return check_live(state) end
+function M.Reads(state)
+    local result={read_set={},capture_reads={}}
+    local ok,err=check_live(state,result);if not ok then return nil,err end
     return result
 end
 function M.Inheritance(state,key,name)

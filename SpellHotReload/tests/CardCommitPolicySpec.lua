@@ -160,20 +160,14 @@ function M.run(opts)
         eq(Guard.Check(sealed,c,l),true,"no-op still checks original owners")
         eq(mutations,0,"no-op policy pure")
 
-        -- Card's existing private version service is still a domain check.
-        -- Its group is NOT a file revision or a second publication ledger.
+        -- Card versions are constructed during preparation, not by Guard.
         p,c,l=fixture();base,fn=c.snapshot,l.classes.K.cards[1].init
         sealed=must(seal(p))
         local marker={phase="inject",code="unsupported",message="version policy refused"}
-        Cards.Next=function(plan)
-            eq(plan,fragment(p,Card).card_plan,"Card version service exact private plan")
-            return nil,marker
-        end
+        Cards.Next=function() error("Guard rebuilt proposed Card versions") end
         local v,e=Guard.Check(sealed,c,l)
-        eq(v,nil,"Guard respects real Card version refusal");eq(e,marker,"direct Guard retains owner error identity")
-        Cards.Next=function() error(hostile) end
-        v,e=Guard.Check(sealed,c,l);refusal(v,e,"stale","Guard contains unsafe owner throw")
-        unchanged(p,c,l,base,fn,"owner refusal");eq(traps,0,"unsafe owner object untouched")
+        eq(v,true,"Guard uses the prepared Card versions")
+        unchanged(p,c,l,base,fn,"read-only Guard")
 
         -- Retired selection/functions fields are replaced by their actual public
         -- plan/capture/fragment boundaries; no ignored legacy fields are added.
@@ -214,7 +208,7 @@ function M.run(opts)
 
         p,c,l=fixture();sealed=must(seal(p))
         fragment(p,Card).card_runtime.file_location=nil
-        v,e=Guard.Check(sealed,c,l);refusal(v,e,"stale","missing original file correspondence")
+        v,e=Guard.Check(sealed,c,l);refusal(v,e,"internal","missing original file correspondence")
         p,c,l=fixture();sealed=must(seal(p))
         p.operation.card.target={}
         v,e=Guard.Check(sealed,c,l);refusal(v,e,"stale","changed original file operation target")
@@ -319,7 +313,7 @@ function M.run(opts)
                 eq(tx:Check(token),true,mode.." preflight retains token")
             end),true,mode.." scope")
             refusal(receipt,err,mode=="version-refuse" and "unsupported" or
-                (mode=="version-throw" and "ownership" or "stale"),mode)
+                (mode=="version-throw" and "internal" or "stale"),mode)
             test(err~=marker,mode.." kernel returns normalized structural error")
             eq(err.file,"Policy_Boss.lua",mode.." kernel supplies file")
             unchanged(p,c,l,base,fn,mode)

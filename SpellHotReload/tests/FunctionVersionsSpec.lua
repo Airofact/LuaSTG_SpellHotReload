@@ -128,7 +128,7 @@ function M.run()
         _G.jit={flush=function() flushes=flushes+1;error("premature flush") end}
         f=fixture(source);entry=f.entry;initial_snapshot=f.capture.snapshot;base=state(initial_snapshot)
         initial={};for _,name in ipairs({"helper","pattern","alias_user","other","setter"}) do initial[name]=Anchor.Get(entry,name) end
-        eq(Versions.Kind,"SpellHotReload.LocalVersions","private version kind");eq(Versions.Version,1,"private version protocol")
+        eq(Versions.Kind,"SpellHotReload.LocalVersions","private version kind");eq(Versions.Version,2,"private version protocol")
         eq(initial_snapshot.revision,0,"initial transaction revision")
         eq(initial_snapshot.session_id,f.session,"session carried")
         eq(base.entry,entry,"loaded entry held");eq(base.anchor,entry.anchor,"unique anchor held")

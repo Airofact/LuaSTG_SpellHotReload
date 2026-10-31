@@ -214,18 +214,13 @@ function M.run()
         bad(Check.Mechanical,function(s)
             table.insert(s.journal,#s.journal,copy(action(s,"cell")))
         end,"commit","conflict","sealed duplicate cell position","function write authority, position or preimage changed")
-        -- Identical actions before Seal are deliberately deduplicated. Semantic
-        -- duplicate Card publications remain a separate owner rejection.
+        -- Identical actions before Seal are deliberately deduplicated.
         p,c,l=fixture();local f=fragment(p,Local)
         f.cell_writes[2]=copy(f.cell_writes[1]);s=must(seal(p));forbid()
         local cell_count=0;for _,w in ipairs(s.journal) do if w.kind=="cell" then cell_count=cell_count+1 end end
         eq(cell_count,1,"identical cell action deduplicated")
         eq(Check.Check(s,c,l),true,"deduplicated genuine plan remains valid")
-        p,c,l=fixture();f=fragment(p,Card)
-        f.raw_writes[2]=copy(f.raw_writes[1]);f.card_plan.publications[2]=copy(f.card_plan.publications[1])
-        s=must(seal(p));forbid()
-        local v,e=Check.Check(s,c,l)
-        refusal(v,e,"commit","ownership","duplicate semantic publication","duplicate Card callback action")
+        local v,e
         for _,case in ipairs({
             {"cell extra key","versions",function(p) fragment(p,Local).cell_writes.extra={} end},
             {"raw extra key","versions",function(p) fragment(p,Card).raw_writes.extra={} end},
@@ -264,9 +259,9 @@ function M.run()
             __tostring=function() traps=traps+1;error("unsafe error stringify") end,
             __index=function() traps=traps+1;error("unsafe error index") end})
         bad(Check.Check,function() debug.getupvalue=function() error(error_object) end end,
-            "commit","stale","owner getter threw opaque object","owner guard threw")
+            "commit","internal","owner getter threw opaque object","owner guard threw")
         bad(Check.Mechanical,function() debug.getupvalue=function() error(error_object) end end,
-            "commit","stale","native getter threw opaque object","mechanical read failed")
+            "commit","internal","native getter threw opaque object","mechanical read failed")
         eq(traps,0,"opaque read error never inspected or stringified")
         p,c,l=fixture();s=must(seal(p));forbid()
         local result,reason

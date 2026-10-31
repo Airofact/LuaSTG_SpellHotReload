@@ -44,7 +44,7 @@ local function session(capture,live)
     end
     local snapshot,entry=capture.snapshot,live.entry
     local group,initial=Files.GetAdapterRecords(capture,Card)
-    if not group or group.state.kind~="SpellHotReload.CardVersions" or group.state.version~=2
+    if not group or group.state.kind~="SpellHotReload.CardVersions" or group.state.version~=3
         or not plain(initial.evidence) then return fail("ownership","original Card contribution required",file) end
     if live.released or live.poisoned or live.capture~=capture or live.snapshot~=snapshot
         or live.session_id~=snapshot.session_id or snapshot.entry~=entry

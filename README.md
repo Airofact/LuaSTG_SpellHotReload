@@ -171,7 +171,9 @@ end
 对象类 File Apply 仅处理已监视 `*_Boss.lua` 中经真实首载捕获的
 `_editor_class["name"]=Class(_object/bullet/enemy/laser/laser_bent)`。保持类表和已有对象字段，
 成对发布类自身显式定义的 `init/del/frame/render/colli/kill` 与 `[1]..[6]`。
-Apply 不执行 Class、注册或 init；后续调用/新建对象使用更新定义，已有 coroutine 保持原闭包。
+Apply 不执行 Class、注册或 init；通过类表进行的后续调用/新建对象使用更新定义，
+已有 coroutine 保持原闭包。预先保存的方法引用仍指向原函数，不自动重绑定。
+独立函数不因使用已保存的对象类表/方法值而被阻断；类构造变更继续保留 pending。
 Current 不自动选择对象方法；对象变化仍计入候选剩余。新增/删除回调、类名/基类变化、
 重复/动态键、类表漂移和来源不明的派生继承副本保持 pending 或拒绝。
 不扩大监视范围至 Global/Mid 文件。需重启游戏建立构造来源证据；不从后来活体补种。

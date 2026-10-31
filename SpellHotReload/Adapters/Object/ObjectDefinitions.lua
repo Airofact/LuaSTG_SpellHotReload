@@ -20,7 +20,7 @@ end
 function M.Read(source)
     local ok,err=Source.Validate(source);if not ok then return nil,err end
     local Tree=source.analysis.syntax
-    local p={source=source,order={},by_key={},constructors={},aliases={},unsafe=false}
+    local p={source=source,order={},by_key={},constructors={},unsafe=false}
     local function unit(key)
         local u=p.by_key[key]
         if not u then
@@ -31,26 +31,6 @@ function M.Read(source)
     end
     for index,statement in ipairs(source.analysis.statements) do
         local ast=statement.syntax
-        -- Conservative top-level alias provenance, including containers/calls.
-        -- A local retaining a registry-derived value is not reconstructed when
-        -- candidate Class wiring remains pending.
-        local declaration=Tree.Is(ast,'local') and Tree.Match(ast,'declaration')
-        local assignment=declaration or Tree.Match(ast,'assignment')
-        if assignment then
-            local related=false
-            for _,value in ipairs(assignment.values) do
-                Tree.Walk(value,function(n)
-                    local name=Tree.Is(n,'name') and Tree.Identifier(n)
-                    if name and (name=='_editor_class' or p.aliases[name]) then related=true end
-                end)
-            end
-            if related then
-                for _,target in ipairs(declaration and declaration.names or assignment.targets) do
-                    local name=Tree.Identifier(target)
-                    if name then p.aliases[name]=true end
-                end
-            end
-        end
         local target,value=Tree.SingleAssignment(ast)
         local key=class_key(Tree,target)
         if key then

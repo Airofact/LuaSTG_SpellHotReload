@@ -137,10 +137,6 @@ local function bindings(view,node)
     Tree.Walk(node,function(n,parent)
         if problem then return false end
         local name=Tree.Is(n,'name') and Tree.Identifier(n)
-        if name and next(view.versions.pending_classes)~=nil
-            and (view.projection.aliases[name] or view.initial.projection.aliases[name]) then
-            problem='class alias may depend on unpublished construction';return false
-        end
         if name=='_editor_class' then
             local index=Tree.Match(parent,'index')
             local key=index and Tree.SameNode(index.base,n) and Tree.String(index.key)
@@ -211,7 +207,7 @@ local function guard(fragment,capture,live)
     if Files.GetAdapterRecords(capture,M)~=fragment.base_group or fragment.base_group~=view.base_group
         or fragment.operation.capture~=capture or fragment.operation.base_snapshot~=capture.snapshot
         or not plain(live) or live.entry~=view.base.entry or live.session_id~=view.base.session_id then return fail('Object session changed') end
-    local reads,err=V.Reads(view.base);if not reads then return nil,err end
+    local ok,err=V.CheckLive(view.base);if not ok then return nil,err end
     for _,read in ipairs(fragment.object_registry_reads) do
         if live.classes~=read.registry or rawget(read.registry,read.key)~=read.value then return fail('Object dependency registry identity changed') end
     end

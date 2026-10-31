@@ -157,7 +157,7 @@ function M.run()
         local f=adopt(entry,classes)
         local base=f.capture.snapshot;local state=cards(base)
         local a,b,c=classes.K.cards[1],classes.K.cards[2],classes.K.cards[3]
-        eq(Versions.Kind,"SpellHotReload.CardVersions","kind");eq(Versions.Version,2,"version")
+        eq(Versions.Kind,"SpellHotReload.CardVersions","kind");eq(Versions.Version,3,"version")
         eq(base.revision,0,"sole file revision starts at zero")
         eq(state.functions,nil,"Card holds no Local ledger");eq(state.revision,nil,"Card holds no file revision")
         eq(state.loaded_source,source,"immutable baseline");eq(state.anchor,entry.anchor,"sole anchor")

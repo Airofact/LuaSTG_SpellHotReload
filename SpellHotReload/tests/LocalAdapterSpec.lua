@@ -131,6 +131,38 @@ function M.run()
         Compose.Create,IR.Analyze=create,analyze
         if not ok then error(err,0) end
     end
+    case("Local live checks retain no discarded read evidence",function()
+        local Versions=require("SpellHotReload.Adapters.Local.LocalVersions")
+        for _,changed in ipairs({false,true}) do
+            local f=fixture()
+            local candidate=changed and source:gsub("counter%+1","counter+2") or source
+            local p=prepare(f,candidate,{"consumer"});local fragment=p.entries[1].fragment
+            local state=fragment.local_view.base
+            local live={entry=f.entry,session_id=f.session}
+            local reads,plan=Versions.Reads,Compose.Plan
+            local function forbidden() error("Local live check built discarded read evidence") end
+            Versions.Reads,Compose.Plan=forbidden,forbidden
+            local ok,err=pcall(function()
+                eq(Versions.CheckUnit(state,"helper"),true,"Local location returns only success")
+                eq(fragment.owner_guard(fragment,f.capture,live),true,"Local Guard checks live state without Reads/Plan")
+                must(Anchor.Set(f.entry,"counter",41))
+                eq(Versions.CheckLive(fragment.local_view.read_view),true,"scalar state remains free to evolve")
+                must(Anchor.Set(f.entry,"unused",function() end))
+                eq(fragment.owner_guard(fragment,f.capture,live),nil,"Guard still checks unselected function identity")
+                must(Anchor.Set(f.entry,"unused",state.by_name.unused.fn))
+                local fn=state.by_name.helper.fn;local index=1
+                while debug.getupvalue(fn,index)~="counter" do index=index+1 end
+                local foreign=0;local function donor() return foreign end
+                debug.upvaluejoin(fn,index,donor,1)
+                eq(Versions.CheckLive(fragment.local_view.read_view),nil,"Local detached capture refused")
+                debug.upvaluejoin(fn,index,f.entry.anchor,Anchor.Slot(f.entry,"counter"))
+                local receipt=must(publish(f,p))
+                eq(receipt.changed,changed,"Local true receipt after pure Guards")
+            end)
+            Versions.Reads,Compose.Plan=reads,plan
+            must(ok,err)
+        end
+    end)
     case("Local-only no-change",function()
         local f=fixture();local base=f.capture.snapshot
         local d=discover(f,source);local op=operation(f,d)

@@ -184,6 +184,62 @@ function M.Names(fn)
     return names
 end
 
+local function capture_name(a, b) return a.name < b.name end
+
+---Keep only physical slots from a preparation plan, with no source/AST references.
+---The owner stores this layout with the published function version. Sorting is
+---done here once; joining uses explicit slot indices, not array order.
+function M.CaptureLayout(plan, dependencies)
+    local layout = plan.joins
+    table.sort(layout, capture_name)
+    if #layout ~= #dependencies then return nil, "published capture set changed" end
+    for i = 1, #layout do
+        if layout[i].name ~= dependencies[i] then return nil, "published capture set changed" end
+    end
+    return layout
+end
+
+---Re-read every real capture using its saved slot. No plan, name copy, read set
+---or lookup table is created. A sorted unique name for each of exactly N real
+---slots also rejects missing, extra, duplicate and stripped names.
+---Object requires upvalueid; Local/Card retain their optional identity check.
+---@return boolean? ok
+---@return string? reason
+function M.CheckShared(fn, entry, dependencies, layout, require_id)
+    if type(fn) ~= "function" then return nil, "fn must be a function" end
+    if not Anchor.Live(entry) then return nil, "anchor is not live" end
+    if type(debug) ~= "table" or type(debug.getupvalue) ~= "function" then
+        return nil, "debug.getupvalue is unavailable"
+    end
+    local count = dense(dependencies)
+    if count == nil or dense(layout) ~= count then return nil, "capture layout changed" end
+    if debug.getupvalue(fn, count + 1) ~= nil then return nil, "published capture set changed" end
+    for i = 1, count do
+        local name, slot = dependencies[i], layout[i]
+        if not text(name) or i > 1 and dependencies[i - 1] >= name then
+            return nil, "capture names must be sorted and unique"
+        end
+        if not plain(slot) or slot.fn ~= fn or slot.anchor ~= entry.anchor
+            or slot.name ~= name or slot.anchor_name ~= name
+            or not integer(slot.index) or slot.index < 1 or slot.index > count
+            or debug.getupvalue(fn, slot.index) ~= name then
+            return nil, "published capture layout changed"
+        end
+        local donor = Anchor.Slot(entry, name)
+        if donor == nil then return nil, "no anchor slot for upvalue '" .. name .. "'" end
+        if donor ~= slot.donor or debug.getupvalue(entry.anchor, donor) ~= name then
+            return nil, "anchor slot drifted for '" .. name .. "'"
+        end
+        if type(debug.upvalueid) == "function" then
+            local a, b = debug.upvalueid(fn, slot.index), debug.upvalueid(entry.anchor, donor)
+            if a == nil or b == nil or a ~= b then return nil, "published capture no longer shares Anchor" end
+        elseif require_id then
+            return nil, "debug.upvalueid is unavailable"
+        end
+    end
+    return true
+end
+
 --------------------------------------------------------------------------------
 --- source assembly (read-only)
 --------------------------------------------------------------------------------

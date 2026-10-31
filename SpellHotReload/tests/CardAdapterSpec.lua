@@ -119,6 +119,46 @@ function M.run()
         Compose.Create,IR.Analyze=create,analyze
         if not ok then error(err,0) end
     end
+    case("default callbacks may keep their external captures",function()
+        local previous=defaults.before;local calls=0
+        defaults.before=function() calls=calls+1 end
+        local ok,err=pcall(function()
+            local f=fixture();local p=prepare(f,source)
+            local receipt=must(publish(f,p))
+            eq(receipt.changed,false,"default callback captures require no file Anchor slot")
+            f.classes.K.cards[1].before()
+            eq(calls,1,"default retains its original external cell")
+        end)
+        defaults.before=previous;must(ok,err)
+    end)
+    case("Card live checks retain no discarded read evidence",function()
+        for _,changed in ipairs({false,true}) do
+            local f=fixture()
+            local content=changed and source:gsub("return helper%(n%) end","return helper(n)+1 end") or source
+            local p=prepare(f,content);local fragment
+            for _,entry in ipairs(p.entries) do if entry.fragment.owner==Card then fragment=entry.fragment end end
+            assert(fragment);local state=fragment.card_plan.view.base
+            local observed=live(f);local reads,plan=Cards.Reads,Compose.Plan
+            local function forbidden() error("Card live check built discarded read evidence") end
+            Cards.Reads,Compose.Plan=forbidden,forbidden
+            local ok,err=pcall(function()
+                eq(Cards.CheckLive(state),true,"Card liveness returns only success")
+                eq(fragment.owner_guard(fragment,f.capture,observed),true,"Card Guard avoids Reads/Plan")
+                local unselected=state.units[f.keyb];unselected.card.init=function() end
+                eq(Cards.CheckLive(state),nil,"Card still checks unselected callback identity")
+                unselected.card.init=unselected.callbacks.init.fn
+                local fn=state.units[f.keya].callbacks.init.fn
+                local foreign=0;local function donor() return foreign end
+                debug.upvaluejoin(fn,1,donor,1)
+                eq(Cards.CheckLive(state),nil,"Card detached capture refused")
+                debug.upvaluejoin(fn,1,f.entry.anchor,Anchor.Slot(f.entry,"helper"))
+                local receipt=must(publish(f,p))
+                eq(receipt.changed,changed,"Card true receipt after pure live checks")
+            end)
+            Cards.Reads,Compose.Plan=reads,plan
+            must(ok,err)
+        end
+    end)
     case("complete no-change real two-owner path",function()
         local f=fixture();local d=discover(f,source);local op=operation(f,d);local base=f.capture.snapshot
         no_scan(function(count)
