@@ -4,6 +4,7 @@
 -- Prepare, Publish and Remaining are separate; this helper never auto-publishes.
 local Local=require("SpellHotReload.Adapters.Local.Local")
 local Card=require("SpellHotReload.Adapters.Card.Card")
+local Class=require("SpellHotReload.Adapters.Class.Class")
 local Files=require("SpellHotReload.Pipeline.FileVersions")
 local Driver=require("SpellHotReload.Pipeline.Driver")
 local Source=require("SpellHotReload.Source.FileAnalysis")
@@ -15,15 +16,25 @@ local function fail(message)
 end
 -- No late reconstruction from current callbacks or a proposed snapshot.
 function M.Capture(entry,session,classes,defaults)
-    local local_piece,err=Local.Capture(entry,session)
-    if not local_piece then return nil,err end
-    local card_piece,why=Card.Capture(entry,session,local_piece,classes,defaults)
-    if not card_piece then return nil,why end
-    local capture,problem=Files.Capture(entry,session,{local_piece,card_piece})
-    if not capture then return nil,problem end
+    if not plain(entry) or not Source.Validate(entry.source) then
+        return fail("genuine first-load entry and complete source required")
+    end
     local driver=Driver.New()
-    assert(driver:RegisterDiscovery(Local));assert(driver:RegisterDiscovery(Card))
-    return {capture=capture,driver=driver,entry=entry,session=session}
+    assert(driver:RegisterDiscovery(Local));assert(driver:RegisterDiscovery(Class));assert(driver:RegisterDiscovery(Card))
+    local discovery,err=driver:Discover(entry.file,entry.source,
+        {session_id=session,registry_entry=entry,loaded_source=entry.loaded_source})
+    if not discovery then return nil,err end
+    local snapshot=discovery.snapshot
+    local local_piece,why=Local.Capture(entry,session,snapshot)
+    if not local_piece then return nil,why end
+    local class_piece,problem=Class.Capture(entry,session,local_piece,snapshot)
+    if not class_piece then return nil,problem end
+    local card_piece,refusal=Card.Capture(entry,session,local_piece,class_piece,classes,defaults,snapshot)
+    if not card_piece then return nil,refusal end
+    local capture,reason=Files.Capture(entry,session,{local_piece,class_piece,card_piece})
+    if not capture then return nil,reason end
+    -- First-load inspection only; candidates still require a fresh Discover below.
+    return {capture=capture,driver=driver,entry=entry,session=session,initial_discovery=discovery}
 end
 -- The test input boundary builds once; later operations can reuse the exact facts
 -- while still performing NEW discovery against the current actual publication.
@@ -49,8 +60,9 @@ function M.Operation(f,discovery,options)
         if group.reason then return fail("complete original owner reconciliation required") end
         local list
         if group.owner==Local then list=Local.Roots(group.view)
+        elseif group.owner==Class then list=Class.Roots(group.view)
         elseif group.owner==Card then list=Card.Roots(group.view);card_view=group.view
-        else return fail("fixture supports its real Local/Card owners only") end
+        else return fail("fixture supports its real Local/Class/Card owners only") end
         for _,root in ipairs(list) do available[root.root_id]=root;roots[#roots+1]=root end
     end
     local card={refresh=options.refresh}
@@ -89,7 +101,7 @@ function M.Prepare(f,discovery,options)
     return prepared,report,operation
 end
 -- Caller owns controller creation/release. Only this explicit call may publish,
--- through both real registration hooks and ONE FileCommit transaction.
+-- through all three real registration hooks and ONE FileCommit transaction.
 function M.Publish(f,prepared,controller)
     local op=prepared.operation;local refresh=op.card.refresh
     local live,err=refresh();if not live then return nil,err end

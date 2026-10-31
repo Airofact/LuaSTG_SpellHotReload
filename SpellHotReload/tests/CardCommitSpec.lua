@@ -1,12 +1,14 @@
 local Planning=require("SpellHotReload.tests.PlanningFixture")
 -- Synthetic first loads and fault injection, never engine/game chunks.
--- Real Local/Card fragments and LuaJIT sharing; one neutral file publication.
+-- Real Local/Class/Card fragments and LuaJIT sharing; one neutral file publication.
 local M = {}
 local serial=0
 function M.run(opts)
     opts = opts or {}
     local Tx = opts.transaction or require("SpellHotReload.Apply.FileCommit")
-    local Load = require("SpellHotReload.Load.AnchorLoad")
+    local Load = require("SpellHotReload.Adapters.Class.ClassLoad")
+    local ClassFixture=require("SpellHotReload.tests.ClassFixture")
+    local environment
     local Capture = require("SpellHotReload.Adapters.Card.Card")
     local Local = require("SpellHotReload.Adapters.Local.Local")
     local Source = require("SpellHotReload.Source.FileAnalysis")
@@ -41,6 +43,7 @@ function M.run(opts)
         "local function other() return 100 end",
         "local function setter(v) state=v end",
         "_tx_runs=_tx_runs+1",
+        "_editor_class['K']=Class(boss)",
         "_editor_class['K'].cards={boss.move.New(0,0,1)}",
         "_tmp_sc=boss.card.New('A',1,2,3,100)",
         "function _tmp_sc:init() return helper() end",
@@ -50,6 +53,7 @@ function M.run(opts)
         "function _tmp_sc:init() return other() end",
         "function _tmp_sc:frame() return 10 end",
         "table.insert(_editor_class['K'].cards,_tmp_sc)",
+        "_editor_class['L']=Class(boss)",
         "_editor_class['L'].cards={}",
         "_tmp_sc=boss.card.New('C',1,2,3,100)",
         "function _tmp_sc:init() return helper()+100 end",
@@ -110,17 +114,21 @@ function M.run(opts)
     end
     local function fixture(kind,module)
         reset()
+        if environment then environment:Restore() end
+        environment=ClassFixture.Install()
         _tx_runs=0;_editor_class={K={},L={}}
-        boss={card={New=function(name)
+        boss.card={New=function(name)
             local card={name=name,is_combat=true}
             for _,cb in ipairs(names) do card[cb]=defaults[cb] end
             return card
-        end},move={New=function() return {is_combat=false} end}}
+        end}
+        boss.move={New=function() return {is_combat=false} end}
         serial=serial+1
         local sid="CardCommitSpec:"..tostring(serial)
         local entry=must(Load.Capture(source,{name="Tx_Boss.lua"}))
         must(entry.reloadable,entry.reason);entry.file="Tx_Boss.lua"
         local f=must(Planning.Capture(entry,sid,_editor_class,defaults))
+        environment:FinishLoad()
         local c=f.capture
         local l={capture=c,snapshot=c.snapshot,entry=entry,session_id=sid,
             classes=_editor_class,content=source,generation=0,fixture=f}
@@ -176,7 +184,8 @@ function M.run(opts)
         end
     end
     local function isolated(overrides)
-        local chunk=assert(loadfile(assert(opts.module_path,"isolated module path required")))
+        local source=assert(opts.sources and opts.sources["SpellHotReload/Apply/FileCommit.lua"],"isolated FileCommit source required")
+        local chunk=assert(loadstring(source,"@SpellHotReload/Apply/FileCommit.lua"))
         setfenv(chunk,setmetatable(overrides or {},{__index=_G}))
         return chunk()
     end
@@ -217,7 +226,8 @@ function M.run(opts)
         eq(group(receipt.snapshot,Local).state.by_name.other.definition_version,2,"actual Local definition version")
         eq(receipt.owner_deltas[1].owner,Local,"actual Local delta owner")
         eq(receipt.owner_deltas[1].changed,true,"Local delta changed")
-        eq(receipt.owner_deltas[2].changed,false,"Card wrapper delta unchanged")
+        local deltas={};for _,delta in ipairs(receipt.owner_deltas) do deltas[delta.owner]=delta end
+        eq(deltas[Capture].changed,false,"Card wrapper delta unchanged")
         eq(old_callback(),200,"original callback sees replaced anchor cell")
         eq(l.classes.K.cards[3].init,old_callback,"helper-only keeps wrapper identity")
         -- Optional callback deletion publishes its captured genuine default.
@@ -408,7 +418,8 @@ function M.run(opts)
         tx,s,c,l=fixture("raw",failing_seal);b=baseline(s,c,l)
         local seal_scope=tx:Run(function(token)
             v,err=tx:Commit(token,s.operation,fragments(s),l,l.fixture.refresh)
-            refusal(v,err,"ownership","metadata throw")
+            refusal(v,err,"internal","metadata throw")
+            eq(err.message,"file preparation threw","opaque preparation error stays unformatted")
             eq(tx:Check(token),true,"failed preparation leaves token usable")
         end)
         eq(seal_scope,true,"failed preparation scope completed")
@@ -562,7 +573,7 @@ function M.run(opts)
             local hot=assert(loadstring("return function(fn) local sum=0 for i=1,10000 do sum=sum+fn() end return sum/10000 end"))()
             real_jit.flush()
             eq(hot(old),105,"warm original consumer")
-            local util=require("jit.util")
+            local util=opts.jit_util or require("jit.util")
             local traced=false
             for i=1,1000 do if util.traceinfo(i) then traced=true;break end end
             test(traced,"real hot trace exists")
@@ -574,6 +585,7 @@ function M.run(opts)
     end)
     reset()
     for _,tx in ipairs(controllers) do tx:Release() end
+    if environment then environment:Restore() end
     for _,key in ipairs(globals) do rawset(_G,key,saved[key]) end
     if not ok then error(problem) end
     for _,label in ipairs(failures) do print("FAIL CardCommitSpec: "..label) end

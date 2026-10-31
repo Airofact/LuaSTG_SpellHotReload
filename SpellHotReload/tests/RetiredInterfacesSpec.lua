@@ -11,11 +11,16 @@ function M.run()
         "PrepareVersioned","PrepareFileVersioned","InspectPrepared","CaptureVersions","SeedVersions",
         "CheckCommitInput","ProposeVersion","CheckOwnership","CheckCallbackRead","CheckPublications",
         "CheckJoinDestinations","RuntimeContext"})
-    absent("Adapters.Card.CardCallbacks",{"Select","Build","Publish"})
+    absent("Adapters.Card.CardCallbacks",{"Select","Build","Publish","Read"})
     absent("Adapters.Card.PracticeBinding",{"Patch","Restart","FlyOut"})
     absent("Adapters.Card.CardVersions",{"CompareDiscovery","Publication"})
     assert(type(require("SpellHotReload.Adapters.Card.CardVersions").Compare)=="function",
         "Card private actual-version comparison missing");passed=passed+1
+    absent("Adapters.Local.LocalDefinitions",{"Match"})
+    for _,name in ipairs({"Object","ObjectDefinitions","ObjectLoad","ObjectVersions"}) do
+        assert(not pcall(require,"SpellHotReload.Adapters.Object."..name),"retired Object module remains: "..name)
+        passed=passed+1
+    end
     absent("Source.FunctionPlan",{"Inspect","InspectDiscovery","PrepareDiscovery","DiscoveryPreparer"})
     absent("Pipeline.Driver",{"Register","Signature","Plan","Commit","Apply","Restart","Count","Select"})
     absent("Pipeline.Adapter",{"Validate","Fallback"})

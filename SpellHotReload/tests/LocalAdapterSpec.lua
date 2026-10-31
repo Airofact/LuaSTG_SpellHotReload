@@ -38,14 +38,16 @@ function M.run()
         local entry=must(Load.Capture(source,{name="LocalAdapter_Boss.lua"}))
         entry.file="LocalAdapter_Boss.lua"
         local session="LocalAdapterSpec:"..serial
-        local contribution=must(Local.Capture(entry,session))
         local driver=Driver.New();must(driver:RegisterDiscovery(Local))
+        local initial=must(driver:Discover(entry.file,entry.source,{session_id=session,registry_entry=entry,loaded_source=entry.loaded_source}))
+        local contribution=must(Local.Capture(entry,session,initial.snapshot))
         local pieces={contribution}
         local f={entry=entry,driver=driver,session=session,generation=0,options=options,
             registrations=0,transactions=0,observer_calls={},prepared_facts={}}
         if options.observer then
-            local observer={Id="observer",ContractVersion=5}
-            observer.Match=function() return {units={},claims={},context={tag="empty-owner"}} end
+            local observer={Id="observer",ContractVersion=7}
+            observer.Match=function() return nil end
+            observer.BuildContext=function(source,units) return {source=source,units=units,tag="empty-owner"} end
             observer.Reconcile=function(previous,candidate)
                 return {rows={},view={base=previous,source=candidate.common.source},units={},exports={}}
             end

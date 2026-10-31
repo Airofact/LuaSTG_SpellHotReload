@@ -5,7 +5,16 @@ function M.run()
     local Source=require("SpellHotReload.Source.FileAnalysis")
     local Syntax=require("SpellHotReload.Source.SyntaxTree")
     local Cards=require("SpellHotReload.Adapters.Card.Card")
-    local Callbacks=require("SpellHotReload.Adapters.Card.CardCallbacks")
+    local Driver=require("SpellHotReload.Pipeline.Driver")
+    local FileMatch=require("SpellHotReload.Pipeline.FileMatch")
+    local Local=require("SpellHotReload.Adapters.Local.Local")
+    local ClassAdapter=require("SpellHotReload.Adapters.Class.Class")
+    local function discover(facts)
+        local d=Driver.New();assert(d:RegisterDiscovery(Local));assert(d:RegisterDiscovery(ClassAdapter));assert(d:RegisterDiscovery(Cards))
+        local found,err=d:Discover("SyntaxTree_Boss.lua",facts,{})
+        if not found then return nil,err end
+        return FileMatch.ForOwner(found.snapshot,Cards,facts)
+    end
     local Compose=require("SpellHotReload.Source.Compose")
     local passed=0
     local function eq(a,b,label) assert(a==b,label..": "..tostring(a).." ~= "..tostring(b));passed=passed+1 end
@@ -84,12 +93,13 @@ function M.run()
     local original_parse=Syntax.Parse
     Syntax.Parse=function() error("shared syntax reparsed") end
     local ok,why=pcall(function()
-        local classes=assert(Cards.CardLists(analysis))
+        local matched=assert(discover(facts))
+        local classes=matched.classes
         eq(#classes,1,"only real class is discovered")
         eq(classes[1].class_key,"K","class key from index literal")
-        eq(assert(Cards.CardLists({syntax=analysis.syntax,statements=analysis.statements}))[1].class_key,"K",
-            "card list query consumes statement facts without a token array")
-        local layout=assert(Callbacks.Read(facts,"K"))
+        eq(matched.source,facts,"Card consumes the exact complete shared Source")
+        eq(analysis.tokens,nil,"shared discovery has no token array")
+        local layout=matched.by_class.K.layout
         eq(#layout,1,"registration from call node")
         eq(layout[1].name,"C","constructor argument value")
         eq(layout[1].callback_syntax.init,analysis.syntax.Match(analysis.statements[5].syntax,"definition").fn,"callback reuses original function node")
@@ -101,8 +111,8 @@ function M.run()
         eq(Source.Declarations(facts),analysis.declarations,"scope queries reuse shared declarations")
     end)
     Syntax.Parse=original_parse;assert(ok,why)
-    eq(#assert(Cards.CardLists(analyze("_editor_class['K'].cards,other={},0"))),0,"multi-target write is not a list anchor")
-    eq(#assert(Cards.CardLists(analyze("_editor_class['K'].cards=factory()"))),0,"unknown RHS is not a table")
+    eq(#assert(discover(assert(Source.Build("_editor_class['K'].cards,other={},0")))).classes,0,"multi-target write is not a list anchor")
+    eq(#assert(discover(assert(Source.Build("_editor_class['K'].cards=factory()")))).classes,0,"unknown RHS is not a table")
     -- Decoder agrees with runtime literal semantics; no analyzed chunk is executed.
     for _,raw in ipairs({"'a\\n\\097'","'\\\\\\\"\\''","[=[\r\nline\rnext]=]","'a\\\r\nb'","'\\000\\255'"}) do
         local literal=analyze("local v="..raw).syntax
@@ -153,9 +163,10 @@ function M.run()
     end
     for _,tail in ipairs({"_tmp_sc.init=function() end,side_effect()","_tmp_sc.init,other=function() end,0"}) do
         local bad=source:gsub("function _tmp_sc:init%(%.%.%.%) return function%(%.%.%.%) return %.%.%. end end",tail)
-        local layout,why=Callbacks.Read(assert(Source.Build(bad)),"K")
+        local layout,why=discover(assert(Source.Build(bad)))
         eq(layout,nil,"compound callback assignment refused")
-        eq(type(why),"string","compound callback diagnostic")
+        eq(why.phase,"match","compound callback rejected at shared matching")
+        eq(why.code,"unsupported","compound callback diagnostic")
     end
     -- Tree reference traversal excludes declaration names and field/record labels.
     local names_tree=analyze("local obj={field=value,[key]=other}; obj:field(value)").syntax
@@ -186,7 +197,7 @@ function M.run()
             eq(bytes:sub(whole.first,whole.last),Tree.Text(callback_statement),"statement range equals native span")
             eq(body_range.first,bytes:find("function",expected_first,true),"function starts at its own keyword")
             eq(body_range.last,expected_last-1,"function span excludes statement semicolon")
-            local layout=assert(Callbacks.Read(complete,"K"))
+            local layout=assert(discover(complete)).by_class.K.layout
             eq(layout[1].callback_points.init.first,expected_first,"callback includes assignment/declaration prefix")
             eq(layout[1].callback_points.init.last,expected_last-1,"callback ends at function end")
             whole.first=0

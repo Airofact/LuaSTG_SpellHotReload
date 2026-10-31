@@ -82,7 +82,7 @@ DLL 包含固定 tree-sitter 核心、Lua grammar 和指针式 FFI 桥接，不�
 这不是通用 Host/Value 热更；任意中间插入/重排、新类创建或非字面量构造仍不保证可隔离。
 文件级门禁与完整剩余核对由 `SpellHotReload/Apply/FileApply.lua` 负责；Card 仅提供
 卡接线/绑定影响的证据和已证明的定义语句覆盖，不比较无关语句、不决定整文件完成。
-全局/字段值及 Host 场景不在生产支持范围；Local、Card 和 Object 的安全定义集合
+全局/字段值及 Host 场景不在生产支持范围；Local、Class 和 Card 的安全定义集合
 由一次共同文件事务发布，各自保存私有定义规则和版本。
 独立的全局 `Include 'path'` / `Include('path')`（含长字符串、尾随分号）不参与
 符卡热重载：增删或改路径不阻断 Apply，也不单独保留候选；不会执行 Include，
@@ -217,16 +217,21 @@ Del 消亡；enemy 仍仅有同一协议的离线覆盖，Kill 掉落、完整�
 
 1. **首载捕获**：`__init__.lua` 在 `afterTHlib` 安装 `LoadHook`，经
    `AnchorLoad` 从一次正常文件执行取得完整 FileAnalysis、函数身份和共享单元锚点。
-   `Plugin:AdoptLoad` 收齐 Local、Card 和 Object 的独立首载贡献，再由 `FileVersions`
+   `Plugin:AdoptLoad` 先取得同一份公共发现，按 Local → Class → Card 收齐真实首载贡献，再由 `FileVersions`
    一次建立共同文件快照。任一贡献失败都保留拒绝原因，不从后来的活体补建历史。
    同文件再次执行时保留原首载记录并禁用热重载。
 2. **稳定候选与公共分析**：`Watcher` / `SnapshotStore` 双读字节一致后标为 stable；
    `Plugin` 复读磁盘并取得新鲜活体绑定。`Source/FileAnalysis` 对完整候选做语法
    编译校验、建立全文 AST、词法绑定和节点位置；不执行候选。各 owner 消费同一事实。
 3. **发现、依赖与定向准备**：`Driver:DiscoverPublished` 将公共 source 和共同实际
-   publication 交给原 owner 的 `Match / Reconcile`，保留候选零命中时的旧侧记录。
-   Local 拥有局部定义匹配、支持范围、实际版本和选择；Card 拥有回调、卡表对应及
-   业务绑定规则。公共 `Dependencies` 只以 unit 为节点路由有限需求和 root 来源，
+   publication 交给原 owner 的 `Match / BuildContext / Reconcile`，保留候选零命中时的旧侧记录。
+   FileMatch拥有一次发现的共享游标：多项试探失败后复位，成功立即接受单元及语法项映射。
+   Local匹配绑定，Class匹配类定义段，Card每次匹配一张卡；BuildContext只汇总已接受结果的文件事实，
+   不到文件末尾才创建单元。类定义中的cards初始化不截断后续类字段/方法。
+   每张Card有独立的实际unit_ref，并通过真实依赖边引用所属Class；回调和列表槽位保持私有。
+   Class提供定义条件：未变时保留读证据，可发布变化进入同一事务，不能满足时阻塞相关Card。
+   Class整合原Object的五类基类/六回调发布能力；其它有真实首载证据的类只读，不自动获得写权限。
+   Local拥有局部支持、版本与选择，Card拥有注册对应及业务绑定规则。公共 `Dependencies` 只以 unit 为节点路由有限需求和 root 来源，
    细粒度映射由 owner 私有维护。各 owner 约束后，`Locate / Inject` 为最终安全集合
    定向准备；`FunctionPlan` 保留完整词法上下文下的捕获探测、闭包准备和接线计划，
    不再分析整文件、重建局部定义索引或选择根。`FileApply` 核对完整文件门禁。
@@ -243,7 +248,7 @@ Del 消亡；enemy 仍仅有同一协议的离线覆盖，Kill 掉落、完整�
    receipt 后经 `Runtime/CurrentRestart` 请求练习切换。失败 Retry 只重验冻结目标，
    不读候选、编译或再次提交；重启与定义完成分别记账。
 
-公共发现契约为5：`Match / Reconcile / Locate / Inject / Commit`，其中 Locate/Inject
+公共发现契约为7：`Match / BuildContext / Reconcile / Locate / Inject / Commit`，其中 Locate/Inject
 区分逐 unit 解析和逐 owner 聚合准备，Commit 只登记片段；所有 owner 由一个事务发布。
 提交作用域由 Monitor 的 layout 按钮打开，`View:update` → `Plugin:Tick` 仅驱动监视。
 令牌验证主线程、生命周期与重入，调用时机仍由可信 UI 入口保证。
@@ -263,12 +268,12 @@ Del 消亡；enemy 仍仅有同一协议的离线覆盖，Kill 掉落、完整�
 | --- | --- |
 | `Load/LoadHook.lua`、`Load/AnchorLoad.lua` | 正常首载执行一次，保存完整 entry、公共 FileAnalysis、原始字节、函数身份及共享 cell anchor |
 | `Load/AnchorRegistry.lua` | 持有首载 entry，提供只读 cell 查询；Missing 保留引用至会话释放 |
-| `Pipeline/Adapter.lua`、`NodeRegistry.lua`、`FileMatch.lua`、`UnitIndex.lua`、`Driver.lua` | 契约5注册、完整候选发现、逐 unit/owner 准备及全部片段收齐后的事务调度 |
+| `Pipeline/Adapter.lua`、`NodeRegistry.lua`、`FileMatch.lua`、`UnitIndex.lua`、`Driver.lua` | 契约7注册、完整候选发现、逐 unit/owner 准备及全部片段收齐后的事务调度 |
 | `Pipeline/FileVersions.lua`、`Dependencies.lua` | 唯一文件快照/owner贡献与实际 unit 图、有限需求和 root 来源；不拥有适配器细粒度规则 |
 | `Adapters/Local/Local.lua`、`LocalDefinitions.lua`、`LocalVersions.lua` | 已有全文节点上的局部定义匹配、支持范围、私有映射、实际版本、依赖需求和最终选择 |
-| `Adapters/Card/Card.lua`、`CardCallbacks.lua` | 回调结构解释、所有权与业务绑定约束、最终回调准备和片段登记；不选择 Local 定义或独立发布 |
+| `Adapters/Card/Card.lua`、`CardCallbacks.lua` | 单卡多语句匹配、独立卡单元、注册布局、回调准备及对Class/Local的真实依赖；不独立发布 |
 | `Adapters/Card/CardTarget.lua`、`CardVersions.lua` | 精确对应/重启证明、Card 私有版本和公共实际图派生的依赖观察 |
-| `Adapters/Object/` | 正常首载 Class 来源、已有对象类/六回调与数字槽、复制继承拒绝、私有版本及共同事务片段 |
+| `Adapters/Class/` | 类段匹配、真实Class首载、单卡依赖provider、既有六回调/数字槽与继承规则、私有版本及共同事务片段 |
 | `Source/` | 公共语法/绑定/节点事实、编译与选中闭包准备/接线工具；不拥有 Local 领域规则、版本或发布权限 |
 | `Apply/FileApply.lua` | 顶层效果门禁、Include 排除及完整候选剩余核对 |
 | `Apply/FileCommit.lua`、`CommitCheck.lua`、`CommitPhase.lua` | 中立共同事务、所有 owner 权限/冲突/Guard、单次相位授权、日志、回滚及最后安装共同快照 |
@@ -278,7 +283,7 @@ Del 消亡；enemy 仍仅有同一协议的离线覆盖，Kill 掉落、完整�
 | `UI/View.lua`、`UI/Tab/`、`Runtime/ChangeLog.lua` | 调试界面与日志 |
 
 两侧只读协调通过 `Driver:DiscoverPublished` 接收共同实际 publication 和同一次完整
-FileAnalysis。`FileVersions.Publication` 投影每个原 owner 的实际记录；Local/Card
+FileAnalysis。`FileVersions.Publication` 投影每个原 owner 的实际记录；Local/Class/Card
 各自解释细粒度定义，候选零命中仍协调旧侧。解析/Match 失败或原 owner 不可用时
 保留 unresolved，不从缺失推断删除；协调结果本身不授予选择、发布或版本推进许可。
 本支持范围要求局部声明集合/顺序/种类及已有定义的词法支持保持；函数必须是唯一
@@ -290,7 +295,7 @@ FileAnalysis。`FileVersions.Publication` 投影每个原 owner 的实际记录�
 以原快照核对完整剩余，不伪造回调或版本更新。Local 的独立安全定义仍按其 root
 及完整文件门禁选择，不借零 Card 命中绕过；没有绑定清空或函数删除执行器。
 
-适配器仅实现 `ContractVersion = 5` 的 `Match / Reconcile / Locate / Inject / Commit`。
+适配器仅实现 `ContractVersion = 7` 的 `Match / BuildContext / Reconcile / Locate / Inject / Commit`。
 Driver 仅注册 discovery Id，不提供旧载体路由或 `Plan / Commit / Apply / Restart`。
 Card 不接收旧 request、平铺 env 或混合聚合计划；每个 owner 只登记自己的片段。
 `GeneratedBossLoader`、`Legacy/Functions`、`UpvalueRegistry`、`LoadVersions`、
@@ -303,6 +308,18 @@ Card 和 PracticeBinding 不提供重启转发；重启属于 Runtime 工作流�
 Current 在提交前冻结目标，成功 receipt 关联后请求切关；接受请求仍不证明 stage/Boss 已就绪。
 Retry 消费同一冻结目标，不重读源码、不编译、不再次发布；文件 Apply 不请求重启。
 
+## 匹配与首载边界
+
+共享游标、Class段、单卡及Card→Class依赖组成契约7。匹配成功不等于源码已发布；
+类名/slot或当前活体也不能补造首载Class provider。缺少同文件真实类证据时保留拒绝。
+不连续的卡定义片段不会跨过Local/未知语句重放回调；脱离已匹配单卡的回调明确拒绝。
+列表关系按源码顺序汇总，重复注册仍由真实身份和对应检查拒绝，Class卡表结构不被重放。
+
+测试入口、首载夹具和单卡定位消费者统一使用契约7；原 Object 回归迁入 ClassAdapterSpec，
+保留五类可写基类、六回调/数字槽、继承限制、共同发布和回滚。ClassSpellSpec 补充只读类及
+Card→Class→Local 递归依赖。验证结果以对应运行证据为准，代码存在不代表测试或目标引擎已通过。
+性能须普通JIT/GC下同输入真实Apply墙钟及最大帧间隔对照；不把调用数或离线结果当作性能收益。
+
 ## 验证
 
 从游戏目录运行 LuaJIT 离线回归子集：
@@ -312,17 +329,19 @@ luajit plugin/SpellHotReload/SpellHotReload/tests/Run.lua
 ```
 
 `Run.lua` 保留原基础源码、发现、协调、监视和重启子集，并纳入公共依赖、Local、
-Card、Object、共同事务、FileApply 和 Plugin 集成及退役断言。它要求真实共享 upvalue 能力，
+Card、Class、共同事务、FileApply 和 Plugin 集成及退役断言。它要求真实共享 upvalue 能力，
 不代表所有 spec，也不属于引擎 smoke。完整回归将每个 `tests/*Spec.lua` 的 `run()`
-放在独立进程调用；部分故障注入 spec 还需对应源码路径参数。首载/释放、事务回滚、
+放在独立进程调用；CardTarget 的故障注入需要对应模块路径，CardCommit/CommitPolicy 使用显式 `opts.sources` 中的 FileCommit 原文字节。首载/释放、事务回滚、
 Current/文件 Apply、候选剩余、连续共享状态和冻结 Retry 各有定向测试。
-`PlanningFixture.lua` 只组装真实双 owner 首载→公共 source/协调→显式 operation→
+`ClassFixture.lua` 只模拟离线 Class/dispatch 生命周期，ClassLoad 观察真实源内构造；不伪造首载历史。
+`PlanningFixture.lua` 只组装同一发现的 Local/Class/Card 首载→公共 source/协调→显式 operation→
 共同准备/事务→发布后新发现，不执行候选或提供生产替代比较算法。
 `RetiredInterfacesSpec.lua` 禁止旧导出和混合准备入口，允许 Card 私有的实际版本
 `Compare`；独立冷加载测试另禁止装载已删除模块。离线测试不证明实际引擎按钮、
 异步切关、完整视觉或性能。共同接口/事务/共享状态变更扩大相关回归，其余按影响面选择。
 
-`EngineSmoke.lua` 与 `EngineSmokeScDebug.lua` 是显式启用的引擎 harness，
+`EngineSmokeScDebug.lua` 是显式启用的引擎 harness，布局检查消费共享匹配结果。
+`EngineSmoke.lua` 保留历史练习观察代码，其任意派生 Class 输入尚未迁到当前支持边界，不能直接作为本协议验收入口。二者均须先核对独立执行范围；
 使用生产首载 entry 和 layout 中的 `ApplyFromUI` 集成入口，保留实际能力检查；
 不据此声称点击了原生 Monitor 按钮。普通 harness 使用 userdata 人工夹具，观察
 原共享状态、两次新练习 Boss/任务以及 Dismiss 跨 drift/rescan 持续生效；其 watcher
@@ -403,7 +422,17 @@ LocalDefinitions owns Local matching/support, while
 FunctionPlan prepares only owner-selected descriptors with full lexical context.
 Card discovery/registrations, file wiring/Include policy and closure nested-reference
 checks consume these nodes. Their token-position grammar matchers are removed.
-Snapshot-owned facts decode literals when requested/materialized. Signatures use
+`Names(node)` collects structural identifier references, including references
+inside containers and delayed function bodies, without decoding literal values.
+It uses the same node construction, child relationships and traversal as normal
+queries; binding declarations and field/record labels are still excluded. This
+query does not certify literal support, captured bindings or publication safety.
+Already captured local values remain available while Class construction stays
+pending; reading their value does not execute or adopt the candidate constructor.
+Direct candidate registry reads still use the Class dependency checks.
+Ordinary `Match` queries and `Walk`, including selected closure preparation,
+retain their literal validation. A prior `Names` call cannot authorize them.
+Snapshot-owned facts otherwise decode literals when requested/materialized. Signatures use
 raw source spans (excluding optional statement separators), with exact string
 equality; formatting within a span participates. Binding confidence, ownership,
 final guards and actual upvalue checks remain separate.

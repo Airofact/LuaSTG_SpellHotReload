@@ -13,7 +13,9 @@ function M.run()
     package.loaded[modules[2]]={}
     package.loaded[modules[3]]=nil;package.loaded[modules[4]]=nil
     local Plugin=require("SpellHotReload.Runtime.Plugin")
-    local Load=require("SpellHotReload.Load.AnchorLoad")
+    local Load=require("SpellHotReload.Adapters.Class.ClassLoad")
+    local ClassFixture=require("SpellHotReload.tests.ClassFixture")
+    local environment
     local Anchor=require("SpellHotReload.Load.Anchor")
     local Binding=require("SpellHotReload.Adapters.Card.PracticeBinding")
     local Restart=require("SpellHotReload.Runtime.CurrentRestart")
@@ -36,6 +38,7 @@ function M.run()
     for _,name in ipairs(callbacks) do defaults[name]=function() return "default" end end
     local FILE="Inspect_Boss.lua"
     local SIDE=table.concat({
+        "_editor_class['L']=Class(boss)",
         "_editor_class['L'].cards={}",
         "_tmp_sc=boss.card.New('C',1,2,3,100)",
         "function _tmp_sc:init(n) return helper(n)+300 end",
@@ -48,6 +51,7 @@ function M.run()
         "local function idle(n) return n+1000 end",
         "local function setstate(v) state=v end",
         "_va_runs=_va_runs+1","_va_api={set=setstate}",
+        "_editor_class['K']=Class(boss)",
         "_editor_class['K'].cards={boss.move.New(0,0,1)}",
         "_tmp_sc=boss.card.New('A',1,2,3,100)",
         "function _tmp_sc:init(n) return helper(n) end",
@@ -77,21 +81,25 @@ function M.run()
         _G.jit=saved.jit
         _va_runs=0
         _G.IsValid=function() return true end
+        if environment then environment:Restore() end
+        environment=ClassFixture.Install()
         _editor_class={K={},L={}}
         _sc_table={}
         ext={replay={IsReplay=function() return current and current.replay==true end}}
         lstg={var={},Log=function() end,FileManager={EnumFiles=function() return {{FILE,false}} end}}
         local f={constructions=0,restarts=0,reads=0,discoveries=0,creates=0,classes=_editor_class}
         current=f
-        boss={card={_default_card=defaults,New=function(name)
+        boss.card={_default_card=defaults,New=function(name)
             f.constructions=f.constructions+1
             local c={name=name,is_combat=true}
             for _,cb in ipairs(callbacks) do c[cb]=defaults[cb] end
             return c
-        end},move={New=function() return {is_combat=false} end}}
+        end}
+        boss.move={New=function() return {is_combat=false} end}
         f.p=Plugin.New();plugins[#plugins+1]=f.p
         f.entry=must(Load.Capture(SOURCE,{name=FILE}))
         must(f.p:AdoptLoad(FILE,f.entry))
+        environment:FinishLoad()
         f.capture=f.p:GetVersions(FILE)
         f.p._activated,f.p._supported=true,true
         f.p._activation_attempted=true
@@ -113,7 +121,9 @@ function M.run()
         driver.Discover=function(self,...)
             f.discoveries=f.discoveries+1
             if f.on_discover then f.on_discover(f) end
-            return discover(self,...)
+            local d,e=discover(self,...)
+            if d then f.latest_discovery=d end
+            return d,e
         end
         Restart.Handoff=function(class_key,name,card,slot,include_previous)
             f.restarts=f.restarts+1
@@ -226,7 +236,10 @@ function M.run()
             eq(model.revision,1,"inspect actual published r1")
             eq(row(model.functions,"local:helper").definition_version,2,"published helper v2")
             eq(row(model.cards,"card:1:K:3").definition_version,1,"pending wrapper keeps source v1")
-            eq(row(model.cards,"card:1:K:3").observed[1].version,2,"published observation advances alone")
+            local observed={}
+            for _,item in ipairs(row(model.cards,"card:1:K:3").observed) do observed[item.name]=item.version end
+            eq(observed.helper,2,"published helper observation advances alone")
+            eq(observed["class:K"],1,"unchanged Class observation remains at actual v1")
             eq(row(model.cards,"card:1:K:3").pending,true,"pending wrapper not swallowed")
             eq(row(model.functions,"local:idle").pending,true,"pending local retained")
             eq(row(model.cards,"card:1:K:3").affected,false,"no fictional repeated propagation")
@@ -306,7 +319,8 @@ function M.run()
             candidate(f,EDIT.."\n_tmp_sc=boss.card.New('D',1,2,3,100)\nfunction _tmp_sc:init(n) return n end\ntable.insert(_editor_class['K'].cards,_tmp_sc)")
             model=must(f.p:InspectCandidate(FILE))
             eq(#model.pending_sources,1,"only new source is unowned")
-            eq(model.pending_sources[1].source_key,"card:K","new unowned source class")
+            local descriptor=assert(require("SpellHotReload.Pipeline.FileMatch").ForOwner(f.latest_discovery.snapshot,Card,f.latest_discovery.source)).by_class.K.layout[4]
+            eq(model.pending_sources[1].source_key,descriptor.unit.key,"new unowned single-card source")
             eq(model.pending_sources[1].candidate_slot,4,"new unowned source slot")
             eq(model.pending_sources[1].action,"restart-required","new source requires restart")
             eq(row(model.cards,"card:1:K:3").action,"compile-publish","existing sibling is located")
@@ -339,7 +353,9 @@ function M.run()
             check(cached.file_remainder.pending[1].reason~="corrupted","remainder cache detached")
             has(f.p:ApplyFileFromUI(FILE),"prepare: unbounded top-level change","file rejects before commit")
             eq(f.capture.snapshot,before,"refused file keeps published snapshot")
-            has(f.p:ApplyFromUI(),"candidate retained; pending: unknown","Current retains committed definitions and reports unsupported remainder")
+            has(f.p:ApplyFromUI(),"class identity, structure or support changed","Current card is blocked by the changed readonly Class")
+            eq(f.capture.snapshot,before,"blocked Class prevents Current publication")
+            eq(f.restarts,0,"blocked Class prevents restart")
             eq(f.p._store:GetCandidate(FILE)~=nil,true,"completion failure keeps candidate")
             eq(f.classes.K.extra,nil,"neither Apply publishes object method")
 
@@ -563,6 +579,7 @@ function M.run()
     require("SpellHotReload.Adapters.Card.CardVersions").Describe=old_describe
     FileApply.Remaining=old_remaining
     for _,p in ipairs(plugins) do if not p:IsReleased() then p:Release() end end
+    if environment then environment:Restore() end
     for _,name in ipairs(globals) do rawset(_G,name,saved[name]) end
     for _,name in ipairs(modules) do package.loaded[name]=loaded[name] end
     if not ok then failed=failed+1;failures[#failures+1]="unexpected error: "..tostring(problem) end

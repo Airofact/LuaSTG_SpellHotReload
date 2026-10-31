@@ -151,7 +151,9 @@ function M.run()
             check(cell.name~="alias" and cell.name~="counter" and cell.name~="config","no setter authority for state or alias")
         end
         eq(#Source.DeclaredNames(entry.source),8,"shared inspection declaration count")
-        local inspection=must(Definitions.Match(must(Source.Build(source.."\nerror('chunk ran')"))))
+        local inspection_source=must(Source.Build(source.."\nerror('chunk ran')"))
+        local inspection_discovery=must(f.driver:Discover(entry.file,inspection_source,{}))
+        local inspection=must(require("SpellHotReload.Pipeline.FileMatch").ForOwner(inspection_discovery.snapshot,Local,inspection_source)).projection
         eq(#inspection.definitions.helper,1,"inspection never executes chunk")
         refuse(function() return Source.Build("local function f( end") end,"compile","inspection syntax")
         local same=must(discover(f,source));list(view(same).version_view.changed,"","unchanged source")
@@ -281,10 +283,15 @@ function M.run()
         refuse(function() return discover(f,42) end,"unsupported","nonstring source")
         refuse(function() return discover(f,"local function helper( end") end,"compile","candidate syntax")
         refuse(function() return Local.Capture({},f.session) end,"ownership","bad entry")
-        refuse(function() return Planning.Capture(entry,"") end,"ownership","empty session")
+        refuse(function()
+            local v,e=Planning.Capture(entry,"")
+            eq(e and e.phase,"class","empty session reaches Class capture")
+            eq(e and e.message,"genuine reloadable first load required","empty session exact refusal")
+            return v,e
+        end,"unsupported","empty session")
         refuse(function() return Planning.Capture(entry,1) end,"ownership","nonstr session")
         local saved=entry.map.helper;entry.map.helper=nil
-        local missing,missing_err=Local.Capture(entry,f.session);entry.map.helper=saved
+        local missing,missing_err=Local.Capture(entry,f.session,f.initial_discovery.snapshot);entry.map.helper=saved
         refuse(function() return missing,missing_err end,"stale","missing first-load function identity")
         local roots_d=must(discover(f,changed))
         for _,roots in ipairs({{"local:pattern","local:pattern"},{"local:alias"},{"local:nope"},{[2]="local:pattern"},"local:pattern"}) do
@@ -340,9 +347,12 @@ function M.run()
         original_join(Anchor.Get(cf.entry,"f"),1,foreign.entry.anchor,foreign.entry.slots.x)
         refuse(function() return Versions.Reads({base=state(cf.capture.snapshot)}) end,"stale","external capture join detected")
         local independent=fixture(csource);local forged=must(Load.Capture(csource,{name="Versions_Boss.lua"}))
+        forged.file="Versions_Boss.lua"
+        local forged_discovery=must(independent.driver:Discover(forged.file,forged.source,
+            {session_id="forged",registry_entry=forged,loaded_source=forged.loaded_source}))
         must(Anchor.Set(forged,"f",Anchor.Get(independent.entry,"f")))
         forged.map.f=Anchor.Get(independent.entry,"f")
-        refuse(function() return Local.Capture(forged,"forged") end,"stale","initial foreign cells not treated as sharing")
+        refuse(function() return Local.Capture(forged,"forged",forged_discovery.snapshot) end,"stale","initial foreign cells not treated as sharing")
         -- Real shared-cell scenarios are mandatory; missing capabilities fail above.
         local function scenario(label,body)
             local success,reason=pcall(body)
@@ -449,7 +459,8 @@ function M.run()
             bad_snapshot(function(s) s.owners={[2]=actual.owners[2]} end,"owner array hole")
             local function bad_group(change,label)
                 bad_snapshot(function(s)
-                    s.owners={copy(actual.owners[1]),actual.owners[2]}
+                    s.owners={};for i,g in ipairs(actual.owners) do s.owners[i]=g end
+                    s.owners[1]=copy(actual.owners[1])
                     local g=s.owners[1];g.records={};for i,r in ipairs(actual.owners[1].records) do g.records[i]=copy(r) end
                     change(g)
                 end,label)

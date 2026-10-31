@@ -6,7 +6,9 @@ local serial=0
 function M.run()
     local Card=require("SpellHotReload.Adapters.Card.Card")
     local Local=require("SpellHotReload.Adapters.Local.Local")
-    local Load=require("SpellHotReload.Load.AnchorLoad")
+    local Load=require("SpellHotReload.Adapters.Class.ClassLoad")
+    local ClassFixture=require("SpellHotReload.tests.ClassFixture")
+    local environment
     local Files=require("SpellHotReload.Pipeline.FileVersions")
     local Commit=require("SpellHotReload.Apply.FileCommit")
     local FileApply=require("SpellHotReload.Apply.FileApply")
@@ -16,6 +18,15 @@ function M.run()
     local Binding=require("SpellHotReload.Adapters.Card.PracticeBinding")
     local Restart=require("SpellHotReload.Runtime.CurrentRestart")
     local Callbacks=require("SpellHotReload.Adapters.Card.CardCallbacks")
+    local ClassAdapter=require("SpellHotReload.Adapters.Class.Class")
+    local function owned(snapshot,owner)
+        for _,group in ipairs(snapshot.owners) do if group.owner==owner then return group end end
+        error("missing original owner")
+    end
+    local function delta(receipt,owner)
+        for _,item in ipairs(receipt.owner_deltas) do if item.owner==owner then return item end end
+        error("missing original owner delta")
+    end
     local passed,failed,failures=0,0,{}
     local function check(v,label)
         if v then passed=passed+1 else failed=failed+1;failures[#failures+1]=label end
@@ -38,8 +49,9 @@ function M.run()
     local saved={};for _,key in ipairs(globals) do saved[key]=rawget(_G,key) end
     local join,set=debug.upvaluejoin,debug.setupvalue
     local handoff,replay,current=Restart.Handoff,Binding.IsReplay,Binding.CaptureCurrent
-    local commit_hook,local_hook,restart_hook,publish=Card.Commit,Local.Commit,Restart.Request,Callbacks.Publish
+    local commit_hook,local_hook,restart_hook=Card.Commit,Local.Commit,Restart.Request
     local create_hook,build_hook=Compose.Create,Source.Build
+    local class_hook=ClassAdapter.Commit
     local modules={"SpellHotReload.Runtime.Plugin","SpellHotReload.Runtime.Watcher",
         "lstg.FileSystemWatcher","lstg.FileSystemWatcher.FileAction"}
     local loaded={};for _,key in ipairs(modules) do loaded[key]=package.loaded[key] end
@@ -52,6 +64,7 @@ function M.run()
             "local state=4",
             "local function helper(n) return state+n+"..n.." end",
             "_handoff_runs=_handoff_runs+1",
+            "_editor_class['K']=Class(boss)",
             "_editor_class['K'].cards={}",
             "_tmp_sc=boss.card.New('A',1,2,3,4)",
             "function _tmp_sc:init(n) return helper(n)+10 end",
@@ -62,7 +75,8 @@ function M.run()
         },"\n")
     end
     local function reset_hooks()
-        Card.Commit,Local.Commit,Restart.Request,Callbacks.Publish=commit_hook,local_hook,restart_hook,publish
+        ClassAdapter.Commit=class_hook
+        Card.Commit,Local.Commit,Restart.Request=commit_hook,local_hook,restart_hook
         Restart.Handoff,Binding.IsReplay,Binding.CaptureCurrent=handoff,replay,current
         Compose.Create,Source.Build=create_hook,build_hook
         debug.upvaluejoin,debug.setupvalue=join,set;rawset(_G,"jit",saved.jit)
@@ -70,10 +84,12 @@ function M.run()
     -- Shared startup only: each fixture has exactly one authoritative capture.
     local function first_load()
         reset_hooks();serial=serial+1
+        if environment then environment:Restore() end
+        environment=ClassFixture.Install()
         _handoff_runs=0;_editor_class={K={}}
-        boss={card={_default_card=defaults,New=function(name)
+        boss.card={_default_card=defaults,New=function(name)
             local c={name=name,is_combat=true};for k,fn in next,defaults do c[k]=fn end;return c
-        end}}
+        end}
         local entry=must(Load.Capture(source(0),{name="Handoff_Boss.lua"}))
         must(entry.reloadable,entry.reason);entry.file="Handoff_Boss.lua"
         local initial={class_key="K",slot=1,name="A",card=_editor_class.K.cards[1],
@@ -90,6 +106,7 @@ function M.run()
     local function fixture()
         local f=first_load()
         f.fixture=must(Planning.Capture(f.entry,"handoff:"..serial,f.classes,defaults))
+        environment:FinishLoad()
         f.capture=f.fixture.capture;f.base=f.capture.snapshot
         f.live={capture=f.capture,snapshot=f.base,entry=f.entry,classes=f.classes,
             session_id=f.base.session_id,content=source(5),binding=f.initial,generation=3}
@@ -111,7 +128,7 @@ function M.run()
         eq(Anchor.Get(f.entry,"helper")(1),5,label.." old helper cell retained")
         eq(_handoff_runs,1,label.." no miniature source replay")
     end
-    local traps,legacy=0,0
+    local traps=0
     local hostile=setmetatable({},{__index=function() traps=traps+1;error("hostile index") end,
         __tostring=function() traps=traps+1;error("hostile stringify") end})
     local ok,problem=pcall(function()
@@ -128,7 +145,7 @@ function M.run()
         eq(ctx.adapter.transaction,nil,"no owner publisher")
         eq(#record(p,Local).fragment.cell_writes,1,"genuine helper update")
         eq(#fragment.raw_writes,0,"unchanged Card wrappers are not recompiled")
-        Callbacks.Publish=function() legacy=legacy+1;error("legacy publication forbidden") end
+        eq(Callbacks.Publish,nil,"retired publication export absent")
         refuse(function() return Card.Commit(h,fragment,ctx) end,"register","missing registrar","ownership")
         ctx.adapter.register=hostile
         refuse(function() return Card.Commit(h,fragment,ctx) end,"register","nonfunction registrar","ownership")
@@ -141,6 +158,10 @@ function M.run()
             registrations=registrations+1;eq(calls,0,"Local registers before publisher")
             return local_hook(a,b,c)
         end
+        ClassAdapter.Commit=function(a,b,c)
+            registrations=registrations+1;eq(calls,0,"Class registers before publisher")
+            return class_hook(a,b,c)
+        end
         Card.Commit=function(a,b,c)
             registrations=registrations+1;eq(calls,0,"Card registers before publisher")
             eq(a,h,"exact real Card handle");eq(b,fragment,"exact real Card fragment");eq(c,ctx,"exact real Card context")
@@ -151,8 +172,8 @@ function M.run()
             return registered
         end
         local value,err=f.fixture.driver:CommitDiscovery(p,function(op,all)
-            calls=calls+1;eq(registrations,2,"both owners registered first")
-            eq(op,p.operation,"unique publisher operation");eq(#all,2,"publisher complete owner set")
+            calls=calls+1;eq(registrations,3,"all three owners registered first")
+            eq(op,p.operation,"unique publisher operation");eq(#all,3,"publisher complete owner set")
             for i,row in ipairs(p.entries) do
                 eq(all[i],row.fragment,"exact registered fragment")
                 eq(row.context.adapter.register,nil,"registrar revoked before publisher")
@@ -160,9 +181,9 @@ function M.run()
             return nil,marker
         end)
         eq(value,nil,"transaction refusal forwarded");eq(err,marker,"transaction error identity preserved")
-        eq(calls,1,"exactly one publisher callback");eq(registrations,2,"both real hooks called")
+        eq(calls,1,"exactly one publisher callback");eq(registrations,3,"all three real hooks called")
         refuse(function() return retained(h,fragment,ctx) end,"register","expired registrar","stale")
-        unchanged(f,original,"registration-only");eq(legacy,0,"no legacy publication")
+        unchanged(f,original,"registration-only");eq(Callbacks.Publish,nil,"no legacy publication export")
         reset_hooks()
         -- Identity failures use the REAL bound registrar, in separate operations.
         -- A foreign attempt poisons that registration; never probe a success path.
@@ -194,7 +215,7 @@ function M.run()
         unchanged(f,original,"missing join");eq(tx:Poisoned(),false,"capability refusal not poison")
         reset_hooks()
         f=fixture();p=f.prepared;original=f.initial.card.init;tx=controller(f)
-        Callbacks.Publish=function() legacy=legacy+1;error("legacy publication forbidden") end
+        eq(Callbacks.Publish,nil,"retired publication export absent")
         local run=must(Restart.Freeze(f.target,f.capture))
         local failed_run=must(Restart.Freeze(f.target,f.capture))
         local engine=0;Binding.IsReplay=function() return false end
@@ -215,15 +236,16 @@ function M.run()
         eq(receipt.changed,true,"actual helper publication changed")
         eq(receipt.snapshot,f.capture.snapshot,"actual installed snapshot returned")
         eq(f.capture.snapshot.revision,1,"one common revision")
-        eq(#receipt.owner_deltas,2,"complete owner deltas")
-        eq(receipt.owner_deltas[1].owner,Local,"Local delta owner")
-        eq(receipt.owner_deltas[1].changed,true,"Local helper changed")
-        eq(receipt.owner_deltas[2].owner,Card,"Card delta owner")
-        eq(receipt.owner_deltas[2].changed,false,"Card wrappers unchanged")
-        eq(f.capture.snapshot.owners[2],f.base.owners[2],"unchanged actual Card group retained")
+        eq(#receipt.owner_deltas,3,"complete owner deltas")
+        eq(delta(receipt,ClassAdapter).changed,false,"readonly Class retains actual group")
+        eq(delta(receipt,Local).owner,Local,"Local delta owner")
+        eq(delta(receipt,Local).changed,true,"Local helper changed")
+        eq(delta(receipt,Card).owner,Card,"Card delta owner")
+        eq(delta(receipt,Card).changed,false,"Card wrappers unchanged")
+        eq(owned(f.capture.snapshot,Card),owned(f.base,Card),"unchanged actual Card group retained")
         eq(f.initial.card:init(1),20,"current callback reads new helper")
         eq(f.classes.K.cards[2]:init(1),30,"unselected callback sees shared propagation")
-        eq(f.classes.K.cards[2].init,f.base.owners[2].state.units["card:1:K:2"].callbacks.init.fn,"unselected wrapper retained")
+        eq(f.classes.K.cards[2].init,owned(f.base,Card).state.units["card:1:K:2"].callbacks.init.fn,"unselected wrapper retained")
         eq(f.initial.card.init,original,"selected unchanged wrapper retained")
         eq(Anchor.Get(f.entry,"state"),4,"state preserved");eq(_handoff_runs,1,"no source replay")
         eq(f.fresh,4,"initial binding/locate plus prepublish/final refresh")
@@ -274,6 +296,7 @@ function M.run()
             lstg={var={},Log=function() end}
             x.plugin=Plugin.New();plugins[#plugins+1]=x.plugin
             must(x.plugin:AdoptLoad(x.entry.file,x.entry))
+            environment:FinishLoad()
             x.capture=must(x.plugin:GetVersions(x.entry.file));x.base=x.capture.snapshot
             must(Files.Validate(x.capture))
             local p=x.plugin
@@ -288,7 +311,7 @@ function M.run()
             x.candidate=must(p._store:GetCandidate(x.entry.file))
             Binding.CaptureCurrent=function() return x.initial end
             Binding.IsReplay=function() return false end
-            Callbacks.Publish=function() legacy=legacy+1;error("legacy publication forbidden") end
+            eq(Callbacks.Publish,nil,"retired publication export absent")
             return x
         end
         f=plugin_fixture()
@@ -381,7 +404,7 @@ function M.run()
         eq(pending.state,"accepted","retry only accepts handoff")
         eq(pending.attempts,2,"production two attempts")
         eq(pending.ready,"unobserved","production does not claim Boss readiness")
-        eq(legacy,0,"production no legacy publication")
+        eq(Callbacks.Publish,nil,"production no legacy publication")
 
         -- Independent first load: a Missing lifecycle cannot be revived for Apply.
         f=plugin_fixture();plugin=f.plugin
@@ -406,12 +429,13 @@ function M.run()
         eq(retained.generation,f.candidate.generation,"refusal retains candidate generation")
         eq(retained.first_content,f.candidate.first_content,"refusal retains candidate bytes")
         eq(retained.stable,true,"refusal retains stable candidate")
-        eq(legacy,0,"refusal no legacy publication")
+        eq(Callbacks.Publish,nil,"refusal no legacy publication")
     end)
     reset_hooks()
     for _,tx in ipairs(controllers) do tx:Release() end
     for _,plugin in ipairs(plugins) do plugin._watcher=nil;plugin:Release("handoff spec") end
     for _,key in ipairs(modules) do package.loaded[key]=loaded[key] end
+    if environment then environment:Restore() end
     for _,key in ipairs(globals) do rawset(_G,key,saved[key]) end
     if not ok then failed=failed+1;failures[#failures+1]="unexpected: "..(type(problem)=="string" and problem or "opaque error") end
     print(string.format("CardHandoffSpec: %d passed / %d failed",passed,failed))

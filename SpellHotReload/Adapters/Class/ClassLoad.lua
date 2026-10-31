@@ -1,7 +1,7 @@
 -- Observe normal Class calls during a genuine selected load. Never replay a file.
--- LoadHook receives this as its trusted capture function; Object owns the evidence.
+-- LoadHook receives this as its trusted capture function; Class owns the evidence.
 local Load=require('SpellHotReload.Load.AnchorLoad')
-local M={Kind='SpellHotReload.ObjectLoad',Version=1}
+local M={Kind='SpellHotReload.ClassLoad',Version=1}
 local unpack=unpack or table.unpack
 local function pack(...) return {n=select('#',...),...} end
 local BASES={'_object','bullet','enemy','laser','laser_bent'}
@@ -12,7 +12,7 @@ function M.Capture(content,options)
     for _,name in ipairs(BASES) do evidence.bases[name]=rawget(_G,name) end
     if type(original)~='function' then
         local entry,err,stage=Load.Capture(content,options)
-        if entry then entry.object_load=evidence end
+        if entry then entry.class_load=evidence end
         return entry,err,stage
     end
     local active=true
@@ -44,7 +44,7 @@ function M.Capture(content,options)
         for _,name in ipairs(BASES) do
             if captured.bases[name]~=rawget(_G,name) then captured.intact=false end
         end
-        entry.object_load=captured
+        entry.class_load=captured
     end
     return unpack(result,2,result.n)
 end

@@ -6,7 +6,9 @@ local serial=0
 function M.run(opts)
     opts=opts or {}
     local Target=opts.target or require("SpellHotReload.Adapters.Card.CardTarget")
-    local Load=require("SpellHotReload.Load.AnchorLoad")
+    local Load=require("SpellHotReload.Adapters.Class.ClassLoad")
+    local ClassFixture=require("SpellHotReload.tests.ClassFixture")
+    local environment
     local Card=require("SpellHotReload.Adapters.Card.Card")
     local Local=require("SpellHotReload.Adapters.Local.Local")
     local Files=require("SpellHotReload.Pipeline.FileVersions")
@@ -35,6 +37,7 @@ function M.run(opts)
     local source=table.concat({
         "local state=4",
         "_ct_runs=_ct_runs+1",
+        "_editor_class['K']=Class(boss)",
         "_editor_class['K'].cards={boss.move.New(0,0,1)}",
         "_tmp_sc=boss.card.New('Same',1,2,3,4)",
         "function _tmp_sc:init() return 11 end",
@@ -45,12 +48,14 @@ function M.run(opts)
         "_tmp_sc=boss.card.New('',1,2,3,4)",
         "function _tmp_sc:init() return 33 end",
         "table.insert(_editor_class['K'].cards,_tmp_sc)",
+        "_editor_class['L']=Class(boss)",
         "_editor_class['L'].cards={boss.move.New(0,0,1)}",
         "_tmp_sc=boss.card.New('Other',1,2,3,4)",
         "function _tmp_sc:init() return 44 end",
         "table.insert(_editor_class['L'].cards,_tmp_sc)",
     },"\n")
     local debug_source=table.concat({
+        "_editor_class['K']=Class(boss)",
         "local state=4",
         "_ct_runs=_ct_runs+1",
         "_editor_class['K'].cards={}",
@@ -66,12 +71,15 @@ function M.run(opts)
             mode=mode or "practice",include_previous=false}
     end
     local function fixture(debug_mode)
+        if environment then environment:Restore() end
+        environment=ClassFixture.Install()
         _ct_runs=0;_editor_class={K={},L={}}
-        boss={card={New=function(label)
+        boss.card={New=function(label)
             local card={name=label,is_combat=true}
             for key,fn in next,defaults do card[key]=fn end
             return card
-        end},move={New=function() return {is_combat=false} end}}
+        end}
+        boss.move={New=function() return {is_combat=false} end}
         serial=serial+1
         local entry=must(Load.Capture(debug_mode and debug_source or source,
             {name="Target_Boss.lua"}))
@@ -79,6 +87,7 @@ function M.run(opts)
         entry.file="Target_Boss.lua"
         local sid="CardTargetSpec:"..serial
         local f=must(Planning.Capture(entry,sid,_editor_class,defaults))
+        environment:FinishLoad()
         local capture=f.capture
         local live={capture=capture,snapshot=capture.snapshot,entry=entry,classes=_editor_class,session_id=sid}
         return binding(_editor_class,"K",debug_mode and 2 or 3,debug_mode and "debug" or "practice"),capture,live,f
@@ -288,6 +297,7 @@ function M.run(opts)
         eq(Target.Check(new,b,c,l),true,"new target recheck valid")
     end)
     for _,controller in ipairs(controllers) do eq(controller:Release(),true,"common transaction released") end
+    if environment then environment:Restore() end
     for _,key in ipairs({"boss","_editor_class","_tmp_sc","_ct_runs","lstg","_sc_table","_boss","IsValid"}) do rawset(_G,key,saved[key]) end
     if not ok then error(type(problem)=="string" and problem or "CardTargetSpec opaque failure",0) end
     for _,label in ipairs(failures) do print("FAIL CardTargetSpec: "..label) end

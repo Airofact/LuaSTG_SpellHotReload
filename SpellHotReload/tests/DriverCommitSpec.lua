@@ -15,8 +15,9 @@ function M.run()
         local driver=Driver.New()
         local owners={}
         for _,id in ipairs({"alpha","beta"}) do
-            local owner={Id=id,ContractVersion=5}
-            owner.Match=function() return {units={},claims={},context={}} end
+            local owner={Id=id,ContractVersion=7}
+            owner.Match=function() return nil end
+            owner.BuildContext=function(source,units) return {source=source,units=units} end
             owner.Reconcile=function() return {rows={},view={},units={},exports={}} end
             owner.Locate=function() error("unexpected Locate replay") end
             owner.Inject=function() error("unexpected Inject replay") end

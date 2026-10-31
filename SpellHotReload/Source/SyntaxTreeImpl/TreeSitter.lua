@@ -118,12 +118,12 @@ function M.Parse(source,previous)
    end
    return e.binding and 'binding' or e.kind
   end
-  local function node(value,binding)
+  local function node(value,binding,opaque_literals)
    if not value then return nil end
    local e=entry(value)
    if binding then check(e.info.kind=='identifier','identifier binding required');e.binding=true end
    local k=kind(e.node)
-   if k=='literal' and not e.literal_ready then
+   if k=='literal' and not opaque_literals and not e.literal_ready then
     local raw=source:sub(e.info.a+1,e.info.b)
     if e.info.kind=='string' then e.literal=decode(raw)
     elseif e.info.kind=='number' then check(numeral(raw),'unsupported numeral spelling') end
@@ -131,8 +131,12 @@ function M.Parse(source,previous)
    end
    return e.node
   end
-  local function refs(value,binding)
-   local out={};for _,child in ipairs(named(value)) do out[#out+1]=node(child,binding) end;return out
+  -- Reference facts share the same entity/role constructor; they do not need
+  -- literal values. Ordinary queries still materialize and validate literals.
+  local function reference(value,binding) return node(value,binding,true) end
+  local function refs(value,binding,resolve)
+   resolve=resolve or node
+   local out={};for _,child in ipairs(named(value)) do out[#out+1]=resolve(child,binding) end;return out
   end
   local function text(value)
    local e=entry(value)
@@ -142,20 +146,22 @@ function M.Parse(source,previous)
   local function is_function(value)
    local k=kind(value);return k=='function' or k=='local_function' or k=='function_statement'
   end
-  local function declarations(value)
-   if kind(value)=='local_function' then return {names={node(get(value,'name',true),true)},values={value},self_visible=true} end
+  local function declarations(value,resolve)
+   resolve=resolve or node
+   if kind(value)=='local_function' then return {names={resolve(get(value,'name',true),true)},values={value},self_visible=true} end
    local p=named(value);check(#p==1,'local declaration shape')
    local variables,values
    if entry(p[1]).info.kind=='assignment_statement' then variables,values=one(p[1],'variable_list'),one(p[1],'expression_list')
    else variables=p[1];check(entry(variables).info.kind=='variable_list','local variable list') end
-   return {names=refs(variables,true),values=refs(values),self_visible=false}
+   return {names=refs(variables,true,resolve),values=refs(values,nil,resolve),self_visible=false}
   end
-  local function function_parts(value)
+  local function function_parts(value,resolve)
+   resolve=resolve or node
    local parameters=get(value,'parameters',true);local params,vararg={},false
    for _,p in ipairs(named(parameters)) do
-    if entry(p).info.kind=='vararg_expression' then vararg=true else params[#params+1]=node(p,true) end
+    if entry(p).info.kind=='vararg_expression' then vararg=true else params[#params+1]=resolve(p,true) end
    end
-   return {params=params,vararg=vararg,body=node(get(value,'body'))},parameters
+   return {params=params,vararg=vararg,body=resolve(get(value,'body'))},parameters
   end
   function s.IsNode(value) return by_node[value]~=nil and not revision.closed end
   function s.SameNode(a,b) return s.IsNode(a) and s.IsNode(b) and Native.Equal(a,b) or false end
@@ -195,25 +201,25 @@ function M.Parse(source,previous)
    end
    return out
   end
-  function s.Match(value,pattern)
+  local function match(value,pattern,resolve)
    check(patterns[pattern],'unknown pattern '..tostring(pattern));if value==nil then return nil end
    local e=entry(value);local k=kind(value)
-   if pattern=='declaration' then if k=='local' or k=='local_function' then return declarations(value) end
-   elseif pattern=='assignment' then if k=='assign' then return {targets=refs(one(value,'variable_list')),values=refs(one(value,'expression_list'))} end
+   if pattern=='declaration' then if k=='local' or k=='local_function' then return declarations(value,resolve) end
+   elseif pattern=='assignment' then if k=='assign' then return {targets=refs(one(value,'variable_list'),nil,resolve),values=refs(one(value,'expression_list'),nil,resolve)} end
    elseif pattern=='definition' then
     local target,fn,method,self_visible,form
-    if k=='local_function' then target,fn,self_visible,form=node(get(value,'name',true),true),value,true,'local-function'
-    elseif k=='function_statement' then target,fn,form=node(get(value,'name',true)),value,'function-statement';method=entry(target).info.kind=='method_index_expression'
-    elseif k=='local' then local d=declarations(value);if #d.names==1 and #d.values==1 and is_function(d.values[1]) then target,fn,form=d.names[1],d.values[1],'local-initializer' end
-    elseif k=='assign' then local a=s.Match(value,'assignment');if #a.targets==1 and #a.values==1 and is_function(a.values[1]) then target,fn,form=a.targets[1],a.values[1],'assignment' end end
+    if k=='local_function' then target,fn,self_visible,form=resolve(get(value,'name',true),true),value,true,'local-function'
+    elseif k=='function_statement' then target,fn,form=resolve(get(value,'name',true)),value,'function-statement';method=entry(target).info.kind=='method_index_expression'
+    elseif k=='local' then local d=declarations(value,resolve);if #d.names==1 and #d.values==1 and is_function(d.values[1]) then target,fn,form=d.names[1],d.values[1],'local-initializer' end
+    elseif k=='assign' then local a=match(value,'assignment',resolve);if #a.targets==1 and #a.values==1 and is_function(a.values[1]) then target,fn,form=a.targets[1],a.values[1],'assignment' end end
     if fn then return {target=target,fn=fn,method=method==true,self_visible=self_visible==true,form=form} end
    elseif pattern=='member' then if k=='member' then
     local method=e.info.kind=='method_index_expression'
-    return {base=node(get(value,'table',true)),name=text(get(value,method and 'method' or 'field',true)),separator=method and ':' or '.'}
+    return {base=resolve(get(value,'table',true)),name=text(get(value,method and 'method' or 'field',true)),separator=method and ':' or '.'}
    end
-   elseif pattern=='index' then if k=='index' then return {base=node(get(value,'table',true)),key=node(get(value,'field',true))} end
+   elseif pattern=='index' then if k=='index' then return {base=resolve(get(value,'table',true)),key=resolve(get(value,'field',true))} end
    elseif pattern=='call' or pattern=='call_statement' then
-    if k=='call' and (pattern=='call' or e.statement) then local callee=node(get(value,'name',true));return {node=value,callee=callee,args=refs(get(value,'arguments',true)),method=entry(callee).info.kind=='method_index_expression'} end
+    if k=='call' and (pattern=='call' or e.statement) then local callee=resolve(get(value,'name',true));return {node=value,callee=callee,args=refs(get(value,'arguments',true),nil,resolve),method=entry(callee).info.kind=='method_index_expression'} end
    elseif pattern=='literal' then if k=='literal' then
     local raw=text(value);local category=e.info.kind
     if category=='true' or category=='false' then category='boolean' end
@@ -226,70 +232,74 @@ function M.Parse(source,previous)
      if not i.named and not i.extra then operator=i.kind;break end
     end
     check(operator=='not' or operator=='#' or operator=='-','unsupported unary operator')
-    return {operator=operator,operand=node(get(value,'operand',true))}
+    return {operator=operator,operand=resolve(get(value,'operand',true))}
    end
    elseif pattern=='table' then if k=='table' then
     local out={}
     for _,f in ipairs(named(value)) do
-     check(entry(f).info.kind=='field','table field required');node(f)
+     check(entry(f).info.kind=='field','table field required');resolve(f)
      local key,label;local native_key=get(f,'name')
-     if native_key then if text(f):sub(1,1)=='[' then key=node(native_key) else label=text(native_key) end end
-     out[#out+1]={node=f,key=key,name=label,array=key==nil and label==nil,value=node(get(f,'value',true))}
+     if native_key then if text(f):sub(1,1)=='[' then key=resolve(native_key) else label=text(native_key) end end
+     out[#out+1]={node=f,key=key,name=label,array=key==nil and label==nil,value=resolve(get(f,'value',true))}
     end
     return {fields=out}
    end
-   elseif pattern=='function' then if is_function(value) then return (function_parts(value)) end
-   elseif pattern=='return' then if k=='return' then local p=named(value);check(#p<=1,'return shape');return {values=refs(p[1])} end end
+   elseif pattern=='function' then if is_function(value) then return (function_parts(value,resolve)) end
+   elseif pattern=='return' then if k=='return' then local p=named(value);check(#p<=1,'return shape');return {values=refs(p[1],nil,resolve)} end end
   end
+  function s.Match(value,pattern) return match(value,pattern,node) end
   function s.String(value) local v=s.Match(value,'literal');if v and v.category=='string' then return v.value end end
-  local function children(value)
+  local function children(value,resolve)
    local k=kind(value)
    if k=='chunk' or k=='block' then return s.Statements(value)
    elseif is_function(value) then
-    local f=function_parts(value);local out={}
-    if k=='local_function' then add(out,node(get(value,'name',true),true))
-    elseif k=='function_statement' then add(out,node(get(value,'name',true))) end
+    local f=function_parts(value,resolve);local out={}
+    if k=='local_function' then add(out,resolve(get(value,'name',true),true))
+    elseif k=='function_statement' then add(out,resolve(get(value,'name',true))) end
     append(out,f.params);return add(out,f.body)
-   elseif k=='local' then local d=declarations(value);return append(d.names,d.values)
-   elseif k=='assign' then local a=s.Match(value,'assignment');return append(a.targets,a.values)
-   elseif k=='member' then return {s.Match(value,'member').base}
-   elseif k=='index' then local v=s.Match(value,'index');return {v.base,v.key}
-   elseif k=='call' then local v=s.Match(value,'call');return append({v.callee},v.args)
-   elseif k=='paren' then return refs(value)
-   elseif k=='unary' then return {s.Match(value,'unary').operand}
-   elseif k=='binary' then return {node(get(value,'left',true)),node(get(value,'right',true))}
-   elseif k=='table' then local out={};for _,f in ipairs(s.Match(value,'table').fields) do add(out,f.key);add(out,f.value) end;return out
-   elseif k=='return' then return s.Match(value,'return').values
-   elseif k=='do' then return add({},node(get(value,'body')))
-   elseif k=='while' then return add({node(get(value,'condition',true))},node(get(value,'body')))
-   elseif k=='repeat' then local out=add({},node(get(value,'body')));return add(out,node(get(value,'condition',true)))
+   elseif k=='local' then local d=declarations(value,resolve);return append(d.names,d.values)
+   elseif k=='assign' then local a=match(value,'assignment',resolve);return append(a.targets,a.values)
+   elseif k=='member' then return {match(value,'member',resolve).base}
+   elseif k=='index' then local v=match(value,'index',resolve);return {v.base,v.key}
+   elseif k=='call' then local v=match(value,'call',resolve);return append({v.callee},v.args)
+   elseif k=='paren' then return refs(value,nil,resolve)
+   elseif k=='unary' then return {match(value,'unary',resolve).operand}
+   elseif k=='binary' then return {resolve(get(value,'left',true)),resolve(get(value,'right',true))}
+   elseif k=='table' then local out={};for _,f in ipairs(match(value,'table',resolve).fields) do add(out,f.key);add(out,f.value) end;return out
+   elseif k=='return' then return match(value,'return',resolve).values
+   elseif k=='do' then return add({},resolve(get(value,'body')))
+   elseif k=='while' then return add({resolve(get(value,'condition',true))},resolve(get(value,'body')))
+   elseif k=='repeat' then local out=add({},resolve(get(value,'body')));return add(out,resolve(get(value,'condition',true)))
    elseif k=='for_numeric' or k=='for_generic' then
     local c=get(value,'clause',true);local out
-    if k=='for_numeric' then out={node(get(c,'name',true),true),node(get(c,'start',true)),node(get(c,'end',true))};add(out,node(get(c,'step')))
-    else out=append(refs(one(c,'variable_list'),true),refs(one(c,'expression_list'))) end
-    return add(out,node(get(value,'body')))
+    if k=='for_numeric' then out={resolve(get(c,'name',true),true),resolve(get(c,'start',true)),resolve(get(c,'end',true))};add(out,resolve(get(c,'step')))
+    else out=append(refs(one(c,'variable_list'),true,resolve),refs(one(c,'expression_list'),nil,resolve)) end
+    return add(out,resolve(get(value,'body')))
    elseif k=='if' then
-    local out={node(get(value,'condition',true))};add(out,node(get(value,'consequence')))
+    local out={resolve(get(value,'condition',true))};add(out,resolve(get(value,'consequence')))
     for _,alternative in ipairs(fields(value,'alternative')) do
-     if entry(alternative).info.kind=='elseif_statement' then add(out,node(get(alternative,'condition',true)));add(out,node(get(alternative,'consequence')))
-     else check(entry(alternative).info.kind=='else_statement','if alternative');add(out,node(get(alternative,'body'))) end
+     if entry(alternative).info.kind=='elseif_statement' then add(out,resolve(get(alternative,'condition',true)));add(out,resolve(get(alternative,'consequence')))
+     else check(entry(alternative).info.kind=='else_statement','if alternative');add(out,resolve(get(alternative,'body'))) end
     end
     return out
    end
    return {}
   end
-  function s.Walk(value,visit)
+  local function walk_nodes(value,visit,resolve)
    if value==nil then return end;check(type(visit)=='function','visitor required')
    local function walk(current,parent,functions,calls)
     if is_function(current) then functions=functions+1 end
     if kind(current)=='call' then calls=calls+1 end
     if visit(current,parent,functions,calls)==false then return end
-    for _,child in ipairs(children(current)) do walk(child,current,functions,calls) end
+    for _,child in ipairs(children(current,resolve)) do walk(child,current,functions,calls) end
    end
    walk(value,nil,0,0)
   end
+  function s.Walk(value,visit) return walk_nodes(value,visit,node) end
+  -- Names are structural references, including delayed function bodies. The
+  -- shared traversal excludes bindings/field labels without decoding literals.
   function s.Names(value)
-   local out={};s.Walk(value,function(n) if s.Is(n,'name') then out[#out+1]=n end end);return out
+   local out={};walk_nodes(value,function(n) if s.Is(n,'name') then out[#out+1]=n end end,reference);return out
   end
   function s.Path(value)
    if s.Is(value,'name') then return s.Identifier(value) end

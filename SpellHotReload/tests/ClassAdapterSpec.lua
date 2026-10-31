@@ -1,4 +1,4 @@
--- Production Plugin + true Object first-load observer + real common transaction.
+-- Production Plugin + true Class first-load observer + real common transaction.
 -- Engine dispatch itself is covered by the separate, bounded native probe.
 local M={}
 function M.run()
@@ -8,9 +8,11 @@ function M.run()
     package.loaded[modules[1]]={};package.loaded[modules[2]]={}
     package.loaded[modules[3]]=nil;package.loaded[modules[4]]=nil
     local Plugin=require('SpellHotReload.Runtime.Plugin')
-    local Object=require('SpellHotReload.Adapters.Object.Object')
-    local Versions=require('SpellHotReload.Adapters.Object.ObjectVersions')
-    local Observe=require('SpellHotReload.Adapters.Object.ObjectLoad')
+    local ClassAdapter=require('SpellHotReload.Adapters.Class.Class')
+    local ClassFixture=require('SpellHotReload.tests.ClassFixture')
+    local environment
+    local Observe=require('SpellHotReload.Adapters.Class.ClassLoad')
+    local Versions=require('SpellHotReload.Adapters.Class.ClassVersions')
     local Load=require('SpellHotReload.Load.AnchorLoad')
     local LoadHook=require('SpellHotReload.Load.LoadHook')
     local Watcher=require('SpellHotReload.Runtime.Watcher')
@@ -42,43 +44,38 @@ function M.run()
         "_editor_class['O'].kill=function(self) self.k=helper(6) end",
     },'\n')
     local card_source=table.concat({
+        "_editor_class['K']=Class(boss)",
         "_editor_class['K'].cards={}",
         "_tmp_sc=boss.card.New('Card',1,2,3,100)",
         'function _tmp_sc:init() self.card=helper(8) end',
         "table.insert(_editor_class['K'].cards,_tmp_sc)",
     },'\n')
-    local file='ObjectFixture_Boss.lua'
+    local file='ClassFixture_Boss.lua'
     local function fixture(content,options)
         options=options or {};content=content or source
         local f={content=content,constructs=0,commits=0}
         _G.lstg={var={},Log=function() end};_G.ext={replay={IsReplay=function() return false end}}
         _G.IsValid=function() return true end;_G._sc_table={}
-        _G.all_class={};_G._editor_class={K={}}
-        _G.Class=function(base,define)
-            assert(type(base)=='table' and base.is_class)
+        if environment then environment:Restore() end
+        environment=ClassFixture.Install()
+        local construct=Class
+        Class=function(...)
             f.constructs=f.constructs+1
-            local cls={0,0,0,0,0,0,is_class=true,base=base}
-            for _,name in ipairs(callbacks) do cls[name]=base[name] end
-            for name,value in pairs(define or {}) do cls[name]=value end
-            all_class[#all_class+1]=cls;return cls
+            return construct(...)
         end
-        _G.object={is_class=true}
-        for i,name in ipairs(callbacks) do object[name]=function() end;object[i]=object[name] end
-        for _,name in ipairs({'_object','bullet','enemy','laser','laser_bent'}) do _G[name]=Class(object) end
-        f.constructs=0
         local defaults={};for _,name in ipairs({'before','init','frame','render','beforedel','del','after'}) do defaults[name]=function() end end
-        _G.boss={card={_default_card=defaults,New=function(name)
+        boss.card={_default_card=defaults,New=function(name)
             local card={name=name,is_combat=true}
             for name,fn in pairs(defaults) do card[name]=fn end
             return card
-        end}}
+        end}
         f.p=Plugin.New();plugins[#plugins+1]=f.p
         local loader=options.no_observer and Load or Observe
         f.entry=must(loader.Capture(content,{name=file}))
         must(f.p:AdoptLoad(file,f.entry));f.capture,f.refusal=f.p:GetVersions(file)
         f.cls=_editor_class.O
         if not options.unfinalized then
-            for _,cls in ipairs(all_class) do for i,name in ipairs(callbacks) do cls[i]=cls[name] end end
+            environment:FinishLoad()
         end
         f.p._activated,f.p._supported,f.p._sandbox_ok=true,true,true
         f.p._activation_attempted=true
@@ -109,7 +106,7 @@ function M.run()
         return f.p:ApplyFileFromUI(file)
     end
     local function count(f) return Anchor.Get(f.entry,'init_count') end
-    local function group(f) return must(Files.GetAdapterRecords(f.capture,Object)) end
+    local function group(f) return must(Files.GetAdapterRecords(f.capture,ClassAdapter)) end
     local function pending(f)
         return f.p:GetStore():GetCandidate(file)~=nil
     end
@@ -117,12 +114,12 @@ function M.run()
         local f=fixture();must(f.capture,f.refusal)
         eq(f.constructs,1,'only the real source constructor ran')
         eq(#f.capture.snapshot.owners,3,'three genuine owner contributions')
-        eq(#group(f).units,1,'one Object unit per class')
-        eq(#f.entry.object_load.calls,1,'one observed Class call')
-        eq(f.entry.object_load.calls[1].class,f.cls,'construction result is exact original class')
+        eq(#group(f).units,1,'one Class unit per class')
+        eq(#f.entry.class_load.calls,1,'one observed Class call')
+        eq(f.entry.class_load.calls[1].class,f.cls,'construction result is exact original class')
         eq(count(f),0,'capture invokes no init')
     end)
-    case('five supported base families share the same Object protocol',function()
+    case('five supported base families share the same Class protocol',function()
         for _,base in ipairs({'_object','bullet','enemy','laser','laser_bent'}) do
             local initial=source:gsub('Class%(_object%)','Class('..base..')')
             local f=fixture(initial);must(f.capture,f.refusal)
@@ -134,7 +131,7 @@ function M.run()
     end)
     case('missing construction history cannot be seeded from live class',function()
         local f=fixture(nil,{no_observer=true})
-        eq(f.capture,nil,'plain AnchorLoad is not Object construction evidence')
+        eq(f.capture,nil,'plain AnchorLoad is not Class construction evidence')
         eq(f.constructs,1,'refusal never replays normal construction')
     end)
     case('unresolved numeric slots reject Apply without changing source version',function()
@@ -160,27 +157,27 @@ function M.run()
         eq(#reads.read_set,14,'six O methods and one P method retain both slots')
         eq(Versions.CheckUnit(state,'missing'),nil,'unknown class cannot be located')
     end)
-    case('Object live checks avoid discarded plans in location and every Guard',function()
+    case('Class live checks avoid discarded plans in location and every Guard',function()
         local Compose=require('SpellHotReload.Source.Compose')
         for _,changed in ipairs({false,true}) do
             local f=fixture();local state=group(f).state
             local reads,plan=Versions.Reads,Compose.Plan
-            local function forbidden() error('Object live check built discarded read evidence') end
+            local function forbidden() error('Class live check built discarded read evidence') end
             Versions.Reads,Compose.Plan=forbidden,forbidden
             local ok,err=pcall(function()
-                eq(Versions.CheckUnit(state,'O'),true,'Object location avoids Plan')
-                eq(Versions.CheckLive(state),true,'Object complete live check returns only success')
+                eq(Versions.CheckUnit(state,'O'),true,'Class location avoids Plan')
+                eq(Versions.CheckLive(state),true,'Class complete live check returns only success')
                 f.cls[3]=function() end
-                eq(Versions.CheckLive(state),nil,'Object numeric dispatch drift refused')
+                eq(Versions.CheckLive(state),nil,'Class numeric dispatch drift refused')
                 f.cls[3]=f.cls.frame
                 local fn=f.cls.frame;local foreign=0;local function donor() return foreign end
                 debug.upvaluejoin(fn,1,donor,1)
-                eq(Versions.CheckLive(state),nil,'Object detached capture refused')
+                eq(Versions.CheckLive(state),nil,'Class detached capture refused')
                 debug.upvaluejoin(fn,1,f.entry.anchor,Anchor.Slot(f.entry,'helper'))
             end)
             Versions.Reads,Compose.Plan=reads,plan;must(ok,err)
-            local inject,guards=Object.Inject,0
-            Object.Inject=function(...)
+            local inject,guards=ClassAdapter.Inject,0
+            ClassAdapter.Inject=function(...)
                 local result,why=inject(...)
                 if result and result.owner_guard then
                     local guard=result.owner_guard
@@ -195,10 +192,10 @@ function M.run()
                 return result,why
             end
             local content=changed and source:gsub('helper%(3%)','helper(30)') or source..'\n-- no definition change'
-            ok,err=pcall(apply,f,content);Object.Inject=inject;must(ok,err)
+            ok,err=pcall(apply,f,content);ClassAdapter.Inject=inject;must(ok,err)
             assert(err:find('candidate complete; removed',1,true),err)
-            eq(f.receipt.changed,changed,'Object true receipt after pure live checks')
-            eq(guards>0,true,'production transaction invokes checked Object Guards')
+            eq(f.receipt.changed,changed,'Class true receipt after pure live checks')
+            eq(guards>0,true,'production transaction invokes checked Class Guards')
         end
     end)
     case('unselected class drift still blocks complete owner preparation',function()
@@ -206,21 +203,21 @@ function M.run()
         local f=fixture(initial);must(f.capture,f.refusal)
         local base=f.capture.snapshot;local old=Anchor.Get(f.entry,'helper')
         _editor_class.P[3]=function() end
-        local roots=Object.Roots
-        Object.Roots=function(view)
+        local roots=ClassAdapter.Roots
+        ClassAdapter.Roots=function(view)
             local selected={};local ref=view.base.by_key.O.unit_ref
             for _,root in ipairs(roots(view)) do if root.unit_ref==ref then selected[#selected+1]=root end end
             return selected
         end
         local ok,result=pcall(apply,f,initial:gsub('state%+n','state+n+10'))
-        Object.Roots=roots;must(ok,result)
+        ClassAdapter.Roots=roots;must(ok,result)
         assert(result:find('class dispatch not finalized or published method/slot drifted',1,true),result)
         eq(f.commits,0,'owner preparation catches unselected drift before transaction')
         eq(f.capture.snapshot,base,'drift does not advance common snapshot')
         eq(Anchor.Get(f.entry,'helper'),old,'Local cannot partially publish')
         eq(pending(f),true,'refused candidate remains available')
     end)
-    case('Object and Local publish once with paired slots and original cells',function()
+    case('Class and Local publish once with paired slots and original cells',function()
         local f=fixture();local cls=f.cls;local old={};cls[1](old)
         eq(count(f),1,'one explicit initial init invocation')
         local edited=source:gsub('state%+n','state+n+10'):gsub('helper%(3%)','helper(30)')
@@ -258,7 +255,7 @@ function M.run()
         eq(count(f),0,'no-op invokes no init')
         eq(f.constructs,1,'no-op invokes no Class')
     end)
-    case('Object Card Local share one revision and receipt',function()
+    case('Class Card Local share one revision and receipt',function()
         local initial=source..'\n'..card_source
         local f=fixture(initial);local card=_editor_class.K.cards[1]
         local edited=initial:gsub('state%+n','state+n+10'):gsub('helper%(3%)','helper(30)'):gsub('helper%(8%)','helper(80)')
@@ -268,7 +265,7 @@ function M.run()
         for _,delta in ipairs(f.receipt.owner_deltas) do eq(delta.changed,true,'each changed owner has actual delta') end
         eq(f.capture.snapshot.revision,1,'three changes advance only once')
         local obj={};card.init(obj);eq(obj.card,93,'Card gets common helper state')
-        f.cls[3](obj);eq(obj.f,43,'Object gets common helper state')
+        f.cls[3](obj);eq(obj.f,43,'Class gets common helper state')
     end)
     case('numeric dispatch drift rejects a whole shared publication',function()
         local f=fixture();local base=f.capture.snapshot;local helper=Anchor.Get(f.entry,'helper')
@@ -278,6 +275,56 @@ function M.run()
         eq(Anchor.Get(f.entry,'helper'),helper,'Local did not partially publish')
         eq(pending(f),true,'drift leaves candidate')
     end)
+    -- Mutable runtime tables must never use __eq to impersonate captured
+    -- identities. Exercise real Plugin preparation, not a standalone comparator.
+    for _,site in ipairs({'registry','registration','class','base','global-base','member'}) do
+        for _,behavior in ipairs({'truthy','throw'}) do
+            case('raw Class identity '..site..' '..behavior,function()
+                local initial=source.."\n_editor_class['O'].config={}"
+                local f=fixture(initial);must(f.capture,f.refusal)
+                local snapshot=f.capture.snapshot
+                local helper,frame=Anchor.Get(f.entry,'helper'),f.cls.frame
+                local calls=0
+                local mt={__eq=function()
+                    calls=calls+1
+                    if behavior=='throw' then error('runtime equality must not execute') end
+                    return true
+                end}
+                local original,setter,reason
+                if site=='registry' then
+                    original=_editor_class;setter=function(v) _editor_class=v end
+                    reason='class registry or registration table identity changed'
+                elseif site=='registration' then
+                    original=all_class;setter=function(v) all_class=v end
+                    reason='class registry or registration table identity changed'
+                elseif site=='class' then
+                    original=f.cls;setter=function(v) _editor_class.O=v end
+                    reason='live Class class identity/base/flags changed'
+                elseif site=='base' then
+                    original=f.cls.base;setter=function(v) f.cls.base=v end
+                    reason='live Class class identity/base/flags changed'
+                elseif site=='global-base' then
+                    original=_object;setter=function(v) _object=v end
+                    reason='live Class class identity/base/flags changed'
+                else
+                    original=f.cls.config;setter=function(v) f.cls.config=v end
+                    reason='readonly class member drifted'
+                end
+                local replacement={};for key,value in next,original do replacement[key]=value end
+                setmetatable(original,mt);setmetatable(replacement,mt);setter(replacement)
+                local ok,result=pcall(apply,f,initial:gsub('state%+n','state+n+10'):gsub('helper%(3%)','helper(30)'))
+                setter(original);setmetatable(original,nil);setmetatable(replacement,nil)
+                must(ok,result)
+                assert(type(result)=='string' and result:find(reason,1,true),tostring(result));passed=passed+1
+                eq(calls,0,'runtime equality never called')
+                eq(f.capture.snapshot,snapshot,'identity drift cannot advance snapshot')
+                eq(Anchor.Get(f.entry,'helper'),helper,'Local cannot partially publish')
+                eq(f.cls.frame,frame,'Class callback remains original')
+                eq(f.commits,0,'identity drift stops before common publication')
+                eq(pending(f),true,'identity refusal preserves candidate')
+            end)
+        end
+    end
     case('base and duplicate class key changes never replay construction',function()
         for _,edited in ipairs({(source:gsub('Class%(_object%)','Class(bullet)')),
             (source:gsub("_editor_class%['O'%]=Class%(_object%)","_editor_class['O']=Class(_object)\n_editor_class['O']=Class(_object)"))}) do
@@ -393,13 +440,13 @@ function M.run()
         eq(calls,1,'failed Class runs exactly once')
     end)
     case('owner preparation refusal prevents every owner installation',function()
-        local f=fixture();local base=f.capture.snapshot;local inject=Object.Inject
-        Object.Inject=function(handle,unit,context)
+        local f=fixture();local base=f.capture.snapshot;local inject=ClassAdapter.Inject
+        ClassAdapter.Inject=function(handle,unit,context)
             if context.phase=='prepare' then return nil,{phase='inject',code='unsupported',message='fixture refusal'} end
             return inject(handle,unit,context)
         end
         local ok,err=pcall(apply,f,source:gsub('state%+n','state+n+10'))
-        Object.Inject=inject;must(ok,err)
+        ClassAdapter.Inject=inject;must(ok,err)
         eq(f.capture.snapshot,base,'preparation refusal keeps shared snapshot')
         eq(f.commits,0,'publisher is never called')
         eq(Anchor.Get(f.entry,'helper')(1),4,'Local remains unchanged')
@@ -411,9 +458,10 @@ function M.run()
         local ok,err=pcall(engine.DoFile,file)
         must(LoadHook.Release(engine));must(ok,err)
         eq(Class,original,'observer restores original Class wrapper')
-        eq(#adopted.object_load.calls,1,'normal hook forwards construction evidence')
+        eq(#adopted.class_load.calls,1,'normal hook forwards construction evidence')
     end)
-    for _,p in ipairs(plugins) do p:Release('Object spec end') end
+    for _,p in ipairs(plugins) do p:Release('Class spec end') end
+    if environment then environment:Restore() end
     for _,name in ipairs(globals) do rawset(_G,name,saved[name]) end
     for _,name in ipairs(modules) do package.loaded[name]=loaded[name] end
     return {passed=passed,failed=failed,failures=failures}

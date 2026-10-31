@@ -12,9 +12,13 @@ function M.run()
         passed = passed + 1
     end
     local function hook() error("execution hooks must not run") end
-    local function adapter(id, match)
+    local function adapter(id, match, build)
         return {
-            ContractVersion = 5, Id = id, Match = match, Reconcile = function() error("unexpected reconciliation") end,
+            ContractVersion = 7, Id = id, Match = match,
+            BuildContext = build or function(source,units,mappings)
+                return {source=source,units=units,mappings=mappings,all=true}
+            end,
+            Reconcile = function() error("unexpected reconciliation") end,
             Locate = hook, Inject = hook, Commit = hook, Restart = hook,
         }
     end
@@ -23,14 +27,21 @@ function M.run()
         for _, a in ipairs({ ... }) do assert(r:RegisterDiscovery(a)) end
         return r
     end
-    local function unit(key, first, last)
-        return {
-            key = key, carrier = "card", context = { marker = key },
-            source_ranges = { { first = first or 1, last = last or 1 } },
-        }
+    local function unit(key)
+        return {key=key,carrier="card",context={marker=key}}
     end
-    local function result(units, claims)
-        return { units = units or {}, claims = claims or {}, context = { all = true } }
+    local function result(units,claims,first,last)
+        units=units or {};local mappings={}
+        for _,value in ipairs(units) do
+            mappings[#mappings+1]={unit=value,first=first or 1,last=last or first or 1}
+        end
+        return {units=units,claims=claims or {},mappings=mappings}
+    end
+    local function at(position,value)
+        return function(cursor)
+            if cursor:Mark()~=position then return nil end
+            cursor:Take();return value
+        end
     end
     local function claim(key, owner, kind)
         return { kind = kind or "callback", key = key, unit_key = owner }
@@ -52,25 +63,31 @@ function M.run()
 
     local source = "-- fake callback\nlocal a, b = 1, 2\nG = 'function end'\nSIDE_EFFECT()"
     local seen, calls = nil, {}
-    local first, second = unit("a", 18, 33), unit("b", 18, 33)
-    local fc, uc = { layout = "full" }, second.context
-    local function match_a(facts, common)
-        seen = facts
-        local analysis = facts.analysis
-        calls[#calls + 1] = "a"
-        eq(facts, common.source, "common shares complete source")
-        eq(facts.content, source, "Match gets exact complete bytes")
-        eq(#analysis.statements, 3, "full-file statements include effect")
-        eq(#analysis.nodes, 4, "multi-local keeps two carrier nodes")
-        eq(analysis.syntax.Is(analysis.statements[1].syntax,"local"),true,"comment does not become trigger")
-        eq(analysis.binding_complete, nil, "no obsolete binding-model field")
-        eq(analysis.source_offset, 0, "plain-source offset")
-        return { units = { first }, claims = { claim("slot-a", "a") }, context = fc }
+    local first,second,third=unit("a"),unit("b"),unit("g")
+    local fc,uc={layout="full"},second.context
+    local function match_a(cursor,common)
+        local index=cursor:Mark();calls[#calls+1]="a:"..index
+        if index~=1 then return nil end
+        local facts=common.source;seen=facts
+        local analysis=facts.analysis
+        eq(facts.content,source,"Match gets exact complete bytes")
+        eq(#analysis.statements,3,"full-file statements include effect")
+        eq(#analysis.nodes,4,"multi-local keeps two carrier nodes")
+        eq(analysis.syntax.Is(cursor:Peek().syntax,"local"),true,"comment does not become trigger")
+        eq(analysis.binding_complete,nil,"no obsolete binding-model field")
+        eq(analysis.source_offset,0,"plain-source offset")
+        cursor:Take()
+        return result({first,second},{claim("slot-a","a"),claim("slot-b","b")},index)
     end
-    local function match_b(analysis)
-        calls[#calls + 1] = "b"
-        eq(analysis, seen, "all adapters share one analysis")
-        return result({ second }, { claim("slot-b", "b") })
+    local function match_b(cursor,common)
+        local index=cursor:Mark();calls[#calls+1]="b:"..index
+        eq(common.source,seen,"all attempts share complete source")
+        if index~=2 then return nil end
+        cursor:Take();return result({third},{claim("slot-g","g")},index)
+    end
+    local function context_a(facts,units,mappings)
+        fc.source,fc.units,fc.mappings=facts,units,mappings
+        return fc
     end
     local supplied = {
         file = "F.lua", session_id = "session", generation = 7,
@@ -83,13 +100,19 @@ function M.run()
         return old_parse(content,previous)
     end
     local ok, snapshot = pcall(discover, registry(adapter("b", match_b),
-        adapter("a", match_a)), source, supplied)
+        adapter("a", match_a, context_a)), source, supplied)
     Syntax.Parse = old_parse
     assert(ok, snapshot)
     assert(snapshot)
     eq(parse_count, 1, "shared native snapshot parsed once")
-    eq(table.concat(calls, ","), "a,b", "all registered adapters run")
-    eq(#snapshot.units, 2, "all units retained without target selection")
+    eq(table.concat(calls, ","), "a:1,b:1,a:2,b:2,a:3,b:3", "every unconsumed start is tried from the same mark")
+    eq(#snapshot.units,3,"multi-unit success and second owner are both retained")
+    eq(snapshot.by_key.g.adapter.Id,"b","later syntax belongs to its matching owner")
+    eq(#snapshot.unmatched,1,"unknown statement remains unmatched")
+    eq(snapshot.unmatched[1],3,"unmatched source position retained")
+    local declaration_first,declaration_last=source:find("local a, b = 1, 2",1,true)
+    eq(first.source_ranges[1].first,declaration_first,"mapping yields original first byte")
+    eq(second.source_ranges[1].last,declaration_last,"one statement can map to both units")
     eq(snapshot.units[2], second, "original unit preserved")
     eq(snapshot.by_key.b.unit, second, "arbitrary-unit lookup")
     eq(snapshot.by_key.missing, nil, "unknown unit lookup")
@@ -106,7 +129,7 @@ function M.run()
     eq(snapshot.common.generation, 7, "generation retained")
     eq(snapshot.common.loaded_source, "loaded", "loaded baseline retained")
     eq(snapshot.common.base_revision, 2, "revision retained")
-    eq(#snapshot.claims, 2, "claims aggregated")
+    eq(#snapshot.claims, 3, "claims aggregated")
     eq(snapshot.claim_owners["callback:6:slot-a"], snapshot.by_key.a, "canonical owner index")
 
     local nodes, err, analysis = IR.Analyze("\239\187\191local a, b = 1, 2\r\nG=2")
@@ -120,12 +143,12 @@ function M.run()
     eq(analysis.statements[2].text, "G=2", "statement text excludes CRLF")
     eq(analysis.statements[1].syntax,nodes[2].syntax,"multi-local statement shared")
     local bom = "\239\187\191G=2"
-    local bom_snapshot = assert(discover(registry(adapter("bom", function(a, c)
-        eq(a.content, bom, "source preserves BOM")
-        eq(c.source,a,"same complete BOM source")
-        local range = a.analysis.statements[1].source_range
-        return result({ unit("bom", range.first, range.last) })
+    local bom_snapshot = assert(discover(registry(adapter("bom", function(cursor,common)
+        eq(common.source.content,bom,"source preserves BOM")
+        eq(cursor:Peek(),common.source.analysis.statements[1],"cursor uses original BOM syntax item")
+        cursor:Take();return result({unit("bom")})
     end)), bom))
+    eq(bom_snapshot.by_key.bom.unit.source_ranges[1].first,4,"mapped range includes BOM offset")
     eq(bom_snapshot.by_key.bom.unit.source_ranges[1].last, #bom, "raw-byte bounds")
 
     eq(#assert(discover(registry())).units, 0, "empty registry succeeds")
@@ -134,12 +157,10 @@ function M.run()
     eq(#blank_nodes, 0, "empty carrier nodes")
     eq(blank_err, nil, "empty analysis error")
     eq(#blank.syntax.Statements(blank.syntax.root),0,"empty native statement sequence")
-    local empty = assert(discover(registry(adapter("empty", function()
-        return result()
-    end)), " -- comment only"))
+    local empty = assert(discover(registry(adapter("empty",hook)), " -- comment only"))
     eq(#empty.common.source.analysis.statements,0,"comment-only file has no statements")
-    eq(empty.adapter_contexts.empty.all, true, "empty Match retains context")
-    eq(#empty.units, 0, "empty Match is not an error")
+    eq(empty.adapter_contexts.empty.all, true, "empty file still builds owner context")
+    eq(#empty.units, 0, "empty file creates no units at EOF")
     local host = assert(discover(registry(), "Call()", nil, { host_calls = { Call = true } }))
     eq(host.common.source.analysis.nodes[1].carrier, "host", "analysis options forwarded")
 
@@ -164,65 +185,84 @@ function M.run()
         setmetatable({ file = "F.lua" }, { __index = hook }))
 
     local function bad(value, label)
-        reject(registry(adapter("bad", function() return value end)),
+        reject(registry(adapter("bad", function(cursor) cursor:Take();return value end)),
             "unsupported", "match", label)
     end
     bad(false, "non-table result")
     bad(setmetatable({}, { __index = hook }), "result metatable")
-    bad({ units = {}, claims = {} }, "missing file context")
+    bad({units={unit("x")},claims={}},"missing mappings")
+    bad(result(),"consuming success requires a unit")
     bad(result({ [2] = unit("x") }), "sparse units")
     bad(result({ named = unit("x") }), "extra array key")
     bad(result({ false }), "invalid unit")
     bad(result({ setmetatable(unit("x"), { __index = hook }) }), "unit metatable")
-    local meta = unit("x")
-    meta.source_ranges = setmetatable(meta.source_ranges, { __index = hook })
-    bad(result({ meta }), "ranges metatable")
-    meta = unit("x")
-    meta.source_ranges[1] = setmetatable(meta.source_ranges[1], { __index = hook })
-    bad(result({ meta }), "range metatable")
+    local malformed=result({unit("x")})
+    malformed.mappings=setmetatable(malformed.mappings,{__index=hook})
+    bad(malformed,"mappings metatable")
+    malformed=result({unit("x")})
+    malformed.mappings[1]=setmetatable(malformed.mappings[1],{__index=hook})
+    bad(malformed,"mapping metatable")
     bad(result({ unit("x") }, { setmetatable(claim("s", "x"), { __index = hook }) }),
         "claim metatable")
-    reject(registry(adapter("duplicate", function()
-        return result({ unit("x") }, { claim("s", "x"), claim("s", "x") })
+    reject(registry(adapter("duplicate", function(cursor)
+        cursor:Take();return result({ unit("x") }, { claim("s", "x"), claim("s", "x") })
     end)), "ownership", "match", "duplicate claim")
     local u = unit("x"); u.key = ""; bad(result({ u }), "empty unit key")
     u = unit("x"); u.carrier = false; bad(result({ u }), "invalid carrier")
     u = unit("x"); u.context = nil; bad(result({ u }), "missing unit context")
-    u = unit("x"); u.source_ranges = {}; bad(result({ u }), "empty ranges")
-    u = unit("x"); u.source_ranges[3] = { first = 1, last = 1 }
-    bad(result({ u }), "sparse ranges")
-    for _, range in ipairs({
-        { first = 0, last = 1 }, { first = 2, last = 1 },
-        { first = 1, last = 99 }, { first = 1.5, last = 2 },
-        { first = 0/0, last = 2 }, { first = 1, last = math.huge },
+    malformed=result({unit("x")});malformed.mappings={};bad(malformed,"consumed syntax needs a mapping")
+    malformed=result({unit("x")});malformed.mappings[3]=malformed.mappings[1]
+    bad(malformed,"sparse mappings")
+    malformed=result({unit("x")});malformed.mappings[1].unit=unit("foreign")
+    bad(malformed,"mapping must name a returned unit")
+    for _,range in ipairs({
+        {first=0,last=1},{first=2,last=1},{first=1,last=99},
+        {first=1.5,last=2},{first=0/0,last=2},{first=1,last=math.huge},
     }) do
-        u = unit("x"); u.source_ranges = { range }; bad(result({ u }), "invalid range bounds")
+        malformed=result({unit("x")})
+        malformed.mappings[1].first,malformed.mappings[1].last=range.first,range.last
+        bad(malformed,"invalid consumed syntax bounds")
     end
+    local forged=unit("forged");forged.source_ranges={{first=1,last=999999}}
+    local mapped=assert(discover(registry(adapter("mapped",at(1,result({forged})))),"G=1"))
+    eq(mapped.units[1].source_ranges[1].last,3,"adapter byte ranges cannot override syntax mappings")
     bad(result({ unit("x") }, { [2] = claim("s", "x") }), "sparse claims")
     bad(result({ unit("x") }, { claim("s", "unknown") }), "claim of absent unit")
     bad(result({ unit("x") }, { claim("s", "x", "unknown") }), "unknown claim kind")
     bad(result({ unit("x") }, { claim("", "x") }), "empty semantic key")
 
-    reject(registry(adapter("x", function() return result({ unit("same"), unit("same") }) end)),
-        "ownership", "match", "duplicate same-adapter unit")
-    reject(registry(adapter("x", function() return result({ unit("same") }) end),
-        adapter("y", function() return result({ unit("same") }) end)),
-        "ownership", "match", "duplicate cross-adapter unit")
-    reject(registry(adapter("x", function()
-        return result({ unit("x"), unit("y") }, { claim("slot", "x"), claim("slot", "y") })
-    end)), "ownership", "match", "same-adapter semantic conflict")
-    local conflict = reject(registry(adapter("x", function()
-        return result({ unit("x") }, { claim("slot", "x") })
-    end), adapter("y", function()
-        return result({ unit("y") }, { claim("slot", "y") })
-    end)), "ownership", "match", "cross-adapter semantic conflict")
-    eq(conflict.file, "F.lua", "ownership error file")
-    eq(conflict.unit_key, "y", "ownership error unit")
+    reject(registry(adapter("x",at(1,result({unit("same"),unit("same")})))),
+        "unsupported","match","duplicate key in one returned batch")
+    reject(registry(adapter("x",at(1,result({unit("same")}))),
+        adapter("y",at(2,result({unit("same")},nil,2)))),
+        "ownership","match","cross-adapter duplicate key after distinct consumption","G=1 H=2")
+    reject(registry(adapter("x",at(1,result({unit("x"),unit("y")},{claim("slot","x"),claim("slot","y")})))),
+        "ownership","match","same-adapter semantic conflict")
+    local conflict=reject(registry(adapter("x",at(1,result({unit("x")},{claim("slot","x")}))),
+        adapter("y",at(2,result({unit("y")},{claim("slot","y")},2)))),
+        "ownership","match","cross-adapter semantic conflict","G=1 H=2")
+    eq(conflict.file,"F.lua","ownership error file")
+    eq(conflict.unit_key,"y","ownership error unit")
+    reject(registry(adapter("x",at(1,result({unit("x")}))),adapter("y",at(1,result({unit("y")})))),
+        "ambiguous","match","two successful trials at one start are not silently selected")
+    reject(registry(adapter("stalled",function() return result({unit("x")}) end)),
+        "unsupported","match","successful match must advance")
+    local missed=assert(discover(registry(adapter("miss",function(cursor) cursor:Take();return nil end)),"G=1 H=2"))
+    eq(#missed.unmatched,2,"failed attempts reset before fallback consumes one item")
+    eq(#missed.units,0,"nil without error is a normal miss")
+    local function bad_context(build,label)
+        reject(registry(adapter("context",hook,build)),"unsupported","match",label,"")
+    end
+    bad_context(function() return nil end,"missing BuildContext result")
+    bad_context(function() return setmetatable({},{__index=hook}) end,"owner context metatable")
+    bad_context(function(source,units) return {source={},units=units} end,"foreign source in owner context")
+    bad_context(function(source) return {source=source,units={}} end,"BuildContext cannot replace accepted unit array")
+    bad_context(function() error("BuildContext exploded") end,"BuildContext exception")
 
     reject(registry(adapter("throw", function() error("Match exploded") end)),
         "unsupported", "match", "Match exception")
     reject(registry(adapter("nil", function() return nil, "declined" end)),
-        "unsupported", "match", "nil is failure, not empty Match")
+        "unsupported", "match", "nil with an error is a refusal")
     local structured = reject(registry(adapter("error", function()
         return nil, { code = "ambiguous", message = "two layouts", file = "wrong",
             phase = "commit", unit_key = "u" }

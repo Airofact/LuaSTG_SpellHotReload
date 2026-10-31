@@ -1,16 +1,16 @@
--- Object owns class identity, callback versions, dispatch slots and inheritance.
+-- Class owns class identity, callback versions, dispatch slots and inheritance.
 -- No mutation here. FileCommit installs the paired writes in one common journal.
-local D=require('SpellHotReload.Adapters.Object.ObjectDefinitions')
-local Observe=require('SpellHotReload.Adapters.Object.ObjectLoad')
+local D=require('SpellHotReload.Adapters.Class.ClassDefinitions')
+local Observe=require('SpellHotReload.Adapters.Class.ClassLoad')
 local Compose=require('SpellHotReload.Source.Compose')
 local Anchor=require('SpellHotReload.Load.Anchor')
 local Source=require('SpellHotReload.Source.FileAnalysis')
 local Local=require('SpellHotReload.Adapters.Local.Local')
-local M={Kind='SpellHotReload.ObjectVersions',Version=2}
+local M={Kind='SpellHotReload.ClassVersions',Version=2}
 local plain=D.Plain
 local function copy(v) local out={};for k,x in next,v do out[k]=x end;return out end
 local function fail(message,state,key)
-    return nil,{phase='object',code='unsupported',message=message,file=state and state.file,unit_key=key}
+    return nil,{phase='class',code='unsupported',message=message,file=state and state.file,unit_key=key}
 end
 local function same(a,b)
     if #a~=#b then return false end
@@ -35,7 +35,7 @@ local function shared(fn,entry,dependencies)
 end
 local function prepared(source,definition,entry,providers)
     local created,err=Compose.Create(definition.body,nil,definition.visible,
-        {form='expression',tree=source.analysis.syntax,syntax=definition.syntax,name='Object callback'})
+        {form='expression',tree=source.analysis.syntax,syntax=definition.syntax,name='Class callback'})
     if not created then return nil,err end
     local proof,why=Compose.Plan(created,entry);if not proof then return nil,why end
     local dependencies=copy(created.used);table.sort(dependencies)
@@ -54,12 +54,18 @@ local function project(state)
     for _,key in ipairs(state.order) do
         local u=state.by_key[key]
         g.units[#g.units+1]={unit_ref=u.unit_ref,private_ref={key=key}}
-        g.records[#g.records+1]={key='object:'..key,kind='object',class_key=key,definition=u,definition_version=u.definition_version}
+        g.records[#g.records+1]={key='class:'..key,kind='class',class_key=key,definition=u,definition_version=u.definition_version}
+        for _,fixed in ipairs(u.fixed) do
+            if fixed.fn then g.functions[#g.functions+1]=fixed.fn end
+            for _,dep in ipairs(fixed.dependencies) do
+                g.edges[#g.edges+1]={consumer=u.unit_ref,provider=state.providers[dep]}
+            end
+        end
         for _,name in ipairs(D.Callbacks) do
             local cb=u.callbacks[name]
             g.functions[#g.functions+1]=cb.fn
             if cb.owned then
-                g.records[#g.records+1]={key='object:'..#key..':'..key..':'..name,kind='callback',
+                g.records[#g.records+1]={key='class:'..#key..':'..key..':'..name,kind='callback',
                     class_key=key,definition=cb,definition_version=cb.definition_version}
                 for _,dep in ipairs(cb.dependencies) do
                     g.edges[#g.edges+1]={consumer=u.unit_ref,provider=state.providers[dep]}
@@ -73,7 +79,7 @@ function M.Seed(owner,entry,session,local_group,p)
     if not Anchor.Live(entry) or entry.reloadable~=true or type(session)~='string' or session=='' then
         return fail('genuine reloadable first load required',entry)
     end
-    local observation=entry.object_load
+    local observation=entry.class_load
     local state={kind=M.Kind,version=M.Version,owner=owner,file=entry.file,session_id=session,
         entry=entry,order={},by_key={},providers={}}
     local authority={cells={},raws={},forbidden={}}
@@ -107,8 +113,10 @@ function M.Seed(owner,entry,session,local_group,p)
     local source_name=debug.getinfo(entry.anchor,'S').source
     for _,key in ipairs(eligible) do
         local d=p.by_key[key];local ctor=d.constructor
-        local cls=rawget(state.registry,key);local base=observation.bases[ctor.base_name]
-        if not plain(cls) or not plain(base) or rawget(base,'is_class')~=true
+        local cls=rawget(state.registry,key);local base=plain(cls) and rawget(cls,'base')
+        if not plain(cls) or not plain(base) or rawget(_G,ctor.base_name)~=base
+            or observation.bases[ctor.base_name]~=nil and observation.bases[ctor.base_name]~=base
+            or rawget(base,'is_class')~=true
             or rawget(cls,'is_class')~=true or rawget(cls,'base')~=base
             or rawget(cls,'default_function')~=nil and rawget(cls,'default_function')~=0
             or rawget(cls,'.render')~=nil and rawget(cls,'.render')~=false then
@@ -132,7 +140,8 @@ function M.Seed(owner,entry,session,local_group,p)
         identity(cls);identity(base)
         local ref={owner=owner,id=#state.order+1}
         local u={key=key,class=cls,base=base,base_name=ctor.base_name,unit_ref=ref,
-            definition_version=1,callbacks={},descendants={},
+            definition_version=1,callbacks={},descendants={},fixed={},writable=d.writable,
+            structure_signature=d.structure_signature,readonly_signature=not d.writable and d.definition_signature or nil,
             default_function=rawget(cls,'default_function'),render_flag=rawget(cls,'.render')}
         state.order[#state.order+1]=key;state.by_key[key]=u
         for slot,name in ipairs(D.Callbacks) do
@@ -140,7 +149,7 @@ function M.Seed(owner,entry,session,local_group,p)
             if type(fn)~='function' or numeric~=0 and numeric~=fn then return fail('initial named/dispatch shape unavailable',state,key) end
             local definition=d.methods[name] and d.methods[name][1]
             local record={fn=fn,owned=false}
-            if definition then
+            if definition and d.writable then
                 local info=debug.getinfo(fn,'S')
                 if info.what~='Lua' or info.source~=source_name or info.linedefined~=line(p.source,definition.syntax) then
                     return fail('method was not defined at its observed first-load source site',state,key)
@@ -157,6 +166,29 @@ function M.Seed(owner,entry,session,local_group,p)
             end
             u.callbacks[name]=record
         end
+        local fixed_names={}
+        for _,member in ipairs(d.members) do
+            if not (d.writable and member.definition and D.Allowed[member.name]) then
+                local value=rawget(cls,member.name)
+                local fixed={name=member.name,value=value,dependencies={}}
+                if member.definition then
+                    if type(value)~="function" then return fail("readonly class method identity unavailable",state,key) end
+                    local info=debug.getinfo(value,"S")
+                    if info.what~="Lua" or info.source~=source_name or info.linedefined~=line(p.source,member.definition.syntax) then
+                        return fail("readonly class method lacks original source provenance",state,key)
+                    end
+                    local candidate,err=prepared(p.source,member.definition,entry,state.providers)
+                    if not candidate then return fail(err,state,key) end
+                    candidate.fn=value
+                    local proof,why=shared(value,entry,candidate.dependencies)
+                    if not proof then return fail(why,state,key) end
+                    fixed.fn=value;fixed.dependencies=copy(candidate.dependencies);fixed.capture_layout=proof
+                end
+                identity(value);fixed_names[member.name]=fixed
+            end
+        end
+        local names={};for name in next,fixed_names do names[#names+1]=name end;table.sort(names)
+        for _,name in ipairs(names) do u.fixed[#u.fixed+1]=fixed_names[name] end
     end
     -- Remember known copied inheritance before later live metadata can erase it.
     for _,key in ipairs(state.order) do
@@ -182,7 +214,8 @@ function M.Compare(group,initial,p)
     for _,key in ipairs(initial.projection.order) do
         local a,b=initial.projection.by_key[key],p.by_key[key]
         if not b or #a.constructors~=#b.constructors or a.constructor and
-            (not b.constructor or a.constructor.signature~=b.constructor.signature) then view.pending_classes[key]=true end
+            (not b.constructor or a.constructor.signature~=b.constructor.signature)
+            or b and a.structure_signature~=b.structure_signature then view.pending_classes[key]=true end
     end
     for _,key in ipairs(p.order) do if not initial.projection.by_key[key] then view.pending_classes[key]=true end end
     for _,key in ipairs(state.order) do
@@ -198,15 +231,18 @@ function M.Compare(group,initial,p)
                 cb.blocked=err or not def and 'callback deletion is not supported' or nil
                 cb.changed=cb.blocked~=nil or def.signature~=before.signature
                 if def and not same(before.visible,def.visible) then cb.blocked='method definition-point visibility changed' end
-            elseif def then cb.blocked='callback addition is not supported';cb.changed=true end
+            elseif def and old.writable then cb.blocked='callback addition is not supported';cb.changed=true end
             item.callbacks[name]=cb
+        end
+        if d and not old.writable and d.definition_signature~=old.readonly_signature then
+            item.blocked="readonly class definition changed; restart to adopt"
         end
     end
     return view
 end
 local function live(state)
-    if not Anchor.Live(state.entry) then return fail('Object Anchor is no longer live',state) end
-    if #state.order>0 and (rawget(_G,'_editor_class')~=state.registry or rawget(_G,'all_class')~=state.all_class) then
+    if not Anchor.Live(state.entry) then return fail('Class Anchor is no longer live',state) end
+    if #state.order>0 and (not rawequal(rawget(_G,'_editor_class'),state.registry) or not rawequal(rawget(_G,'all_class'),state.all_class)) then
         return fail('class registry or registration table identity changed',state)
     end
     return true
@@ -214,18 +250,31 @@ end
 -- Locate/Guard check live state; only preparation retains transaction reads.
 local function check_unit(state,u,result)
     local key=u.key
-    if rawget(state.registry,key)~=u.class or rawget(u.class,'base')~=u.base
-        or rawget(_G,u.base_name)~=u.base or getmetatable(u.class)~=nil
+    if not rawequal(rawget(state.registry,key),u.class) or not rawequal(rawget(u.class,'base'),u.base)
+        or not rawequal(rawget(_G,u.base_name),u.base) or getmetatable(u.class)~=nil
         or rawget(u.class,'is_class')~=true or rawget(u.class,'default_function')~=u.default_function
-        or rawget(u.class,'.render')~=u.render_flag then return fail('live Object class identity/base/flags changed',state,key) end
+        or rawget(u.class,'.render')~=u.render_flag then return fail('live Class class identity/base/flags changed',state,key) end
     local membership=0
     for _,child in ipairs(u.descendants) do
-        if rawget(child.class,'base')~=child.base then return fail('known derived class provenance changed',state,key) end
+        if not rawequal(rawget(child.class,'base'),child.base) then return fail('known derived class provenance changed',state,key) end
     end
-    for _,cls in next,state.all_class do if cls==u.class then membership=membership+1 end end
+    for _,cls in next,state.all_class do if rawequal(cls,u.class) then membership=membership+1 end end
     if membership~=1 then return fail('live class registration changed',state,key) end
     for other,cls in next,state.registry do
-        if other~=key and cls==u.class then return fail('live registry alias was introduced',state,key) end
+        if other~=key and rawequal(cls,u.class) then return fail('live registry alias was introduced',state,key) end
+    end
+    for _,fixed in ipairs(u.fixed) do
+        if not rawequal(rawget(u.class,fixed.name),fixed.value) then return fail("readonly class member drifted",state,key) end
+        if fixed.fn then
+            local ok,err=Compose.CheckShared(fixed.fn,state.entry,fixed.dependencies,fixed.capture_layout,true)
+            if not ok then return fail(err,state,key) end
+            if result then
+                for _,join in ipairs(fixed.capture_layout) do
+                    local r=copy(join);r.owner=state.owner;r.unit_ref=u.unit_ref
+                    result.capture_reads[#result.capture_reads+1]=r
+                end
+            end
+        end
     end
     for slot,name in ipairs(D.Callbacks) do
         local cb=u.callbacks[name]
@@ -252,7 +301,7 @@ end
 function M.CheckUnit(state,key)
     local ok,err=live(state);if not ok then return nil,err end
     local unit=state.by_key[key]
-    if not unit then return fail('original Object class required',state,key) end
+    if not unit then return fail('original Class class required',state,key) end
     return check_unit(state,unit)
 end
 local function check_live(state,result)
@@ -300,6 +349,40 @@ function M.Resolve(view,key,name)
         cb.prepared=candidate
     end
     return {callback=cb.prepared,changed=true,node=cb.definition.syntax}
+end
+-- A dependency requests the complete current definition, not an arbitrary
+-- callback selector. Unchanged/readonly providers produce no writes.
+function M.ResolveDefinition(view,key)
+    local item=view.by_key[key]
+    if not item or item.blocked or not item.descriptor then
+        return fail(item and item.blocked or "original class definition has no candidate correspondence",view.base,key)
+    end
+    local result={members={},providers={},changed=false}
+    local seen={}
+    local function dependencies(names)
+        for _,name in ipairs(names) do
+            local ref=view.base.providers[name]
+            if not ref then return false end
+            if not seen[ref] then seen[ref]=true;result.providers[#result.providers+1]=ref end
+        end
+        return true
+    end
+    for _,fixed in ipairs(item.previous.fixed) do
+        if not dependencies(fixed.dependencies) then return fail("readonly class provider unavailable",view.base,key) end
+    end
+    for _,name in ipairs(D.Callbacks) do
+        local cb=item.callbacks[name]
+        if cb.changed or cb.blocked then
+            if not cb.previous.owned then return fail(cb.blocked or "class method addition unsupported",view.base,key) end
+        end
+        if cb.previous.owned then
+            local selected,err=M.Resolve(view,key,name);if not selected then return nil,err end
+            result.members[#result.members+1]={name=name,resolved=selected}
+            result.changed=result.changed or selected.changed
+            if not dependencies(selected.callback.dependencies) then return fail("class method provider unavailable",view.base,key) end
+        end
+    end
+    return result
 end
 function M.Next(view,publications)
     if #publications==0 then return view.base_group end

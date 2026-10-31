@@ -25,7 +25,7 @@ local AnchorRegistry = require("SpellHotReload.Load.AnchorRegistry")
 local Driver = require("SpellHotReload.Pipeline.Driver")
 local Card = require("SpellHotReload.Adapters.Card.Card")
 local Local = require("SpellHotReload.Adapters.Local.Local")
-local Object = require("SpellHotReload.Adapters.Object.Object")
+local Class = require("SpellHotReload.Adapters.Class.Class")
 local Files = require("SpellHotReload.Pipeline.FileVersions")
 local Source = require("SpellHotReload.Source.FileAnalysis")
 local FileApply = require("SpellHotReload.Apply.FileApply")
@@ -80,7 +80,7 @@ function Plugin.New()
 	self._last_result = nil
 	self._driver = Driver.New()
 	self._driver_error = nil
-	for _,owner in ipairs({Local,Card,Object}) do
+	for _,owner in ipairs({Local,Class,Card}) do
 		local discovered, discovery_error = self._driver:RegisterDiscovery(owner)
 		if not discovered then self._driver_error = discovery_error;break end
 	end
@@ -147,16 +147,19 @@ function Plugin:_CaptureVersions(file, entry)
     entry.file=file
     -- Capture all three contributions synchronously; no partial adoption or lazy seed.
     local called,capture,reason=pcall(function()
-        local lp,err=Local.Capture(entry,self._session_id)
+        local discovery,derr=self._driver:Discover(file,entry.source,{session_id=self._session_id,registry_entry=entry,loaded_source=entry.loaded_source})
+        if not discovery then return nil,derr end
+        local snapshot=discovery.snapshot
+        local lp,err=Local.Capture(entry,self._session_id,snapshot)
         if not lp then return nil,err end
+        local cp,cerr=Class.Capture(entry,self._session_id,lp,snapshot)
+        if not cp then return nil,cerr end
         local boss_api=rawget(_G,"boss")
         local card_api=type(boss_api)=="table" and rawget(boss_api,"card")
         local defaults=type(card_api)=="table" and rawget(card_api,"_default_card") or nil
-        local cp,why=Card.Capture(entry,self._session_id,lp,rawget(_G,"_editor_class"),defaults)
-        if not cp then return nil,why end
-        local op,oerr=Object.Capture(entry,self._session_id,lp)
-        if not op then return nil,oerr end
-        return Files.Capture(entry,self._session_id,{lp,cp,op})
+        local sp,why=Card.Capture(entry,self._session_id,lp,cp,rawget(_G,"_editor_class"),defaults,snapshot)
+        if not sp then return nil,why end
+        return Files.Capture(entry,self._session_id,{lp,cp,sp})
     end)
     if not called then capture,reason=nil,"first-load contribution capture threw; restart game" end
     self._versions[file]={capture=capture,reason=reason}
@@ -690,7 +693,7 @@ function Plugin:_VersionedOperation(file,candidate,capture,discovery,initial,mod
     for _,group in ipairs(discovery.reconciliation.groups) do
         if mode=="file" then
             local owner=group.owner
-            if owner~=Local and owner~=Card and owner~=Object then return nil,"unexpected production root owner" end
+            if owner~=Local and owner~=Card and owner~=Class then return nil,"unexpected production root owner" end
             for _,root in ipairs(owner.Roots(group.view)) do roots[#roots+1]=root end
         elseif group.owner==Card then
             local root,err=Card.CurrentRoot(group.view,initial,capture,live)
@@ -870,16 +873,16 @@ function Plugin:InspectCandidate(file)
         local parts={}
         for _,record in ipairs(prepared.driver_prepared.entries) do
             local owner=record.owner
-            if owner~=Local and owner~=Card and owner~=Object then return nil,"inspection owner unavailable" end
+            if owner~=Local and owner~=Card and owner~=Class then return nil,"inspection owner unavailable" end
             local description,description_error=owner.Describe(record.fragment,inspection)
             if not description then return nil,"describe: "..message(description_error) end
             parts[owner]=description
         end
-        if not parts[Local] or not parts[Card] or not parts[Object] then return nil,"complete owner descriptions required" end
+        if not parts[Local] or not parts[Card] or not parts[Class] then return nil,"complete owner descriptions required" end
         local target,location=prepared.target,prepared.location
         local model={kind="SpellHotReload.Inspection",version=1,file=file,session_id=self._session_id,
             revision=op.base_snapshot.revision,generation=candidate.generation,
-            functions=parts[Local].functions,initializers=parts[Local].initializers,objects=parts[Object].objects,
+            functions=parts[Local].functions,initializers=parts[Local].initializers,objects=parts[Class].objects,
             cards=parts[Card].cards,pending_sources=parts[Card].pending_sources,tombstones=parts[Card].tombstones,
             target={key=target.key,class_key=target.class_key,live_slot=target.slot,
                 source_slot=location.candidate_slot,name=target.name,match=location.match}}

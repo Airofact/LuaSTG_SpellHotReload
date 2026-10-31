@@ -7,11 +7,13 @@ function M.run()
     local Versions=require("SpellHotReload.Adapters.Card.CardVersions")
     local Local=require("SpellHotReload.Adapters.Local.Local")
     local Files=require("SpellHotReload.Pipeline.FileVersions")
-    local Load=require("SpellHotReload.Load.AnchorLoad")
+    local Load=require("SpellHotReload.Adapters.Class.ClassLoad")
+    local ClassAdapter=require("SpellHotReload.Adapters.Class.Class")
+    local ClassFixture=require("SpellHotReload.tests.ClassFixture")
+    local FileMatch=require("SpellHotReload.Pipeline.FileMatch")
     local Source=require("SpellHotReload.Source.FileAnalysis")
     local Anchor=require("SpellHotReload.Load.Anchor")
     local Compose=require("SpellHotReload.Source.Compose")
-    local Callbacks=require("SpellHotReload.Adapters.Card.CardCallbacks")
     local Planning=require("SpellHotReload.tests.PlanningFixture")
     local Guard=require("SpellHotReload.Apply.CommitCheck")
     local Dependencies=require("SpellHotReload.Pipeline.Dependencies")
@@ -19,6 +21,7 @@ function M.run()
     local names={"before","init","frame","render","beforedel","del","after"}
     local passed,failed,failures=0,0,{}
     local controllers={}
+    local environment
     local function check(value,label)
         if value then passed=passed+1 else failed=failed+1;failures[#failures+1]=label end
     end
@@ -77,12 +80,13 @@ function M.run()
     local saved={};for _,name in ipairs(globals) do saved[name]=rawget(_G,name) end
     local saved_join,saved_set=debug.upvaluejoin,debug.setupvalue
     local function firstload(bytes)
-        _G.boss={card={New=function(label)
+        if environment then environment:Restore() end
+        environment=ClassFixture.Install()
+        boss.card={_default_card=defaults,New=function(label)
             local card={name=label,is_combat=true}
             for _,name in ipairs(names) do card[name]=defaults[name] end
             return card
-        end}}
-        _G._editor_class={K={},L={}}
+        end}
         local entry=must(Load.Capture(bytes,{name="Cards_Boss.lua"}))
         must(entry.reloadable,entry.reason);entry.file="Cards_Boss.lua"
         return entry,_editor_class
@@ -90,9 +94,10 @@ function M.run()
     local function adopt(entry,classes)
         serial=serial+1
         local f=must(Planning.Capture(entry,"CardVersionsSpec:"..serial,classes,defaults))
+        environment:FinishLoad()
         f.classes,f.content,f.generation=classes,entry.loaded_source,0
-        f.initial_owners,f.ownership=Card.CaptureOwnership(
-            must(Card.Match(entry.source,{source=entry.source})),classes,entry)
+        f.initial_match=must(FileMatch.ForOwner(f.initial_discovery.snapshot,Card,entry.source))
+        f.initial_owners,f.ownership=Card.CaptureOwnership(f.initial_match,classes,entry)
         must(f.initial_owners,f.ownership)
         f.refresh=function() return {capture=f.capture,snapshot=f.capture.snapshot,entry=entry,
             classes=classes,session_id=f.session,content=f.content,generation=f.generation} end
@@ -122,10 +127,11 @@ function M.run()
     -- Direct private first-load seam: genuine source/layout/providers, malformed
     -- owner input only. Never adopt the resulting group as a second publication.
     local function seed_owners(f,owners,defs,local_group)
-        local match=must(Card.Match(f.entry.source,{source=f.entry.source}))
         local_group=local_group or group(f.capture.snapshot,Local)
-        return Versions.Seed(Card,f.entry,f.session,match,owners,f.ownership,f.classes,defs,
-            function(binding) return Local.CapturedProvider(local_group,binding) end)
+        local class_group=group(f.capture.snapshot,ClassAdapter)
+        return Versions.Seed(Card,f.entry,f.session,f.initial_match,owners,f.ownership,f.classes,defs,
+            function(binding) return Local.CapturedProvider(local_group,binding) end,
+            function(key) return ClassAdapter.CapturedProvider(class_group,key) end)
     end
     local source=table.concat({
         "local counter=4","local flag=false","local empty",
@@ -133,6 +139,7 @@ function M.run()
         "local function other(n) return n+100 end",
         "local function pattern(n) return helper(n) end",
         "local alias=helper",
+        "_editor_class['K']=Class(boss)",
         "_editor_class['K'].cards={}",
         "_tmp_sc=boss.card.New('A',1,2,3,100)",
         "function _tmp_sc:init(n) return pattern(n) end",
@@ -163,7 +170,21 @@ function M.run()
         eq(state.loaded_source,source,"immutable baseline");eq(state.anchor,entry.anchor,"sole anchor")
         eq(state.session_id,f.session,"session identity")
         list(state.order,keya..","..keyb..","..keyc,"complete captured cards")
-        for _,key in ipairs(state.order) do eq(state.units[key].card,classes.K.cards[state.units[key].slot],"genuine raw target") end
+        eq(#base.owners,3,"one actual Local/Class/Card capture")
+        local class_group=group(base,ClassAdapter);local class_ref=class_group.state.by_key.K.unit_ref
+        local refs={}
+        eq(#group(base,Card).units,3,"three cards are three public units")
+        for _,key in ipairs(state.order) do
+            local unit=state.units[key]
+            eq(unit.card,classes.K.cards[unit.slot],"genuine raw target")
+            eq(refs[unit.unit_ref],nil,"each actual card has a distinct unit ref");refs[unit.unit_ref]=true
+            eq(unit.class_ref,class_ref,"each card keeps its exact Class provider")
+            local edge=false
+            for _,row in ipairs(base.graph) do
+                if row.consumer==unit.unit_ref and row.provider==class_ref then edge=true end
+            end
+            eq(edge,true,"actual publication has the Card-to-Class edge")
+        end
         eq(state.units[keya].definition_version,1,"initial definition version")
         list(state.units[keya].callbacks.init.dependencies,"pattern","actual init capture")
         list(state.units[keya].callbacks.frame.dependencies,"alias","alias capture terminates")
@@ -173,6 +194,7 @@ function M.run()
         local observation=observed(base,keya)
         eq(observation.helper,1,"transitive helper observation");eq(observation.pattern,1,"direct observation")
         eq(observation.other,nil,"independent not observed");eq(observation.alias,nil,"state alias not function")
+        eq(observation["class:K"],1,"actual owning Class is observed")
         local same=must(prepare(f,source,{}));local sc,sl,ss=description(same)
         list(changes(same),"","unchanged callbacks");list(fields(sc.cards,"affected"),"","unchanged impact")
         list(localplan(same).local_view.version_view.changed,"","unchanged Local")
@@ -213,6 +235,11 @@ function M.run()
         eq(pc.units[keya].callbacks.frame.fn,a.frame,"same old frame")
         eq(pc.units[keyb].callbacks.init.fn,b.init,"same unselected callback")
         eq(pc.units[keyb].definition_version,1,"unselected source not acknowledged")
+        for _,key in ipairs(state.order) do
+            eq(pc.units[key].unit_ref,state.units[key].unit_ref,"publication preserves the individual Card ref")
+            eq(pc.units[key].class_ref,class_ref,"publication preserves the genuine Class ref")
+        end
+        eq(group(proposed,ClassAdapter),class_group,"callback/helper preparation retains actual Class group")
         eq(observed(proposed,keyb).helper,2,"derived shared observation advances")
         eq(observed(proposed,keyc).other,1,"pending independent observation stays old")
         eq(proposed.loaded_source,source,"baseline unchanged")
@@ -303,7 +330,12 @@ function M.run()
         local receipt=must(publish(f,selected));local first=f.capture.snapshot
         eq(receipt.changed,true,"real changed receipt");eq(receipt.snapshot,first,"receipt actual snapshot")
         eq(first.revision,1,"one common first revision")
-        for _,delta in ipairs(receipt.owner_deltas) do eq(delta.changed,true,"both real owners report installation") end
+        eq(#receipt.owner_deltas,3,"common receipt includes all three actual owners")
+        for _,delta in ipairs(receipt.owner_deltas) do
+            eq(delta.changed,delta.owner==Local or delta.owner==Card,"only the two writers report installation")
+        end
+        eq(group(first,ClassAdapter),class_group,"joint Card/Local publication retains Class group")
+        eq(observed(first,keya)["class:K"],1,"Class definition stays v1 after joint publication")
         eq(a:init(1),26,"selected wrapper plus helper");eq(b:init(1),16,"old sibling sees shared helper")
         eq(c:init(1),101,"unselected Local old");eq(a:frame(1),5,"alias keeps old function value")
         local rest=must(prepare(f,all,{keyb}));local rc,rl=description(rest)
@@ -314,6 +346,7 @@ function M.run()
         for _,delta in ipairs(second_receipt.owner_deltas) do eq(delta.changed,delta.owner==Card,"callback-only exact owner delta") end
         eq(second.revision,2,"second common revision")
         eq(group(second,Local),group(first,Local),"callback-only preserves actual Local group")
+        eq(group(second,ClassAdapter),class_group,"callback-only preserves actual Class group")
         eq(b:init(1),36,"second wrapper actually published")
         must(publish(f,must(prepare(f,all,{keyc}))));local third=f.capture.snapshot
         eq(third.revision,3,"third common revision");eq(locals(third).by_name.other.definition_version,2,"unrelated Local advances only now")
@@ -356,29 +389,48 @@ function M.run()
         -- A stale operation/old common baseline cannot resume after publication.
         local old_fragments={};for _,r in ipairs(selected.entries) do old_fragments[#old_fragments+1]=r.fragment end
         refuse(function() return Guard.Seal(selected.operation,old_fragments) end,"ownership","old installed baseline cannot prepare again")
-        -- Intervening locals belong to the callback definition point, not constructor.
+        -- Accepted single-card blocks stay contiguous; scope still comes from the full source.
         local point_source=table.concat({
+            "local late=false","_editor_class['K']=Class(boss)",
             "_editor_class['K'].cards={}","_tmp_sc=boss.card.New('Late',1,2,3,100)",
-            "local late=false","function _tmp_sc:init() return late end",
+            "function _tmp_sc:init() return late end",
             "table.insert(_editor_class['K'].cards,_tmp_sc)",
         },"\n")
         local point=fixture(point_source);local point_base=point.capture.snapshot
         local point_cb=cards(point_base).units[keya].callbacks.init
-        list(point_cb.visible,"late","callback sees intervening declaration")
+        list(point_cb.visible,"late","callback sees the pre-card declaration")
         list(point_cb.dependencies,"late","actual late state capture")
-        local point_layout=must(Callbacks.Read(point.entry.source,"K"))
-        eq(point_layout[1].locals.late,nil,"constructor locals do not replace callback lexical scope")
+        local point_layout=point.initial_match.by_class.K.layout
+        list(point_layout[1].locals,"late","constructor visibility is an ordered name list")
+        eq(Source.Owns(point.entry.source,point_layout[1].callback_syntax.init),true,
+            "callback syntax retains its complete original source")
         check(point_layout[1].callback_points.init.first>0,"explicit callback source point")
         local point_new=point_source:gsub("return late end","return late,1 end")
         local point_p=must(prepare(point,point_new,{keya}))
         eq(#cardplan(point_p).publications,1,"late local callback change prepared")
         eq(#cardplan(point_p).publications[1].callback.join_plan.joins,1,"late uses original anchor donor")
         must(publish(point,point_p))
-        eq(point.classes.K.cards[1]:init(),false,"intervening false cell after publication")
+        eq(point.classes.K.cards[1]:init(),false,"pre-card false cell after publication")
         must(Anchor.Set(point.entry,"late",9))
-        eq(point.classes.K.cards[1]:init(),9,"intervening original state cell remains shared")
+        eq(point.classes.K.cards[1]:init(),9,"pre-card original state cell remains shared")
         must(prepare(point,point_new,{keya}))
-        local moved=point_source:gsub("local late=false\n",""):gsub("table.insert","local late=false\ntable.insert")
+        -- Preserve the old interrupted input as an explicit whole-discovery refusal.
+        local interrupted=point_source:gsub("local late=false\n","")
+            :gsub("function _tmp_sc:init","local late=false\nfunction _tmp_sc:init",1)
+        local before_interrupted=point.capture.snapshot
+        local before_callback=point.classes.K.cards[1].init
+        local rejected,interrupted_error=prepare(point,interrupted,{keya})
+        refuse(function() return rejected,interrupted_error end,"unsupported","local between constructor and callback")
+        eq(interrupted_error and interrupted_error.phase,"match","interrupted card refuses during shared discovery")
+        eq(interrupted_error and interrupted_error.message,"card callback is outside a matched single-card definition",
+            "orphan callback is rejected rather than silently skipped")
+        eq(point.capture.snapshot,before_interrupted,"interrupted candidate preserves actual snapshot")
+        eq(point.classes.K.cards[1].init,before_callback,"interrupted candidate preserves live callback")
+        eq(Anchor.Get(point.entry,"late"),9,"interrupted candidate never replays local state")
+        must(prepare(point,point_new,{keya}))
+        -- Moving the declaration after the complete card keeps syntax valid while
+        -- changing callback visibility; selection must still refuse that capture drift.
+        local moved=point_source:gsub("local late=false\n","").."\nlocal late=false"
         local moved_f=fixture(point_source);local moved_base=moved_f.capture.snapshot
         local unselected=must(prepare(moved_f,moved,{}));local uc=description(unselected)
         list(changes(unselected),keya,"same body plus lexical drift is a pending definition")
@@ -405,9 +457,9 @@ function M.run()
         eq(#cardplan(future_p).publications[1].callback.join_plan.joins,0,"future global never silently captured")
 
         local cross_source=table.concat({
-            "local function shared(n) return n+1 end","_editor_class['K'].cards={}",
+            "local function shared(n) return n+1 end","_editor_class['K']=Class(boss)","_editor_class['K'].cards={}",
             "_tmp_sc=boss.card.New('One',1,2,3,100)","function _tmp_sc:init(n) return shared(n) end",
-            "table.insert(_editor_class['K'].cards,_tmp_sc)","_editor_class['L'].cards={}",
+            "table.insert(_editor_class['K'].cards,_tmp_sc)","_editor_class['L']=Class(boss)","_editor_class['L'].cards={}",
             "_tmp_sc=boss.card.New('Two',1,2,3,100)","function _tmp_sc:init(n) return shared(n)+10 end",
             "table.insert(_editor_class['L'].cards,_tmp_sc)",
         },"\n")
@@ -432,7 +484,7 @@ function M.run()
         local recursive_source=table.concat({
             "local f,g","f=function(n) if n==0 then return 0 end return g(n-1)+1 end",
             "g=function(n) if n==0 then return 0 end return f(n-1)+1 end",
-            "_editor_class['K'].cards={}","_tmp_sc=boss.card.New('Loop',1,2,3,100)",
+            "_editor_class['K']=Class(boss)","_editor_class['K'].cards={}","_tmp_sc=boss.card.New('Loop',1,2,3,100)",
             "function _tmp_sc:init(n) return f(n) end","table.insert(_editor_class['K'].cards,_tmp_sc)",
         },"\n")
         local recursive=fixture(recursive_source)
@@ -516,6 +568,7 @@ function M.run()
     end)
     debug.upvaluejoin,debug.setupvalue=saved_join,saved_set
     for _,controller in ipairs(controllers) do eq(controller:Release(),true,"common controller released") end
+    if environment then environment:Restore() end
     for _,name in ipairs(globals) do rawset(_G,name,saved[name]) end
     if not ok then error(type(problem)=="string" and problem or "CardVersionsSpec opaque failure",0) end
     for _,label in ipairs(failures) do print("FAIL CardVersions: "..label) end

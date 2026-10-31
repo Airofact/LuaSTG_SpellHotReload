@@ -1,9 +1,7 @@
---- Full-file discovery only: no candidate execution or publication.
---- Inputs/outputs are read-only by contract, not protected Lua tables.
---- Every snapshot also carries the shared TopLevelIR analysis with canonical
---- declarations and statement scope frontiers; these are not a binding-safety proof.
+-- Shared trial/rollback syntax discovery. No execution or publication.
 local Source = require("SpellHotReload.Source.FileAnalysis")
 local Adapter = require("SpellHotReload.Pipeline.Adapter")
+local Cursor = require("SpellHotReload.Source.SyntaxCursor")
 local M = {}
 
 local function plain(value)
@@ -57,115 +55,133 @@ local function claim_key(claim)
     return claim.kind .. ":" .. #claim.key .. ":" .. claim.key
 end
 
----Discover(registry, source, common?) -> snapshot | nil, error.
----common is shallow-copied; file/session/generation/version references survive.
----Each Match sees the same full source facts, including unchanged/unselected units.
----unit.key is snapshot-local only; context/deps stay adapter-owned, while
----Source queries expose the canonical declarations and statement scope frontiers.
+-- Match consumes one or more items and returns units immediately. BuildContext
+-- derives owner-private file facts from accepted units; it never creates units.
 function M.Discover(registry, source, supplied)
-    if supplied ~= nil and not plain(supplied) then
-        return failure("analyze", "unsupported", "common must be a plain table")
-    end
-    local common = {}
-    for key, value in next, supplied or {} do common[key] = value end
-    local file = common.file
-    if not text(file) or not Source.Validate(source) then
-        return failure("analyze", "unsupported", "file and complete shared source required", file)
-    end
-    if type(registry) ~= "table" then
-        return failure("match", "unsupported", "discovery registry required", file)
-    end
-    local ok, adapters = pcall(function() return registry:Discoveries() end)
-    local count = ok and dense(adapters) or nil
-    if count == nil then
-        return failure("match", "unsupported", "invalid discovery enumeration", file)
-    end
-    local ids = {}
-    for _, adapter in ipairs(adapters) do
-        local valid, reason = Adapter.ValidateDiscovery(adapter)
-        if not valid then return failure("match", "unsupported", reason, file) end
-        local id = rawget(adapter, "Id")
-        if ids[id] then
-            return failure("match", "ownership", "duplicate adapter Id: " .. id, file)
-        end
-        ids[id] = true
-    end
-
-    if common.source~=nil and common.source~=source then
-        return failure("analyze","ownership","common source disagrees",file)
-    end
+    if supplied~=nil and not plain(supplied) then return failure("analyze","unsupported","plain common required") end
+    local common={};for k,v in next,supplied or {} do common[k]=v end
+    local file=common.file
+    if not text(file) or not Source.Validate(source) then return failure("analyze","unsupported","complete source and file required",file) end
+    if common.source~=nil and common.source~=source then return failure("analyze","ownership","common source disagrees",file) end
     common.source=source
-    local content=source.content
-    local snapshot = {
-        common = common, units = {}, entries = {}, by_key = {},
-        adapter_contexts = {}, claims = {}, claim_owners = {},
-    }
-    for _, adapter in ipairs(adapters) do
-        local id = rawget(adapter, "Id")
-        local matched, result, err = pcall(rawget(adapter, "Match"), source, common)
-        if not matched then
-            return failure("match", "unsupported", result, file)
+    local called,adapters=pcall(function() return registry:Discoveries() end)
+    if not called or dense(adapters)==nil then return failure("match","unsupported","discovery registry required",file) end
+    local snapshot={kind="SpellHotReload.FileMatch",version=7,common=common,units={},entries={},by_key={},
+        adapter_contexts={},claims={},claim_owners={},mappings={},unmatched={},owners={}}
+    local owned={}
+    for _,adapter in ipairs(adapters) do
+        local ok,why=Adapter.ValidateDiscovery(adapter)
+        if not ok then return failure("match","unsupported",why,file) end
+        if owned[adapter.Id] then return failure("match","ownership","duplicate adapter Id",file) end
+        owned[adapter.Id]={units={},by_key={},mappings={}}
+        snapshot.owners[adapter.Id]=adapter
+    end
+    local cursor=Cursor.New(source.analysis.statements)
+    while not cursor:AtEnd() do
+        local start=cursor:Mark()
+        local selected,owner,finish
+        for _,adapter in ipairs(adapters) do
+            cursor:Reset(start)
+            local ran,result,err=pcall(adapter.Match,cursor,common,owned[adapter.Id].by_key)
+            local endpoint=cursor:Mark()
+            cursor:Reset(start)
+            if not ran then return failure("match","unsupported",result,file) end
+            if err~=nil then
+                return failure("match",plain(err) and text(err.code) and err.code or "unsupported",
+                    plain(err) and err.message or err,file,plain(err) and err.unit_key or nil)
+            end
+            if result~=nil then
+                if selected~=nil then return failure("match","ambiguous","multiple adapters match the same syntax start",file) end
+                if endpoint<=start then return failure("match","unsupported","successful Match must advance",file) end
+                selected,owner,finish=result,adapter,endpoint
+            end
         end
-        if result == nil then
-            if plain(err) and text(err.code) and text(err.message) then
-                return failure("match", err.code, err.message, file,
-                    text(err.unit_key) and err.unit_key or nil)
+        if selected==nil then
+            snapshot.unmatched[#snapshot.unmatched+1]=start
+            cursor:Take()
+        else
+            local own=owned[owner.Id]
+            if not plain(selected) or dense(selected.units)==nil or #selected.units==0
+                or dense(selected.claims)==nil or dense(selected.mappings)==nil then
+                return failure("match","unsupported","units, claims and mappings required",file)
             end
-            return failure("match", "unsupported", err or "Match returned nil", file)
-        end
-        if not plain(result) or dense(result.units) == nil
-            or dense(result.claims) == nil or not plain(result.context) then
-            return failure("match", "unsupported", "invalid Match result: " .. id, file)
-        end
-        snapshot.adapter_contexts[id] = result.context
-        local own = {}
-        for _, unit in ipairs(result.units) do
-            if not plain(unit) or not text(unit.key) or not text(unit.carrier)
-                or not plain(unit.context) then
-                return failure("match", "unsupported", "invalid unit: " .. id, file)
+            local returned,returned_keys={},{}
+            for _,unit in ipairs(selected.units) do
+                if not plain(unit) or not text(unit.key) or not text(unit.carrier) or not plain(unit.context)
+                    or returned[unit] or returned_keys[unit.key] then return failure("match","unsupported","invalid or duplicate returned unit",file) end
+                local existing=snapshot.by_key[unit.key]
+                if existing and (existing.adapter~=owner or existing.unit~=unit) then
+                    return failure("match","ownership","duplicate unit key",file,unit.key)
+                end
+                returned[unit]=true;returned_keys[unit.key]=unit
             end
-            local key = unit.key
-            if snapshot.by_key[key] ~= nil then
-                return failure("match", "ownership", "duplicate unit key", file, key)
+            local covered={}
+            for _,mapping in ipairs(selected.mappings) do
+                if not plain(mapping) or not returned[mapping.unit] or not integer(mapping.first) or not integer(mapping.last)
+                    or mapping.first<start or mapping.last<mapping.first or mapping.last>=finish then
+                    return failure("match","unsupported","mapping must name returned units and consumed syntax",file)
+                end
+                for i=mapping.first,mapping.last do covered[i]=true end
             end
-            local ranges = dense(unit.source_ranges)
-            if ranges == nil or ranges == 0 then
-                return failure("match", "unsupported", "source_ranges required", file, key)
+            for i=start,finish-1 do
+                if not covered[i] then return failure("match","unsupported","consumed syntax has no unit mapping",file) end
             end
-            for _, range in ipairs(unit.source_ranges) do
-                if not plain(range) or not integer(range.first)
-                    or not integer(range.last) or range.first < 1
-                    or range.last < range.first or range.last > #content then
-                    return failure("match", "unsupported", "invalid source range", file, key)
+            local claim_keys={}
+            for _,claim in ipairs(selected.claims) do
+                if not plain(claim) or not CLAIM_KINDS[claim.kind] or not text(claim.key)
+                    or not text(claim.unit_key) or not returned_keys[claim.unit_key] then
+                    return failure("match","unsupported","claim must name a returned unit",file)
+                end
+                local key=claim_key(claim)
+                if snapshot.claim_owners[key] or claim_keys[key] then
+                    return failure("match","ownership","semantic claim already owned",file,claim.unit_key)
+                end
+                claim_keys[key]=true
+            end
+            -- No accepted unit/state is changed before the entire result passes.
+            for _,unit in ipairs(selected.units) do
+                if not snapshot.by_key[unit.key] then
+                    unit.source_ranges={}
+                    local entry={unit=unit,adapter=owner,context={common=common,adapter={unit=unit.context}}}
+                    own.units[#own.units+1]=unit;own.by_key[unit.key]=unit
+                    snapshot.units[#snapshot.units+1]=unit;snapshot.entries[#snapshot.entries+1]=entry
+                    snapshot.by_key[unit.key]=entry
                 end
             end
-            local entry = {
-                unit = unit, adapter = adapter,
-                context = {
-                    common = common,
-                    adapter = { file = result.context, unit = unit.context },
-                },
-            }
-            own[key], snapshot.by_key[key] = entry, entry
-            snapshot.units[#snapshot.units + 1] = unit
-            snapshot.entries[#snapshot.entries + 1] = entry
-        end
-        for _, claim in ipairs(result.claims) do
-            if not plain(claim) or not CLAIM_KINDS[claim.kind]
-                or not text(claim.key) or not text(claim.unit_key)
-                or own[claim.unit_key] == nil then
-                return failure("match", "unsupported", "invalid semantic claim: " .. id, file)
+            for _,mapping in ipairs(selected.mappings) do
+                local rows=source.analysis.statements
+                local range={first=rows[mapping.first].source_range.first,last=rows[mapping.last].source_range.last}
+                local unit=mapping.unit
+                unit.source_ranges[#unit.source_ranges+1]=range
+                local item={unit=unit,first=mapping.first,last=mapping.last}
+                own.mappings[#own.mappings+1]=item;snapshot.mappings[#snapshot.mappings+1]=item
             end
-            local key = claim_key(claim)
-            if snapshot.claim_owners[key] ~= nil then
-                return failure("match", "ownership", "semantic claim already owned",
-                    file, claim.unit_key)
+            for _,claim in ipairs(selected.claims) do
+                snapshot.claim_owners[claim_key(claim)]=snapshot.by_key[claim.unit_key]
+                snapshot.claims[#snapshot.claims+1]=claim
             end
-            snapshot.claim_owners[key] = own[claim.unit_key]
-            snapshot.claims[#snapshot.claims + 1] = claim
+            cursor:Reset(finish)
         end
     end
+    for _,adapter in ipairs(adapters) do
+        local own=owned[adapter.Id]
+        local ran,context,err=pcall(adapter.BuildContext,source,own.units,own.mappings,common)
+        if not ran or not plain(context) or context.source~=source or context.units~=own.units then
+            return failure("match",plain(err) and err.code or "unsupported",
+                not ran and context or plain(err) and err.message or err or "same-source owner context required",file)
+        end
+        snapshot.adapter_contexts[adapter.Id]=context
+    end
+    for _,entry in ipairs(snapshot.entries) do entry.context.adapter.file=snapshot.adapter_contexts[entry.adapter.Id] end
     return snapshot
 end
 
+-- Called only with the completed shared discovery during genuine first load.
+function M.ForOwner(snapshot,owner,source)
+    if not plain(snapshot) or snapshot.kind~="SpellHotReload.FileMatch" or snapshot.version~=7
+        or not plain(snapshot.common) or snapshot.common.source~=source or not Source.Validate(source)
+        or not plain(snapshot.owners) or snapshot.owners[owner.Id]~=owner
+        or not plain(snapshot.adapter_contexts) then return nil,"same completed discovery and owner required" end
+    return snapshot.adapter_contexts[owner.Id]
+end
 return M

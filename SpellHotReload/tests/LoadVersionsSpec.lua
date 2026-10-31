@@ -3,10 +3,13 @@
 local M={}
 function M.run()
     local Planning=require("SpellHotReload.tests.PlanningFixture")
+    local ClassAdapter=require("SpellHotReload.Adapters.Class.Class")
     local Card=require("SpellHotReload.Adapters.Card.Card")
     local Local=require("SpellHotReload.Adapters.Local.Local")
     local Hook=require("SpellHotReload.Load.LoadHook")
-    local Load=require("SpellHotReload.Load.AnchorLoad")
+    local Load=require("SpellHotReload.Adapters.Class.ClassLoad")
+    local ClassFixture=require("SpellHotReload.tests.ClassFixture")
+    local environment
     local Anchor=require("SpellHotReload.Load.Anchor")
     local Compose=require("SpellHotReload.Source.Compose")
     local Source=require("SpellHotReload.Source.FileAnalysis")
@@ -30,7 +33,7 @@ function M.run()
     local keys={"boss","_editor_class","_tmp_sc","_versions_runs","_versions_api","lstg","jit"}
     local saved={};for _,key in ipairs(keys) do saved[key]=rawget(_G,key) end
     local get,set,join,id=debug.getupvalue,debug.setupvalue,debug.upvaluejoin,debug.upvalueid
-    local slots={{Local,"Capture"},{Card,"Capture"},{Files,"Capture"},
+    local slots={{Local,"Capture"},{ClassAdapter,"Capture"},{Card,"Capture"},{Files,"Capture"},
         {Scanner,"Scan"},{Binding,"CaptureCurrent"},{Binding,"IsReplay"}}
     local methods={};for i,slot in ipairs(slots) do methods[i]=slot[1][slot[2]] end
     local module_keys={"SpellHotReload.Runtime.Plugin","SpellHotReload.Runtime.Watcher"}
@@ -47,6 +50,7 @@ function M.run()
         "local alias=helper",
         "_versions_runs=_versions_runs+1",
         "_versions_api={set=set,read=read}",
+        "_editor_class['K']=Class(boss)",
         "_editor_class['K'].cards={}",
         "_tmp_sc=boss.card.New('Discard',1,2,3,100)",
         "function _tmp_sc:init(n) return other(n) end",
@@ -58,6 +62,7 @@ function M.run()
         "_tmp_sc=boss.card.New('B',1,2,3,100)",
         "function _tmp_sc:init(n) return other(n) end",
         "table.insert(_editor_class['K'].cards,_tmp_sc)",
+        "_editor_class['L']=Class(boss)",
         "_editor_class['L'].cards={}",
         "_tmp_sc=boss.card.New('C',1,2,3,100)",
         "function _tmp_sc:init(n) return helper(n)+100 end",
@@ -69,11 +74,14 @@ function M.run()
         rawset(_G,"jit",saved.jit)
     end
     local function reset()
+        if environment then environment:Restore() end
+        environment=ClassFixture.Install()
         _versions_runs=0;_editor_class={K={},L={}}
-        boss={card={_default_card=defaults,New=function(name)
+        boss.card={_default_card=defaults,New=function(name)
             local card={name=name,is_combat=true};for _,cb in ipairs(names) do card[cb]=defaults[cb] end
             return card
-        end},move={New=function() return {is_move=true,is_combat=false} end}}
+        end}
+        boss.move={New=function() return {is_move=true,is_combat=false} end}
     end
     local function fixture(content)
         restore();reset()
@@ -88,7 +96,7 @@ function M.run()
         engine.LoadTextFile=function() return content or SOURCE end
         engine.Log=function(_,value) engine.logs[#engine.logs+1]=value end
         engines[#engines+1]=engine
-        must(Hook.Install(engine,function(file,entry) return plugin:AdoptLoad(file,entry) end,{select=Hook.BossFile}))
+        must(Hook.Install(engine,function(file,entry) return plugin:AdoptLoad(file,entry) end,{select=Hook.BossFile,capture=Load.Capture}))
         return engine
     end
     local function group(snapshot,owner)
@@ -124,6 +132,7 @@ function M.run()
         debug.setupvalue=function() writes=writes+1;error("premature write") end
         rawset(_G,"jit",{flush=function() flushes=flushes+1;error("premature flush") end})
         local f=must(Planning.Capture(entry,"session",classes,defaults));local result=f.capture
+        environment:FinishLoad()
         local snapshot=result.snapshot;local ls=must(Files.GetAdapterRecords(result,Local)).state
         local cg,initial=Files.GetAdapterRecords(result,Card);must(cg,initial);local cs=cg.state
         eq(Files.Kind,"SpellHotReload.FileCapture","public capture kind")
@@ -144,7 +153,7 @@ function M.run()
         eq(snapshot.entry,entry,"same entry");eq(snapshot.anchor,entry.anchor,"same unique anchor")
         eq(snapshot.file,"Seed_Boss.lua","file retained");eq(snapshot.session_id,"session","session retained")
         eq(snapshot.loaded_source,SOURCE,"full load bytes retained");eq(snapshot.revision,0,"initial common revision")
-        eq(#snapshot.owners,2,"both first-load owners adopted")
+        eq(#snapshot.owners,3,"all Local/Class/Card first-load owners adopted")
         eq(#cs.order,3,"all final combat owners")
         eq(table.concat(cs.order,","),"card:1:K:2,card:1:K:3,card:1:L:1","final list not textual registration")
         eq(#initial.evidence.ownership,2,"both complete classes retained")
@@ -235,16 +244,21 @@ function M.run()
             refusal(function() return capture(e,c) end,code,label)
         end
         refusal(function() return capture(nil,classes) end,"ownership","missing entry")
-        refusal(function() return capture(entry,classes,"") end,"ownership","missing session")
+        refusal(function()
+            local v,e=capture(entry,classes,"")
+            eq(e and e.phase,"class","empty session reaches Class capture")
+            eq(e and e.message,"genuine reloadable first load required","empty session exact refusal")
+            return v,e
+        end,"unsupported","missing session")
         bad("no reload verdict",function(e) e.reloadable=false end,"ownership")
-        bad("missing file",function(e) e.file=nil end,"ownership")
-        bad("empty file",function(e) e.file="" end,"ownership")
-        bad("non-string file",function(e) e.file=7 end,"ownership")
+        bad("missing file",function(e) e.file=nil end,"unsupported")
+        bad("empty file",function(e) e.file="" end,"unsupported")
+        bad("non-string file",function(e) e.file=7 end,"unsupported")
         bad("missing map",function(e) e.map=nil end,"ownership")
         bad("missing trailer function",function(e) e.map.helper=nil end,"stale")
         bad("changed trailer function",function(e) e.map.helper=function() end end,"stale")
         bad("live setter not reseeded",function(e) must(Anchor.Set(e,"helper",function() return 99 end)) end,"stale")
-        bad("missing class",function(_,c) c.K=nil end,"ownership")
+        bad("missing class",function(_,c) c.K=nil end,"unsupported")
         bad("missing list",function(_,c) c.K.cards=nil end,"ownership")
         bad("extra slot",function(_,c) c.K.cards[4]={} end,"ownership")
         bad("list hole",function(_,c) c.K.cards[2]=nil end,"ownership")
@@ -257,23 +271,24 @@ function M.run()
         local meta={__index=function() metamethod_calls=metamethod_calls+1;error("hostile index") end,
             __tostring=function() metamethod_calls=metamethod_calls+1;error("hostile tostring") end}
         bad("map metatable",function(e) e.map=setmetatable({},meta) end,"ownership")
-        bad("class metatable",function(_,c) setmetatable(c.K,meta) end,"ownership")
+        bad("class metatable",function(_,c) setmetatable(c.K,meta) end,"unsupported")
         bad("list metatable",function(_,c) setmetatable(c.K.cards,meta) end,"ownership")
         bad("card metatable",function(_,c) setmetatable(c.K.cards[2],meta) end,"ownership")
         local e,c=fixture()
-        refusal(function() return capture(e,setmetatable(c,meta)) end,"ownership","registry metatable")
+        refusal(function() return capture(e,setmetatable(c,meta)) end,"unsupported","registry metatable")
         setmetatable(c,nil)
         refusal(function() return Planning.Capture(e,"session",c,setmetatable({},meta)) end,"ownership","defaults metatable")
         eq(metamethod_calls,0,"metamethods never invoked")
         local p=new_plugin();local engine=engine_for(SOURCE,p)
-        local calls={0,0,0}
-        for i=1,3 do
+        local calls={0,0,0,0}
+        for i=1,4 do
             local index=i;slots[i][1][slots[i][2]]=function(...) calls[index]=calls[index]+1;return methods[index](...) end
         end
         local returned=pack(engine.DoFile("mod/DiMS/Seed_Boss.lua"))
+        environment:FinishLoad()
         eq(returned.n,0,"private trailer remains hidden");eq(engine.original_calls,0,"supported load not rerun")
         eq(_versions_runs,1,"hook body once")
-        for i=1,3 do eq(calls[i],1,"synchronous complete contribution "..i) end
+        for i=1,4 do eq(calls[i],1,"synchronous complete contribution "..i) end
         local loaded=must(p:GetVersions("Seed_Boss.lua"));local loaded_local=must(Files.GetAdapterRecords(loaded,Local)).state
         check(loaded~=result and loaded.snapshot~=snapshot,"independent loads have separate common captures")
         check(loaded_local.by_name.helper.fn~=ls.by_name.helper.fn,"independent load owns a different helper function")
@@ -284,7 +299,7 @@ function M.run()
         must(p:AdoptLoad("Seed_Boss.lua",p:GetLoad("Seed_Boss.lua")))
         p:_CaptureVersions("Seed_Boss.lua",p:GetLoad("Seed_Boss.lua"))
         eq(p:GetVersions("Seed_Boss.lua"),loaded,"same entry keeps exact capture")
-        for i=1,3 do eq(calls[i],1,"same entry no recapture "..i) end
+        for i=1,4 do eq(calls[i],1,"same entry no recapture "..i) end
         local accepted=p:AdoptLoad("",p:GetLoad("Seed_Boss.lua"));eq(accepted,false,"Plugin rejects empty file name")
         local p2=new_plugin();check(p._session_id~=p2._session_id,"unique Plugin sessions")
         p:StopWatching();p:SetView({});eq(p:GetVersions("Seed_Boss.lua"),loaded,"stop/view not session end")
@@ -297,7 +312,7 @@ function M.run()
         eq(loaded_local.by_name.helper.fn,old_identity,"held original capture unchanged")
         p:_CaptureVersions("Seed_Boss.lua",p:GetLoad("Seed_Boss.lua"))
         eq(p:GetVersions("Seed_Boss.lua"),nil,"retirement cannot be revived")
-        for i=1,3 do eq(calls[i],1,"second load never contributes "..i) end
+        for i=1,4 do eq(calls[i],1,"second load never contributes "..i) end
         must(p:Release());restore()
         for _,action in ipairs({"missing","release"}) do
             local plugin=new_plugin();local hooked=engine_for(SOURCE,plugin);hooked.DoFile("Seed_Boss.lua")
@@ -349,6 +364,7 @@ function M.run()
         eq(disabled:GetVersions("Seed_Boss.lua"),nil,"capability-refused load not upgraded");must(disabled:Release())
         -- Preflight refusal must preserve actual capture and never prepare/commit.
         local plugin=new_plugin();engine_for(SOURCE,plugin).DoFile("Seed_Boss.lua")
+        environment:FinishLoad()
         local captured=must(plugin:GetVersions("Seed_Boss.lua"));local state=must(Files.GetAdapterRecords(captured,Card)).state
         plugin._activated,plugin._supported,plugin._sandbox_ok=true,true,true
         local store=plugin:GetStore();local ticket=store:BeginCandidate("Seed_Boss.lua",0,"spec")
@@ -381,6 +397,7 @@ function M.run()
     for _,engine in ipairs(engines) do local released=Hook.Release(engine);eq(released,true,"Hook released") end
     for _,plugin in ipairs(plugins) do local released=plugin:Release("LoadVersionsSpec complete");eq(released,true,"Plugin released") end
     for _,key in ipairs(module_keys) do package.loaded[key]=modules[key] end
+    if environment then environment:Restore() end
     for _,key in ipairs(keys) do rawset(_G,key,saved[key]) end
     if not ok then check(false,"unexpected: "..(type(problem)=="string" and problem or "opaque error")) end
     for _,label in ipairs(failures) do print("FAIL LoadVersionsSpec: "..label) end

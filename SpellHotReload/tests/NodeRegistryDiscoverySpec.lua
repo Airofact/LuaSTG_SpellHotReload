@@ -13,8 +13,8 @@ function M.run()
     end
     local function make(id)
         return {
-            ContractVersion = 5, Id = id,
-            Match = hook, Reconcile = hook, Locate = hook, Inject = hook, Commit = hook,
+            ContractVersion = 7, Id = id,
+            Match = hook, BuildContext = hook, Reconcile = hook, Locate = hook, Inject = hook, Commit = hook,
         }
     end
     local registry = Registry.New()
