@@ -8,8 +8,8 @@ function M.run()
     end
     local function valid()
         return {
-            ContractVersion = 5, Id = "card",
-            Match = hook, Reconcile = hook, Locate = hook, Inject = hook, Commit = hook,
+            ContractVersion = 7, Id = "card",
+            Match = hook, BuildContext = hook, Reconcile = hook, Locate = hook, Inject = hook, Commit = hook,
         }
     end
     local function expect(candidate, expected, label)
@@ -27,7 +27,7 @@ function M.run()
     local candidate = valid()
     candidate.ContractVersion = nil
     expect(candidate, false, "missing version")
-    for _, version in ipairs({ false, 1, 2, 3, 4, "5" }) do
+    for _, version in ipairs({ false, 1, 2, 3, 4, 5, 6, "7" }) do
         candidate = valid()
         candidate.ContractVersion = version
         expect(candidate, false, "unsupported version")
@@ -43,14 +43,14 @@ function M.run()
     candidate = valid()
     candidate.Id = "card.callback-v2_1"
     expect(candidate, true, "valid Id punctuation")
-    for _, name in ipairs({ "Match", "Reconcile", "Locate", "Inject", "Commit" }) do
+    for _, name in ipairs({ "Match", "BuildContext", "Reconcile", "Locate", "Inject", "Commit" }) do
         candidate = valid()
         candidate[name] = nil
         expect(candidate, false, "missing " .. name)
         candidate[name] = true
         expect(candidate, false, "non-function " .. name)
     end
-    assert(table.concat(Adapter.Hooks,",")=="Match,Reconcile,Locate,Inject,Commit")
+    assert(table.concat(Adapter.Hooks,",")=="Match,BuildContext,Reconcile,Locate,Inject,Commit")
     passed=passed+1
 
     local mt = { __index = function() error("must not invoke __index") end }

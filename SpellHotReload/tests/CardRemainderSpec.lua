@@ -12,7 +12,10 @@ function M.run()
     local Source = require("SpellHotReload.Source.FileAnalysis")
     local Guard = require("SpellHotReload.Apply.CommitCheck")
     local Compose = require("SpellHotReload.Source.Compose")
-    local Load = require("SpellHotReload.Load.AnchorLoad")
+    local Load = require("SpellHotReload.Adapters.Class.ClassLoad")
+    local ClassAdapter = require("SpellHotReload.Adapters.Class.Class")
+    local ClassFixture = require("SpellHotReload.tests.ClassFixture")
+    local FileMatch = require("SpellHotReload.Pipeline.FileMatch")
     local Commit = require("SpellHotReload.Apply.FileCommit")
     local Anchor = require("SpellHotReload.Load.Anchor")
     local passed, failed, failures = 0, 0, {}
@@ -26,7 +29,8 @@ function M.run()
             if row.kind==kind and (not key or row.key==key) then return row end
         end
     end
-    local globals={"boss","_editor_class","_tmp_sc","_sc_table","REMAINDER_EFFECT","jit"}
+    local globals={"REMAINDER_EFFECT","jit"}
+    local environment
     local saved={};for _,name in ipairs(globals) do saved[name]=rawget(_G,name) end
     local real_join,real_set=debug.upvaluejoin,debug.setupvalue
     local callbacks={"before","init","frame","render","beforedel","del","after"}
@@ -40,6 +44,7 @@ function M.run()
         "local function helper(n) return state+n end",
         "local function idle(n) return n+100 end",
         "local alias=helper","REMAINDER_EFFECT()",
+        "_editor_class['K']=Class(boss)","_editor_class['L']=Class(boss)",
         "_editor_class['K'].cards={boss.move.New(0,0,1)}",
         "_tmp_sc=boss.card.New('A',1,2,3,100)",
         "function _tmp_sc:init(n) return helper(n) end",
@@ -49,27 +54,38 @@ function M.run()
         "function _tmp_sc:init(n) return helper(n)+10 end",
         "table.insert(_editor_class['K'].cards,_tmp_sc)",SIDE},"\n")
     local KA,KB="card:1:K:2","card:1:K:3"
-    local function piece(prepared,owner)
-        for _,record in ipairs(prepared.entries) do if record.owner==owner then return record.fragment end end
-        error("missing real owner fragment")
+    local function record(prepared,owner)
+        for _,item in ipairs(prepared.entries) do if item.owner==owner then return item end end
+        error("missing real owner record")
+    end
+    local function piece(prepared,owner) return record(prepared,owner).fragment end
+    local function group(snapshot,owner)
+        for _,item in ipairs(snapshot.owners) do if item.owner==owner then return item end end
+        error("missing actual owner")
+    end
+    local function local_projection(discovery)
+        return must(FileMatch.ForOwner(discovery.snapshot,Local,discovery.source)).projection
     end
     local function fixture(source)
         source=source or SOURCE
         serial=serial+1
         debug.setupvalue,debug.upvaluejoin=real_set,real_join;jit=saved.jit
+        if environment then environment:Restore() end
+        environment=ClassFixture.Install()
         local f={effects=0,constructs=0,bytes=source,transactions=0}
         REMAINDER_EFFECT=function() f.effects=f.effects+1 end
-        _editor_class={K={},L={}};_sc_table={}
         f.classes=_editor_class
-        boss={card={_default_card=defaults,New=function(label)
+        boss.card={_default_card=defaults,New=function(label)
             f.constructs=f.constructs+1
             local c={name=label,is_combat=true}
             for _,name in ipairs(callbacks) do c[name]=defaults[name] end
             return c
-        end},move={New=function() return {is_combat=false} end}}
+        end}
+        boss.move={New=function() return {is_combat=false} end}
         f.entry=must(Load.Capture(source,{name="Remainder_Boss.lua"}))
         must(f.entry.reloadable,f.entry.reason);f.entry.file="Remainder_Boss.lua"
         f.planning=must(Planning.Capture(f.entry,"remainder:"..serial,f.classes,defaults))
+        environment:FinishLoad()
         f.capture=f.planning.capture;f.driver=f.planning.driver
         f.controller=must(Commit.New(f.capture.snapshot.session_id));controllers[#controllers+1]=f.controller
         f.live={capture=f.capture,entry=f.entry,classes=f.classes,session_id=f.capture.snapshot.session_id,generation=7}
@@ -95,7 +111,9 @@ function M.run()
             return must(FileApply.Collect(prepared))
         end
         function f.remaining(bytes)
-            return must(Planning.Remaining(f.planning,f.facts(bytes),7,f.refresh))
+            local model,witness,fresh=Planning.Remaining(f.planning,f.facts(bytes),7,f.refresh)
+            must(model,witness)
+            return model,witness,fresh
         end
         function f.prepare(bytes,mode)
             local discovery=f.discovery(bytes)
@@ -142,6 +160,9 @@ function M.run()
         end
         local f=fixture()
         local base=f.capture.snapshot
+        eq(#base.owners,3,"one real Local/Class/Card capture")
+        eq(#group(base,ClassAdapter).units,2,"two observed Class units")
+        eq(#group(base,Card).units,3,"three placed cards own distinct public units")
         eq(Cards.Remaining,nil,"Card versions no longer own full-file accounting")
         eq(Card.InspectFileRemainder,nil,"Card adapter no longer owns completion workflow")
         local unknown=SOURCE.."\nGLOBAL_REMAINDER=1"
@@ -166,8 +187,10 @@ function M.run()
         end
         eq(new_unknown,1,"one inserted unknown statement has no positional cascade")
         eq(inserted.complete,false,"source insertion never swallowed")
-        local model=f.remaining(SOURCE)
+        local model,witness,fresh=f.remaining(SOURCE)
         eq(model.complete,true,"unchanged complete source")
+        check(witness~=nil,"complete source returns its real completion witness")
+        eq(FileApply.CheckWitness(witness,f.capture,fresh),true,"returned completion witness validates")
         eq(#model.pending,0,"all statement content accounted")
         eq(model.file,f.entry.file,"file scope")
         eq(model.session_id,base.session_id,"session scope")
@@ -195,7 +218,7 @@ function M.run()
         check(has(model,"function","local:helper"),"helper pending")
         check(has(model,"callback",KB .. ":init"),"sibling callback pending")
         eq(f.capture.snapshot,base,"analysis leaves snapshot")
-        eq(Anchor.Get(f.entry,"helper"),base.owners[1].state.by_name.helper.fn,"analysis leaves cell")
+        eq(Anchor.Get(f.entry,"helper"),group(base,Local).state.by_name.helper.fn,"analysis leaves cell")
         eq(joins,0,"no joins");eq(writes,0,"no writes");eq(flushes,0,"no flush")
         eq(f.effects,1,"no candidate initialization");eq(f.constructs,3,"no registration replay")
         debug.upvaluejoin=real_join
@@ -223,8 +246,7 @@ function M.run()
         end
         -- Whole-file accounting after Current still retains unknown edits.
         -- File Apply's stronger publication preflight rejects them earlier.
-        for _,suffix in ipairs({"\nREMAINDER_EFFECT()","\nGLOBAL_REMAINDER=1",
-            "\n_editor_class['N']=Class(boss)"}) do
+        for _,suffix in ipairs({"\nREMAINDER_EFFECT()","\nGLOBAL_REMAINDER=1"}) do
             model=f.remaining(SOURCE .. suffix)
             eq(model.complete,false,"unknown top-level change retained")
             check(has(model,"unknown"),"unknown byte remainder visible")
@@ -236,7 +258,18 @@ function M.run()
         local expanded=SOURCE:gsub("_editor_class%['L'%].cards={}",extra .. "\n_editor_class['L'].cards={}")
         model=f.remaining(expanded)
         eq(model.complete,false,"new card has no publication history")
-        check(has(model,"identity","card:K:4"),"new card explicit source identity reason")
+        local expanded_discovery=f.discovery(expanded)
+        local expanded_match=must(FileMatch.ForOwner(expanded_discovery.snapshot,Card,expanded_discovery.source))
+        local extra_descriptor=assert(expanded_match.by_class.K.layout[4])
+        local extra_unit=assert(extra_descriptor.unit)
+        eq(extra_descriptor.name,"Extra","pending lookup uses the newly inserted card")
+        eq(extra_unit.context.class_key,"K","new-card source placement keeps class")
+        eq(extra_unit.context.slot,4,"new-card source placement keeps candidate slot")
+        local extra_pending=has(model,"identity",extra_unit.key..":4")
+        check(extra_pending,"new card explicit source identity reason")
+        local point=extra_descriptor.callback_points.init
+        check(extra_pending and extra_pending.first==point.first and extra_pending.last==point.last,
+            "new-card identity pending preserves exact callback bytes")
         check(has(model,"structure"),"new wiring not swallowed")
         local start=assert(SOURCE:find("_editor_class['K'].cards",1,true))
         model=f.remaining(SOURCE:sub(1,start-1) .. SIDE)
@@ -246,21 +279,44 @@ function M.run()
         -- or changing it cannot vanish behind a blanket _tmp_sc/function mask.
         local orphan=SOURCE .. "\n_tmp_sc=boss.card.New('Orphan',1,2,3,100)\nfunction _tmp_sc:init() return 77 end"
         local g=fixture(orphan)
+        local orphan_match=must(FileMatch.ForOwner(g.planning.initial_discovery.snapshot,Card,g.entry.source))
+        eq(#orphan_match.units,4,"unplaced constructor is a syntactic card unit")
+        eq(#orphan_match.units[4].context.placements,0,"orphan has no registration placement")
+        eq(#group(g.capture.snapshot,Card).units,3,"syntax alone does not adopt orphan into publication")
         model=g.remaining(orphan:gsub("return 77 end","return 88 end"))
         eq(model.complete,false,"unowned callback remains unknown remainder")
         check(has(model,"unknown"),"orphan literal not claimed")
         eq(g.constructs,4,"orphan candidate never constructed")
+        -- A recognized constructor is retained structure, not unknown syntax or
+        -- authority to create a new live Class during safe helper publication.
+        local h=fixture();local class_base=group(h.capture.snapshot,ClassAdapter)
+        local new_class=SOURCE:gsub("state%+n end","state+n+1 end").."\n_editor_class['N']=Class(boss)"
+        local class_receipt,class_prepared=h.commit(new_class)
+        eq(class_receipt.changed,true,"independent helper publishes beside new Class")
+        eq(#piece(class_prepared,Local).cell_writes,1,"new-Class case has real helper write")
+        eq(#piece(class_prepared,ClassAdapter).raw_writes,0,"new Class has no write authority")
+        eq(group(h.capture.snapshot,ClassAdapter),class_base,"new Class does not replace original Class group")
+        eq(class_base.state.by_key.N,nil,"new Class has no published identity")
+        eq(rawget(h.classes,"N"),nil,"candidate Class constructor never executed")
+        eq(Anchor.Get(h.entry,"helper")(1),6,"helper observes retained state after real publication")
+        local class_model,class_witness=h.remaining(new_class)
+        eq(class_model.complete,false,"new Class remains pending after helper publication")
+        eq(class_witness,nil,"retained Class constructor has no completion witness")
+        local class_row=has(class_model,"structure")
+        check(class_row and class_row.first==assert(new_class:find("_editor_class['N']",1,true)),
+            "retained Class constructor has exact byte evidence")
+        eq(h.effects,1,"new-Class candidate does not replay top-level call")
+        eq(h.constructs,3,"new-Class candidate does not recreate cards")
         -- Local owns support refusal. Public accounting can still describe a
         -- blocked source; it must not pretend that such a plan publishes edits.
         f=fixture();base=f.capture.snapshot
         local kind_change=SOURCE:gsub("local empty","local empty=0")
-        local value,err=Definitions.Pair(must(Definitions.Match(f.entry.source)),
-            must(Definitions.Match(must(Source.Build(kind_change)))))
+        local kd=f.discovery(kind_change)
+        local value,err=Definitions.Pair(local_projection(f.planning.initial_discovery),local_projection(kd))
         eq(value,nil,"declaration-kind change refused by Local")
         eq(err.phase,"inject","declaration-kind owner phase")
         eq(err.code,"unsupported","fixed declaration-kind refusal")
         check(err.message:find("declaration kind changed",1,true),"precise declaration-kind reason")
-        local kd=f.discovery(kind_change)
         local blocked=must(Planning.Prepare(f.planning,kd,
             {mode="file",root_ids={"local:helper"},refresh=f.refresh}))
         eq(#blocked.dependencies.safe_roots,0,"unsupported Local root cannot publish")
@@ -279,7 +335,7 @@ function M.run()
         eq(value,nil,"non-report refused");eq(err.phase,"analyze","invalid input phase")
         eq(err.code,"stale","invalid actual report code")
         local selection_report=f.report(SOURCE)
-        value,err=FileApply.Remaining(selection_report.prepared.entries[2].context.selection)
+        value,err=FileApply.Remaining(record(selection_report.prepared,Card).context.selection)
         eq(value,nil,"selection never a receipt or remainder baseline")
         eq(err.code,"stale","selection cannot be accounting evidence")
         local partition=f.report(SOURCE)
@@ -313,7 +369,7 @@ function M.run()
         eq(f.remaining(edited).complete,true,"post-Current accounting consumes actual remainder model")
         eq(f.capture.snapshot.loaded_source,SOURCE,"no rewriting loaded structure")
         eq(base.revision,0,"no changing first ledger")
-        eq(first.owners[2].state.units[KB].definition_version,1,"old pending wrapper history retained")
+        eq(group(first,Card).state.units[KB].definition_version,1,"old pending wrapper history retained")
         receipt=f.commit(edited)
         eq(receipt.changed,false,"no-op receipt not a fake new revision")
         eq(f.remaining(edited).complete,true,"no-op coverage stays complete")
@@ -389,7 +445,7 @@ function M.run()
         eq(f.remaining(edited).complete,false,"actual pending definitions survive Seal")
         -- Real rollback restores the helper after a setter mutates then throws.
         prepared=must(f.prepare(edited));local expected=f.capture.snapshot
-        local old_helper=expected.owners[1].state.by_name.helper.fn
+        local old_helper=group(expected,Local).state.by_name.helper.fn
         local old_a,old_b=f.classes.K.cards[2].init,f.classes.K.cards[3].init
         eq(#piece(prepared,Local).cell_writes,1,"failure case has real helper write")
         eq(#piece(prepared,Card).raw_writes,1,"failure case has real B publication")
@@ -419,8 +475,8 @@ function M.run()
         eq(f.effects,1,"failed candidate never initialized")
         local before=f.capture.snapshot
         local extra_local=edited.."\nlocal extra=0"
-        value,err=Definitions.Pair(must(Definitions.Match(f.entry.source)),
-            must(Definitions.Match(must(Source.Build(extra_local)))))
+        value,err=Definitions.Pair(local_projection(f.planning.initial_discovery),
+            local_projection(f.discovery(extra_local)))
         eq(value,nil,"declaration-set change refused by Local")
         eq(err.code,"unsupported","declaration-set refusal diagnostic")
         check(err.message:find("top-level declaration order/set changed",1,true),"declaration-set reason")
@@ -437,6 +493,7 @@ function M.run()
     end)
     debug.upvaluejoin,debug.setupvalue=real_join,real_set
     for _,controller in ipairs(controllers) do controller:Release() end
+    if environment then environment:Restore() end
     for _,name in ipairs(globals) do rawset(_G,name,saved[name]) end
     if not ok then failed=failed+1;failures[#failures+1]="unexpected error: " .. (type(problem)=="string" and problem or "opaque error") end
     print(string.format("CardRemainderSpec: %d passed / %d failed",passed,failed))

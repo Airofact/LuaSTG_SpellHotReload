@@ -5,7 +5,6 @@ local Index = require("SpellHotReload.Pipeline.UnitIndex")
 local IR = require("SpellHotReload.Source.TopLevelIR")
 local Source = require("SpellHotReload.Source.FileAnalysis")
 local Card = require("SpellHotReload.Adapters.Card.Card")
-local Callbacks = require("SpellHotReload.Adapters.Card.CardCallbacks")
 local Syntax = require("SpellHotReload.Source.SyntaxTree")
 local M = {}
 function M.run(options)
@@ -23,21 +22,26 @@ function M.run(options)
     local calls, analysis_calls, shared, shared_common = {}, 0
     local function adapter(id, specs, claim_key)
         return {
-            ContractVersion=5, Id=id,
-            Match=function(analysis, common)
-                calls[#calls+1] = id
+            ContractVersion=7, Id=id,
+            Match=function(cursor,common)
+                local position=cursor:Mark();calls[#calls+1]=id..":"..position
+                local analysis=common.source
                 if shared then
-                    eq(analysis, shared, "one shared analysis " .. id)
-                    eq(common, shared_common, "one shared common " .. id)
-                else shared, shared_common = analysis, common end
-                local units, claims = {}, {}
-                for _, s in ipairs(specs) do
-                    units[#units+1] = {key=s[1], carrier=id,
-                        source_ranges={{first=s[2], last=s[3]}}, context={tag=s[1]}}
-                    claims[#claims+1] = {kind="definition", key=claim_key or s[1], unit_key=s[1]}
+                    eq(analysis,shared,"one shared analysis "..id)
+                    eq(common,shared_common,"one shared common "..id)
+                else shared,shared_common=analysis,common end
+                local range=cursor:Peek().source_range
+                for _,spec in ipairs(specs) do
+                    if range.first==spec[2] and range.last==spec[3] then
+                        local value={key=spec[1],carrier=id,context={tag=spec[1]}}
+                        cursor:Take()
+                        return {units={value},claims={{kind="definition",key=claim_key or spec[1],unit_key=spec[1]}},
+                            mappings={{unit=value,first=position,last=position}}}
+                    end
                 end
-                return {units=units, claims=claims, context={all=true, id=id}}
+                return nil
             end,
+            BuildContext=function(source,units) return {source=source,units=units,all=true,id=id} end,
             Reconcile=function() error("unexpected reconciliation") end,
             Locate=function() error("Locate forbidden") end,
             Inject=function() error("Inject forbidden") end,
@@ -63,7 +67,7 @@ function M.run(options)
     assert(ok, discovery)
     assert(discovery)
     eq(analysis_calls, 1, "one analysis across registered adapters")
-    eq(table.concat(calls, ","), "a,z", "all adapters enumerated")
+    eq(table.concat(calls, ","), "a:1,z:1,a:2,z:2", "all adapters trial each unconsumed start")
     eq(discovery.kind, "SpellHotReload.Driver.Discovery", "discovery kind")
     eq(discovery.owner, driver, "discovery owner")
     eq(discovery.file, "F.lua", "requested file")
@@ -93,7 +97,7 @@ function M.run(options)
     eq(#assert(driver:SelectDiscovery(discovery, {"early"})).entries, 1, "one selected")
     eq(#discovery.index.list, 2, "unselected unit remains indexed")
     eq(#assert(driver:SelectDiscovery(discovery, {})).entries, 0, "empty explicit selection")
-    eq(#calls, 2, "selection does not rerun Match or execution hooks")
+    eq(#calls, 4, "selection does not rerun Match or execution hooks")
     for _, keys in ipairs({{"early","early"},{"absent"},{"early","absent"},{false},
         {[2]="early"}, {named="early"}, {[1]="early",[3]="later"}, {[math.huge]="early"}}) do
         local value, err = driver:SelectDiscovery(discovery, keys)
@@ -132,8 +136,8 @@ function M.run(options)
     shared,shared_common = nil,nil
     local conflict = DriverAPI.New()
     assert(conflict:RegisterDiscovery(adapter("a",{{"a",1,3}},"same")))
-    assert(conflict:RegisterDiscovery(adapter("b",{{"b",1,3}},"same")))
-    v,e = conflict:Discover("F.lua",assert(Source.Build("G=1")))
+    assert(conflict:RegisterDiscovery(adapter("b",{{"b",5,7}},"same")))
+    v,e = conflict:Discover("F.lua",assert(Source.Build("G=1 H=2")))
     reject(v,e,"match","semantic conflict")
     eq(e.code,"ownership","conflict not silently resolved")
     shared,shared_common = nil,nil
@@ -184,11 +188,12 @@ DRIVER_DISCOVERY_EFFECT()
     assert(found, real); assert(real)
     eq(lex_calls,1,"one full-file parse for both real Card classes")
     eq(effects,0,"candidate initialization never executed")
-    eq(real.index.unit_count,2,"all real card classes discovered")
-    local current = assert(card_driver:SelectDiscovery(real,{"card:B"}))
+    eq(real.index.unit_count,2,"each actual card has its own discovered unit")
+    local layouts=real.snapshot.adapter_contexts.card.by_class
+    local current = assert(card_driver:SelectDiscovery(real,{layouts.B.layout[1].unit.key}))
     eq(current.entries[1].adapter,Card,"real card adapter retained")
     eq(current.entries[1].unit.context.class_key,"B","explicit current class selected")
-    eq(real.snapshot.by_key["card:A"].unit.context.class_key,"A","other class remains accessible")
+    eq(real.snapshot.by_key[layouts.A.layout[1].unit.key].unit.context.class_key,"A","other actual card remains accessible")
     eq(next(Card)~=nil,true,"adapter retained without hook execution")
     lex_calls = 0
     Syntax.Parse = function(...) lex_calls=lex_calls+1; return old_lex(...) end
@@ -202,9 +207,10 @@ DRIVER_DISCOVERY_EFFECT()
     eq(bom.index.unit_count,2,"BOM real discovery")
     for _,d in ipairs({real,bom}) do
         local independent=assert(Source.Build(d.source.content))
+        local independent_discovery=assert(card_driver:Discover("Boss.lua",independent))
         for _,class in ipairs({"A","B"}) do
-            local parsed=assert(Callbacks.Read(d.source,class))
-            local fresh=assert(Callbacks.Read(independent,class))
+            local parsed=d.snapshot.adapter_contexts.card.by_class[class].layout
+            local fresh=independent_discovery.snapshot.adapter_contexts.card.by_class[class].layout
             eq(#parsed,#fresh,"same-input layout length")
             eq(parsed[1].constructor,fresh[1].constructor,"same-input constructor")
             eq(parsed[1].callbacks.init,fresh[1].callbacks.init,"same-input callback bytes")
@@ -212,7 +218,7 @@ DRIVER_DISCOVERY_EFFECT()
                 "same-input raw definition first byte")
             eq(parsed[1].callback_points.init.last,fresh[1].callback_points.init.last,
                 "same-input raw definition last byte")
-            local matched=d.snapshot.by_key["card:"..class].unit.context.layout[1]
+            local matched=d.snapshot.by_key[parsed[1].unit.key].unit.context.descriptor
             eq(parsed[1].callback_syntax.init,matched.callback_syntax.init,"original discovered function AST identity")
             local point=parsed[1].callback_points.init
             eq(d.source.content:sub(point.first,point.last),"function _tmp_sc:init() end","raw method definition bytes")
@@ -220,14 +226,14 @@ DRIVER_DISCOVERY_EFFECT()
     end
     local changed={};for key,value in pairs(real.source) do changed[key]=value end
     changed.content=source.."-- changed"
-    local parsed,perr=Callbacks.Read(changed,"A")
+    local parsed,perr=card_driver:Discover("Boss.lua",changed)
     eq(parsed,nil,"shared analysis cannot come from different bytes")
     eq(type(perr),"table","shared source mismatch diagnostic")
     changed={};for key,value in pairs(real.source) do changed[key]=value end
     changed.analysis=bom.source.analysis
-    parsed=Callbacks.Read(changed,"A")
+    parsed=card_driver:Discover("Boss.lua",changed)
     eq(parsed,nil,"shared offset must match actual BOM")
-    parsed=Callbacks.Read(hostile,"A")
+    parsed=card_driver:Discover("Boss.lua",hostile)
     eq(parsed,nil,"shared source metatable rejected")
     eq(touched,0,"shared source validation does not invoke metatable")
     local removed = assert(card_driver:Discover("Boss.lua",assert(Source.Build(""))))

@@ -8,12 +8,14 @@ function M.run()
     local Evidence=require("SpellHotReload.Adapters.Card.CardReconcile")
     local Planning=require("SpellHotReload.tests.PlanningFixture")
     local Guard=require("SpellHotReload.Apply.CommitCheck")
-    local Load=require("SpellHotReload.Load.AnchorLoad")
+    local Load=require("SpellHotReload.Adapters.Class.ClassLoad")
+    local ClassAdapter=require("SpellHotReload.Adapters.Class.Class")
+    local ClassFixture=require("SpellHotReload.tests.ClassFixture")
     local Source=require("SpellHotReload.Source.FileAnalysis")
     local IR=require("SpellHotReload.Source.TopLevelIR")
     local Syntax=require("SpellHotReload.Source.SyntaxTree")
     local Compose=require("SpellHotReload.Source.Compose")
-    local saved={boss=_G.boss,classes=_G._editor_class,tmp=_G._tmp_sc}
+    local environment
     local build,analyze,lex,create=Source.Build,IR.Analyze,Syntax.Parse,Compose.Create
     local passed=0
     local function eq(a,b,label) assert(rawequal(a,b),label);passed=passed+1 end
@@ -26,6 +28,8 @@ function M.run()
     -- Unchanged generated class implementations/metadata remain full-file
     -- obligations when one optional callback alone disappears.
     source=table.concat({
+        "_editor_class['K']=Class(boss)",
+        "_editor_class['Other']=Class(boss)",
         "_editor_class['K'].name='Generated Boss'",
         "_editor_class['K']._bg=nil",
         "_editor_class['K'].difficulty='Normal'",
@@ -37,14 +41,15 @@ function M.run()
     local bytes=source:gsub("function _tmp_sc:frame%(%) return 10 end\n","")
     local constructions=0
     local ok,problem=pcall(function()
-        _G._editor_class={K={},Other={}}
-        _G.boss={card={New=function(name)
+        environment=ClassFixture.Install()
+        boss.card={_default_card=defaults,New=function(name)
             constructions=constructions+1
             local card={name=name,is_combat=true};for k,v in next,defaults do card[k]=v end;return card
-        end}}
+        end}
         local entry=must(Load.Capture(source,{name="Delete_Boss.lua"}))
         entry.file="Delete_Boss.lua";serial=serial+1
         local f=must(Planning.Capture(entry,"deletion:evidence:"..serial,_G._editor_class,defaults))
+        environment:FinishLoad()
         local capture=f.capture;local base=capture.snapshot
         local group,initial=Files.Owner(capture,Card);must(group,initial);initial=initial.evidence
         local state=group.state;local key=state.order[1]
@@ -55,8 +60,12 @@ function M.run()
         local facts=must(Source.Build(bytes))
         local discovery=must(Planning.Discover(f,facts,1))
         local prepared,report,operation=Planning.Prepare(f,discovery,{refresh=live});must(prepared,report)
-        local fragment=prepared.entries[2].fragment
-        eq(prepared.entries[2].owner,Card,"deletion prepared by genuine Card owner")
+        local card_record
+        for _,record in ipairs(prepared.entries) do if record.owner==Card then card_record=record end end
+        local fragment=assert(card_record).fragment
+        eq(card_record.owner,Card,"deletion prepared by genuine Card owner")
+        eq(#prepared.entries,3,"complete Local/Class/Card deletion preflight")
+        eq(#must(Files.Owner(capture,ClassAdapter)).units,2,"both classes have genuine first-load identity")
         local plan=fragment.card_plan;local publication=plan.publications[1]
         eq(#plan.publications,1,"only missing optional callback selected")
         eq(publication.value,state.defaults.frame,"exact saved first-load default")
@@ -70,6 +79,8 @@ function M.run()
         eq(first,initial,"deletion reuses exact genuine first-load evidence")
         local row=rows[key..":frame"]
         eq(publication.deletion,row.tombstone,"transaction carries exact validated deletion")
+        eq(table.concat(row.tombstone.class_keys,","),"K,Other","complete source class obligations retained")
+        eq(initial.class_bindings.Other,_G._editor_class.Other,"Card proof retains actual Other identity")
         local fragments={}
         for _,item in ipairs(prepared.entries) do fragments[#fragments+1]=item.fragment end
         local sealed=must(Guard.Seal(operation,fragments))
@@ -120,7 +131,7 @@ function M.run()
         eq(unresolved[key..":frame"].tombstone,nil,"zero-match has no default restoration evidence")
     end)
     Source.Build,IR.Analyze,Syntax.Parse,Compose.Create=build,analyze,lex,create
-    _G.boss,_G._editor_class,_G._tmp_sc=saved.boss,saved.classes,saved.tmp
+    if environment then environment:Restore() end
     if not ok then error(type(problem)=="table" and problem.message or problem,0) end
     print("CardDeletionEvidenceSpec: "..passed.." passed, 0 failed")
     return {passed=passed,failed=0}

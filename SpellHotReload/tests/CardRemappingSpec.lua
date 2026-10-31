@@ -13,7 +13,10 @@ function M.run(opts)
     local Compose=require("SpellHotReload.Source.Compose")
     local Card=require("SpellHotReload.Adapters.Card.Card")
     local Callbacks=require("SpellHotReload.Adapters.Card.CardCallbacks")
-    local Load=require("SpellHotReload.Load.AnchorLoad")
+    local Load=require("SpellHotReload.Adapters.Class.ClassLoad")
+    local ClassAdapter=require("SpellHotReload.Adapters.Class.Class")
+    local ClassFixture=require("SpellHotReload.tests.ClassFixture")
+    local FileMatch=require("SpellHotReload.Pipeline.FileMatch")
     local Cards=require("SpellHotReload.Adapters.Card.CardVersions")
     local passed,failed,failures=0,0,{}
     local function eq(a,b,label)
@@ -27,6 +30,13 @@ function M.run(opts)
         local entries={};for i,item in ipairs(snapshot.entries) do entries[i]=item==old and entry or item end
         snapshot.entries=entries;snapshot.by_key=copy(snapshot.by_key);snapshot.by_key[key]=entry
     end
+    local function card_context(snapshot)
+        return must(FileMatch.ForOwner(snapshot,Card,snapshot.common.source))
+    end
+    local function card_entry(snapshot,class,slot)
+        local descriptor=assert(card_context(snapshot).by_class[class]).layout[slot]
+        return assert(snapshot.by_key[assert(descriptor.unit).key]),descriptor
+    end
     local function corrupt_analysis(snapshot,field,value)
         snapshot.common=copy(snapshot.common)
         local facts=copy(snapshot.common.source);local analysis=copy(facts.analysis)
@@ -34,17 +44,19 @@ function M.run(opts)
         facts.sites=copy(facts.sites);facts.sites.analysis=analysis
         analysis[field]=value;snapshot.common.source=facts
     end
-    local function refusal(v,e,code,label)
+    local function refusal(v,e,code,label,detail)
         eq(v,nil,label.." refused");eq(type(e),"table",label.." structured")
         eq(e and e.phase,"locate",label.." phase");eq(e and e.code,code,label.." code")
         eq(e and e.file,"Remapping_Boss.lua",label.." file")
+        if detail then eq(e and e.message,detail,label.." exact reason") end
     end
     local saved={}
-    for _,n in ipairs({"boss","_editor_class","_tmp_sc","REMAPPING_EFFECT"}) do saved[n]=rawget(_G,n) end
-    local saved_apis={read=Callbacks.Read,match=Card.Match,build=Source.Build,analyze=IR.Analyze,
+    local environment
+    for _,n in ipairs({"REMAPPING_EFFECT"}) do saved[n]=rawget(_G,n) end
+    local saved_apis={layout=Callbacks.Layout,match=Card.Match,build=Source.Build,analyze=IR.Analyze,
         tokenize=Syntax.Parse,create=Compose.Create}
     local function restore_apis()
-        Callbacks.Read,Card.Match= saved_apis.read,saved_apis.match
+        Callbacks.Layout,Card.Match= saved_apis.layout,saved_apis.match
         Source.Build,IR.Analyze,Syntax.Parse,Compose.Create=
             saved_apis.build,saved_apis.analyze,saved_apis.tokenize,saved_apis.create
     end
@@ -52,29 +64,33 @@ function M.run(opts)
     local defaults={};for _,n in ipairs(callbacks) do defaults[n]=function() end end
     local effects,serial=0,0
     local function source(labels,with_move,bom)
-        local lines={"local state=4","REMAPPING_EFFECT()","_editor_class['K'].cards={}"}
+        local lines={"local state=4","REMAPPING_EFFECT()","_editor_class['K']=Class(boss)","_editor_class['K'].cards={}"}
         if with_move then lines[#lines+1]="table.insert(_editor_class['K'].cards,boss.move.New(0,0,1))" end
         for i,label in ipairs(labels) do
             lines[#lines+1]=string.format("_tmp_sc=boss.card.New(%q,1,2,3,4)",label)
             lines[#lines+1]=string.format("function _tmp_sc:init() return %d end",i)
             lines[#lines+1]="table.insert(_editor_class['K'].cards,_tmp_sc)"
         end
+        lines[#lines+1]="_editor_class['L']=Class(boss)"
         lines[#lines+1]="_editor_class['L'].cards={boss.move.New(0,0,1)}"
         return (bom and "\239\187\191" or "")..table.concat(lines,"\n")
     end
     local function fixture(labels,slot,move)
-        _editor_class={K={},L={}}
+        if environment then environment:Restore() end
+        environment=ClassFixture.Install()
         REMAPPING_EFFECT=function() effects=effects+1 end
-        boss={card={New=function(label)
+        boss.card={_default_card=defaults,New=function(label)
             local card={name=label,is_combat=true}
             for _,n in ipairs(callbacks) do card[n]=defaults[n] end
             return card
-        end},move={New=function() return {is_combat=false} end}}
+        end}
+        boss.move={New=function() return {is_combat=false} end}
         serial=serial+1
         local bytes=source(labels,move)
         local entry=must(Load.Capture(bytes,{name="Remapping_Boss.lua"}))
         entry.file="Remapping_Boss.lua"
         local f=must(Planning.Capture(entry,"remapping:"..serial,_editor_class,defaults))
+        environment:FinishLoad()
         local capture=f.capture
         local list=_editor_class.K.cards
         local names={};for i,card in ipairs(list) do names[i]=card.name or "" end
@@ -95,10 +111,12 @@ function M.run(opts)
         local location=must(Target.LocateDiscovery(t,snapshot,b,c,l))
         eq(location.kind,"SpellHotReload.CardTarget.DiscoveryLocation","kind")
         eq(location.key,"card:1:K:2","publication key retained")
-        eq(location.source_key,"card:K","class key distinct")
+        local source_entry,source_descriptor=card_entry(snapshot,"K",2)
+        eq(location.source_key,source_entry.unit.key,"single-card source route")
+        eq(location.source_key==location.key,false,"source route is not a publication identity")
         eq(location.discovery,snapshot,"full snapshot retained")
-        eq(location.entry,snapshot.by_key["card:K"],"original source entry")
-        eq(location.descriptor,snapshot.by_key["card:K"].unit.context.layout[2],"descriptor identity")
+        eq(location.entry,source_entry,"original source entry")
+        eq(location.descriptor,source_descriptor,"descriptor identity")
         eq(location.candidate_slot,2,"same source slot");eq(location.target.slot,2,"live restart slot")
         eq(location.generation,7,"generation retained")
         eq(Target.CheckDiscovery(location,b,c,l),true,"immediate candidate recheck")
@@ -127,9 +145,12 @@ function M.run(opts)
             eq(Target.CheckDiscovery(location,b,c,l),true,case[7].." recheck")
             eq(c.snapshot,prior,case[7].." no version install")
             eq(effects,effect,case[7].." no candidate initializer")
-            eq(#snapshot.entries,3,case[7].." Local declaration and both Card classes retained")
+            eq(#snapshot.entries,#case[4]+3,case[7].." Local, both Classes and every explicit card retained")
             eq(snapshot.by_key["local:state"].adapter.Id,"local",case[7].." real Local entry retained")
-            eq(snapshot.by_key["card:L"].adapter,Card,case[7].." unrelated class retained")
+            eq(snapshot.by_key["class:L"].adapter,ClassAdapter,case[7].." unrelated Class retained")
+            local side=card_context(snapshot).by_class.L.layout
+            eq(#side,1,case[7].." unrelated placeholder layout retained")
+            eq(side[1].unit,nil,case[7].." placeholder does not invent a Card unit")
         end
         local rejected={
             {{"Same","Same"},2,false,{"Same"},false,"duplicate lost slot"},
@@ -159,29 +180,31 @@ function M.run(opts)
         local malformed={
             {"missing Card context",function(s) s.adapter_contexts={} end,"unsupported"},
             {"filtered entries",function(s)
-                s.entries={};s.by_key=copy(snapshot.by_key);s.by_key["card:L"]=nil
-                for _,e in ipairs(snapshot.entries) do if e.unit.key~="card:L" then s.entries[#s.entries+1]=e end end
-            end,"unsupported"},
+                local omitted=card_entry(s,"K",1).unit.key
+                s.entries={};s.by_key=copy(snapshot.by_key);s.by_key[omitted]=nil
+                for _,e in ipairs(snapshot.entries) do if e.unit.key~=omitted then s.entries[#s.entries+1]=e end end
+            end,"unsupported","filtered Card discovery"},
             {"wrong index",function(s) s.by_key={} end,"ownership"},
             {"wrong Card owner",function(s)
-                replace_entry(s,"card:K",function(e) e.adapter={} end)
-            end,"ownership"},
+                replace_entry(s,card_entry(s,"K",2).unit.key,function(e) e.adapter={} end)
+            end,"ownership","card discovery has another owner"},
             {"unselected context",function(s)
-                replace_entry(s,"card:L",function(e) e.context=copy(e.context);e.context.common={} end)
-            end,"ownership"},
+                replace_entry(s,card_entry(s,"K",1).unit.key,function(e) e.context=copy(e.context);e.context.common={} end)
+            end,"ownership","single-card discovery context disagrees"},
             {"sparse layout",function(s)
-                replace_entry(s,"card:K",function(e)
-                    e.unit=copy(e.unit);e.unit.context=copy(e.unit.context)
-                    e.unit.context.layout={[2]=e.unit.context.layout[2]}
-                end)
-            end,"ownership"},
+                local class=card_context(s).by_class.K
+                class.layout={[2]=class.layout[2]}
+            end,"ownership","private class registration layout disagrees"},
             {"extra index",function(s) s.by_key=copy(snapshot.by_key);s.by_key.extra={} end,"ownership"},
             {"bytes analysis",function(s) corrupt_analysis(s,"source","wrong") end,"unsupported"},
             {"offset",function(s) corrupt_analysis(s,"source_offset",3) end,"unsupported"},
         }
         for _,case in ipairs(malformed) do
+            -- Each fault owns a fresh real discovery; private layout mutations
+            -- cannot contaminate a later proof or require a fabricated context.
+            snapshot=discover(source({"A","B"}))
             local bad=copy(snapshot);case[2](bad)
-            local v,e=Target.LocateDiscovery(t,bad,b,c,l);refusal(v,e,case[3],case[1])
+            local v,e=Target.LocateDiscovery(t,bad,b,c,l);refusal(v,e,case[3],case[1],case[4])
         end
         local missing=discover(source({"A","B"}):gsub("'K'","'Absent'"))
         local v,e=Target.LocateDiscovery(t,missing,b,c,l);refusal(v,e,"ambiguous","class deletion")
@@ -212,7 +235,7 @@ function M.run(opts)
             debug=setmetatable({},{__index=function() traps=traps+1;error("debug") end}),
             jit={flush=function() traps=traps+1;error("flush") end}}, {__index=_G}))
         local pure=chunk()
-        Callbacks.Read=function() error("re-read forbidden") end
+        Callbacks.Layout=function() error("layout rebuild forbidden") end
         Card.Match=function() error("re-match forbidden") end
         Source.Build=function() error("source rebuild forbidden") end
         IR.Analyze=function() error("IR rebuild forbidden") end
@@ -255,8 +278,9 @@ function M.run(opts)
         eq(b.card.name,"B","metadata untouched");eq(b.card.init(),2,"old callback still live")
     end)
     restore_apis()
+    if environment then environment:Restore() end
     -- Restore nil globals too.
-    for _,n in ipairs({"boss","_editor_class","_tmp_sc","REMAPPING_EFFECT"}) do rawset(_G,n,saved[n]) end
+    for _,n in ipairs({"REMAPPING_EFFECT"}) do rawset(_G,n,saved[n]) end
     assert(ok,problem)
     print(string.format("CardRemappingSpec: %d passed / %d failed",passed,failed))
     for _,f in ipairs(failures) do print("  FAIL: "..f) end

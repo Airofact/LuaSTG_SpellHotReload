@@ -13,7 +13,9 @@ function M.run()
     package.loaded[modules[2]]={}
     package.loaded[modules[3]]=nil;package.loaded[modules[4]]=nil
     local Plugin=require("SpellHotReload.Runtime.Plugin")
-    local Load=require("SpellHotReload.Load.AnchorLoad")
+    local Load=require("SpellHotReload.Adapters.Class.ClassLoad")
+    local ClassFixture=require("SpellHotReload.tests.ClassFixture")
+    local environment
     local Anchor=require("SpellHotReload.Load.Anchor")
     local Binding=require("SpellHotReload.Adapters.Card.PracticeBinding")
     local Restart=require("SpellHotReload.Runtime.CurrentRestart")
@@ -38,6 +40,7 @@ function M.run()
     for _,name in ipairs(callbacks) do defaults[name]=function() return "default" end end
     local FILE="Apply_Boss.lua"
     local SIDE=table.concat({
+        "_editor_class['L']=Class(boss)",
         "_editor_class['L'].cards={}",
         "_tmp_sc=boss.card.New('C',1,2,3,100)",
         "function _tmp_sc:init(n) return helper(n)+300 end",
@@ -50,6 +53,7 @@ function M.run()
         "local function idle(n) return n+1000 end",
         "local function setstate(v) state=v end",
         "_va_runs=_va_runs+1","_va_api={set=setstate}",
+        "_editor_class['K']=Class(boss)",
         "_editor_class['K'].cards={boss.move.New(0,0,1)}",
         "_tmp_sc=boss.card.New('A',1,2,3,100)",
         "function _tmp_sc:init(n) return helper(n) end",
@@ -108,6 +112,8 @@ function M.run()
         _G.jit=saved.jit
         _va_runs=0
         _G.IsValid=function() return true end
+        if environment then environment:Restore() end
+        environment=ClassFixture.Install()
         _editor_class={K={},L={}}
         _sc_table={}
         ext={replay={IsReplay=function() return current and current.replay==true end}}
@@ -115,15 +121,17 @@ function M.run()
         local f={constructions=0,restarts=0,reads=0,discoveries=0,creates=0,classes=_editor_class,
             kernels=0,freezes=0,receipts={},discovered={}}
         current=f
-        boss={card={_default_card=defaults,New=function(name)
+        boss.card={_default_card=defaults,New=function(name)
             f.constructions=f.constructions+1
             local c={name=name,is_combat=true}
             for _,cb in ipairs(callbacks) do c[cb]=defaults[cb] end
             return c
-        end},move={New=function() return {is_combat=false} end}}
+        end}
+        boss.move={New=function() return {is_combat=false} end}
         f.p=Plugin.New();plugins[#plugins+1]=f.p
         f.entry=must(Load.Capture(SOURCE,{name=FILE}))
         must(f.p:AdoptLoad(FILE,f.entry))
+        environment:FinishLoad()
         f.capture=must(f.p:GetVersions(FILE))
         must(Files.Validate(f.capture));eq(#f.capture.snapshot.owners,3,"real complete first-load owners")
         f.p._activated,f.p._supported=true,true
@@ -554,6 +562,7 @@ function M.run()
     Restart.Handoff,Compose.Create,Restart.Freeze=old_restart,old_create,old_freeze
     for _,p in ipairs(plugins) do p:Release() end
     for _,name in ipairs(modules) do package.loaded[name]=loaded[name] end
+    if environment then environment:Restore() end
     for _,name in ipairs(globals) do rawset(_G,name,saved[name]) end
     if not ok then failed=failed+1;failures[#failures+1]="unexpected error: "..tostring(problem) end
     print(string.format("VersionedApplySpec: %d passed / %d failed",passed,failed))

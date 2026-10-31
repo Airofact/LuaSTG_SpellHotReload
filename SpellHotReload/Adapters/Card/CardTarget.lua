@@ -254,40 +254,53 @@ local function discovery_classes(target,snapshot,live)
         return fail("unsupported","complete common-source discovery required",file)
     end
     local file_context=snapshot.adapter_contexts.card
-    if not plain(file_context) or file_context.carrier~="card"
-        or not integer(file_context.classes,0) then
-        return fail("unsupported","registered Card discovery required",file)
+    if not plain(file_context) or file_context.carrier~="card" or file_context.source~=source
+        or dense(file_context.classes)==nil or dense(file_context.units)==nil or not plain(file_context.by_class) then
+        return fail("unsupported","complete single-card discovery and private layout required",file)
     end
-    local indexed,classes,entries={},{},{}
+    local indexed,card_count={},0
     for _,entry in ipairs(snapshot.entries) do
         local unit=plain(entry) and entry.unit
-        if not plain(unit) or type(unit.key)~="string" or indexed[unit.key]
-            or snapshot.by_key[unit.key]~=entry then
+        if not plain(unit) or type(unit.key)~="string" or indexed[unit.key] or snapshot.by_key[unit.key]~=entry then
             return fail("ownership","discovery entry/index disagree",file)
         end
         indexed[unit.key]=true
         if entry.adapter==Card then
             local ctx,context=unit.context,entry.context
-            if not plain(ctx) or type(ctx.class_key)~="string"
-                or unit.key~="card:"..ctx.class_key or unit.carrier~="card"
-                or not layout_valid(ctx.layout) or not plain(context)
-                or context.common~=common or not plain(context.adapter)
-                or context.adapter.file~=file_context or context.adapter.unit~=ctx then
-                return fail("ownership","Card discovery context disagrees",file)
+            if not plain(ctx) or not plain(ctx.descriptor) or ctx.descriptor.unit~=unit
+                or unit.carrier~="card" or not plain(context) or context.common~=common
+                or not plain(context.adapter) or context.adapter.file~=file_context or context.adapter.unit~=ctx then
+                return fail("ownership","single-card discovery context disagrees",file)
             end
-            classes[#classes+1]=entry
-            entries[ctx.class_key]=entry
-        elseif unit.carrier=="card" then
-            return fail("ownership","card discovery has another owner",file)
+            card_count=card_count+1
+        elseif unit.carrier=="card" then return fail("ownership","card discovery has another owner",file) end
+    end
+    for key in next,snapshot.by_key do if not indexed[key] then return fail("ownership","unindexed discovery entry",file) end end
+    if card_count~=#file_context.units then return fail("unsupported","filtered Card discovery",file) end
+    for _,unit in ipairs(file_context.units) do
+        if not indexed[unit.key] or snapshot.by_key[unit.key].unit~=unit then return fail("ownership","private card list has a foreign unit",file) end
+    end
+    local seen={}
+    for _,class in ipairs(file_context.classes) do
+        if not plain(class) or type(class.class_key)~="string" or seen[class.class_key]
+            or file_context.by_class[class.class_key]~=class or not layout_valid(class.layout) then
+            return fail("ownership","private class registration layout disagrees",file)
+        end
+        seen[class.class_key]=true
+        for _,desc in ipairs(class.layout) do
+            if desc.unit then
+                local entry=snapshot.by_key[desc.unit.key]
+                if not entry or entry.adapter~=Card or entry.unit~=desc.unit or entry.unit.context.descriptor~=desc then
+                    return fail("ownership","slot descriptor has no matching single-card entry",file)
+                end
+            elseif desc.kind=="card" and type(desc.callbacks.init)=="string" then
+                return fail("ownership","combat callback has no discovered card unit",file)
+            end
         end
     end
-    for key in next,snapshot.by_key do
-        if not indexed[key] then return fail("ownership","unindexed discovery entry",file) end
-    end
-    if #classes~=file_context.classes then
-        return fail("unsupported","filtered Card discovery",file)
-    end
-    return {order=classes,by_class=entries}
+    for key in next,file_context.by_class do if not seen[key] then return fail("ownership","unindexed private class layout",file) end end
+    return {order=file_context.classes,by_class=file_context.by_class}
+
 end
 local function locate_discovery(target,snapshot,binding,capture,live)
     local ok,err=check(target,binding,capture,live)
@@ -303,12 +316,14 @@ local function locate_discovery(target,snapshot,binding,capture,live)
         or not before[target.slot] or before[target.slot].kind~="card" then
         return fail("ownership","captured source layout unavailable",file)
     end
-    local after=chosen.unit.context.layout
+    local after=chosen.layout
     local slot,reason=source_slot(before,after,target)
     if not slot then return fail("ambiguous",reason,file) end
+    local unit=after[slot].unit;local entry=unit and snapshot.by_key[unit.key]
+    if not entry then return fail("ownership","located callback has no single-card unit",file) end
     return {kind=M.Kind..".DiscoveryLocation",version=M.Version,target=target,
         discovery=snapshot,content=common.source.content,generation=common.generation,
-        key=target.key,source_key=chosen.unit.key,entry=chosen,descriptor=after[slot],
+        key=target.key,source_key=unit.key,entry=entry,descriptor=after[slot],
         candidate_slot=slot,candidate_name=name(after[slot].name),match=reason}
 end
 local function check_discovery(location,binding,capture,live)
@@ -368,7 +383,7 @@ local function locate_file(snapshot,capture,live)
     -- Reused _tmp_sc descriptors may occupy several slots or classes.
     local claims,occurrences={},{}
     for _,entry in ipairs(classes.order) do
-        for _,desc in ipairs(entry.unit.context.layout) do
+        for _,desc in ipairs(entry.layout) do
             if desc.kind=="card" and type(desc.callbacks.init)=="string" then
                 local point=plain(desc.callback_points) and desc.callback_points.init
                 if not plain(point) or not integer(point.first,1)
@@ -393,14 +408,16 @@ local function locate_file(snapshot,capture,live)
         report.by_key[key]=row
         local entry=classes.by_class[unit.class_key]
         if entry then
-            local after=entry.unit.context.layout
+            local after=entry.layout
             local slot,reason=source_slot(base.layout[unit.class_key],after,target)
-            row.source_key,row.entry=entry.unit.key,entry
             row.status,row.reason="unmapped",reason
             if slot then
                 row.status,row.reason,row.match="located",nil,reason
                 row.candidate_slot,row.candidate_name=slot,name(after[slot].name)
                 row.descriptor=after[slot]
+                local unit=row.descriptor.unit;row.entry=unit and snapshot.by_key[unit.key]
+                if not row.entry then return fail("ownership","located source has no card unit",file) end
+                row.source_key=unit.key
                 local source_id=row.descriptor.callback_points.init.first
                 local claim=claims[source_id] or {};claims[source_id]=claim
                 claim[#claim+1]=row
@@ -422,12 +439,12 @@ local function locate_file(snapshot,capture,live)
         into[#into+1]=key
     end
     for _,entry in ipairs(classes.order) do
-        for slot,desc in ipairs(entry.unit.context.layout) do
+        for slot,desc in ipairs(entry.layout) do
             if desc.kind=="card" and type(desc.callbacks.init)=="string" then
                 local claim=claims[desc.callback_points.init.first]
                 if not claim or #claim~=1 or claim[1].status~="located" then
-                    report.unowned[#report.unowned+1]={status="unowned",source_key=entry.unit.key,
-                        class_key=entry.unit.context.class_key,candidate_slot=slot,
+                    report.unowned[#report.unowned+1]={status="unowned",source_key=desc.unit.key,
+                        class_key=entry.class_key,candidate_slot=slot,
                         candidate_name=name(desc.name),descriptor=desc,
                         reason=claim and "candidate source has ambiguous captured ownership"
                             or "candidate combat slot has no proven captured owner"}

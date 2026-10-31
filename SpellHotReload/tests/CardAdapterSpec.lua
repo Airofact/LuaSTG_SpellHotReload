@@ -1,14 +1,15 @@
--- REAL Card+Local five hooks through Driver and the common FileCommit kernel.
+-- REAL Card/Class/Local five hooks through Driver and the common FileCommit kernel.
 -- Synthetic genuine first loads only. No Plugin/CurrentRestart/FileApply claim.
 local M={}
 local serial=0
 function M.run()
     local Card=require("SpellHotReload.Adapters.Card.Card")
-    local Local=require("SpellHotReload.Adapters.Local.Local")
+    local ClassAdapter=require("SpellHotReload.Adapters.Class.Class")
+    local Fixture=require("SpellHotReload.tests.PlanningFixture")
+    local ClassFixture=require("SpellHotReload.tests.ClassFixture")
     local Files=require("SpellHotReload.Pipeline.FileVersions")
-    local Driver=require("SpellHotReload.Pipeline.Driver")
     local Source=require("SpellHotReload.Source.FileAnalysis")
-    local Load=require("SpellHotReload.Load.AnchorLoad")
+    local Load=require("SpellHotReload.Adapters.Class.ClassLoad")
     local Anchor=require("SpellHotReload.Load.Anchor")
     local Tx=require("SpellHotReload.Apply.FileCommit")
     local Target=require("SpellHotReload.Adapters.Card.CardTarget")
@@ -17,7 +18,7 @@ function M.run()
     local IR=require("SpellHotReload.Source.TopLevelIR")
     local names={"before","init","frame","render","beforedel","del","after"}
     local defaults={};for _,name in ipairs(names) do defaults[name]=function() end end
-    local saved={boss=rawget(_G,"boss"),classes=rawget(_G,"_editor_class"),tmp=rawget(_G,"_tmp_sc")}
+    local environment
     local controllers={};local passed,failed,failures=0,0,{}
     local function eq(a,b,label) assert(rawequal(a,b),label);passed=passed+1 end
     local function must(v,e) assert(v,type(e)=="table" and e.message or e);return v end
@@ -29,6 +30,7 @@ function M.run()
         "local counter=3",
         "local function helper(n) return counter+n end",
         "local function independent() return 500 end",
+        "_editor_class['K']=Class(boss)",
         "_editor_class['K'].cards={}",
         "_tmp_sc=boss.card.New('A',1,2,3,100)",
         "function _tmp_sc:init(n) return helper(n) end",
@@ -40,25 +42,26 @@ function M.run()
     },"\n")
     local function fixture(content,no_cards)
         content=content or source;serial=serial+1
+        if environment then environment:Restore() end
+        environment=ClassFixture.Install()
         if no_cards then _G.boss=nil;_G._editor_class=nil
         else
-            _G.boss={card={New=function(name)
+            boss.card={_default_card=defaults,New=function(name)
                 local card={name=name,is_combat=true}
                 for _,cb in ipairs(names) do card[cb]=defaults[cb] end
                 return card
-            end}}
-            _G._editor_class={K={},Q={}}
+            end}
+            -- Q is an actual external Class, outside this file's ownership.
+            _editor_class.Q=Class(boss)
         end
         local entry=must(Load.Capture(content,{name="CardAdapter_Boss.lua"}));entry.file="CardAdapter_Boss.lua"
         local session="CardAdapterSpec:"..serial
-        local lp=must(Local.Capture(entry,session))
         local captured_defaults
         if not no_cards then captured_defaults=defaults end
-        local cp=must(Card.Capture(entry,session,lp,_editor_class,captured_defaults))
-        local capture=must(Files.Capture(entry,session,{lp,cp}))
-        local driver=Driver.New();must(driver:RegisterDiscovery(Local));must(driver:RegisterDiscovery(Card))
-        local f={entry=entry,session=session,capture=capture,driver=driver,loaded=content,content=content,
-            classes=_editor_class,generation=0,transactions=0,keya="card:1:K:1",keyb="card:1:K:2"}
+        local f=must(Fixture.Capture(entry,session,_editor_class,captured_defaults))
+        environment:FinishLoad()
+        f.content=content;f.classes=_editor_class;f.generation=0;f.transactions=0
+        f.keya,f.keyb="card:1:K:1","card:1:K:2"
         if not no_cards then f.current={slot=1,card=f.classes.K.cards[1],mode="practice",include_previous=false} end
         f.tx=must(Tx.New(session));controllers[#controllers+1]=f.tx
         return f
@@ -77,24 +80,11 @@ function M.run()
     local function discover(f,content)
         f.content=content;f.generation=f.generation+1
         local facts=must(Source.Build(content))
-        return must(f.driver:DiscoverPublished(f.entry.file,facts,must(Files.Publication(f.capture)),
-            {capture=f.capture,generation=f.generation})),facts
+        return must(Fixture.Discover(f,facts,f.generation)),facts
     end
     local function operation(f,d,requested,mode)
-        local roots,available={},{};local cv
-        for _,group in ipairs(d.reconciliation.groups) do
-            local list=group.owner==Local and Local.Roots(group.view) or Card.Roots(group.view)
-            if group.owner==Card then cv=group.view end
-            for _,root in ipairs(list) do available[root.root_id]=root;roots[#roots+1]=root end
-        end
-        local input={refresh=function() return live(f) end}
-        if mode=="current" or mode=="inspect" then
-            local l=live(f);local root,target=Card.CurrentRoot(cv,Card.FreezeBinding(l.binding),f.capture,l)
-            roots={must(root,target)};input.target=target
-        elseif requested then roots={};for _,key in ipairs(requested) do roots[#roots+1]=assert(available[key]) end end
-        return {capture=f.capture,base_snapshot=f.capture.snapshot,source=d.source,file=f.entry.file,
-            entry=f.entry,anchor=f.entry.anchor,loaded_source=f.loaded,session_id=f.session,generation=f.generation,
-            mode=mode or "file",roots=roots,card=input}
+        return must(Fixture.Operation(f,d,{mode=mode or "file",root_ids=requested,
+            refresh=function() return live(f) end}))
     end
     local function prepare(f,content,requested,mode)
         local d=discover(f,content);local op=operation(f,d,requested,mode)
@@ -119,15 +109,17 @@ function M.run()
         Compose.Create,IR.Analyze=create,analyze
         if not ok then error(err,0) end
     end
-    case("complete no-change real two-owner path",function()
+    case("complete no-change real three-owner path",function()
         local f=fixture();local d=discover(f,source);local op=operation(f,d);local base=f.capture.snapshot
         no_scan(function(count)
             local p=must(f.driver:PrepareDiscovery(d,op))
-            eq(#p.entries,2,"both original owners prepare")
+            eq(#p.entries,3,"all three original owners prepare")
+            eq(p.entries[2].owner,ClassAdapter,"real Class owner participates in common preparation")
+            eq(#p.entries[2].fragment.raw_writes,0,"readonly Class preparation has no raw writes")
             eq(count(),0,"no-change complete selection creates zero closures")
             local receipt=must(publish(f,p));eq(receipt.changed,false,"real unchanged receipt")
             eq(f.capture.snapshot,base,"unchanged receipt retains exact common snapshot")
-            eq(f.transactions,1,"both registration hooks enter one transaction")
+            eq(f.transactions,1,"all three registration hooks enter one transaction")
         end)
     end)
     case("Current A requests only actual provider chain",function()
@@ -142,7 +134,7 @@ function M.run()
             eq(#p.dependencies.safe_roots,1,"Current preparation retains only its requested root")
             eq(p.dependencies.safe_roots[1].root_id,f.keya,"Current dependencies preserve target provenance")
             eq(count(),1,"Current A only constructs its changed Local helper")
-            eq(#p.entries[2].fragment.raw_writes,0,"retained Card callbacks are not rebuilt")
+            eq(#p.entries[3].fragment.raw_writes,0,"retained Card callbacks are not rebuilt")
             eq(d.reconciliation.groups[1].view.version_view.by_name.independent.probe,nil,"unrequested Local edit is not probed")
             local receipt=must(publish(f,p));eq(receipt.changed,true,"Current helper publication returns real changed receipt")
             eq(f.transactions,1,"Current uses exactly one common transaction")
@@ -155,9 +147,12 @@ function M.run()
         eq(f.classes.K.cards[2]:init(2),115,"other actual callback sees helper without candidate +200")
         eq(Anchor.Get(f.entry,"independent")(),500,"independent pending edit stays actual old function")
         eq(cg.state.units[f.keya].definition_version,1,"Current helper-only does not advance Card source")
-        eq(Cards.Observations(f.capture.snapshot,cg,f.keya)[1].version,2,"display follows actual helper v2")
-        local fresh=must(f.driver:DiscoverPublished(f.entry.file,d.source,must(Files.Publication(f.capture)),
-            {capture=f.capture,generation=f.generation}))
+        local observed={}
+        for _,row in ipairs(must(Cards.Observations(f.capture.snapshot,cg,f.keya))) do observed[row.name]=row.version end
+        eq(observed.helper,2,"display follows actual helper v2")
+        eq(observed["class:K"],1,"display includes the actual owning Class version")
+        eq(observed["class:Q"],nil,"external Class is not a fabricated owning provider")
+        local fresh=must(Fixture.Discover(f,d.source,f.generation))
         eq(fresh.source,d.source,"post-publication fresh discovery consumes same analysis")
         eq(fresh.reconciliation.groups[1].view.version_view.by_name.helper.changed,false,"fresh Local comparison uses newly installed version")
         local next_op=operation(f,fresh,nil,"current")
@@ -170,9 +165,9 @@ function M.run()
             :gsub("return helper%(n%) end","return helper(n)+1 end")
         local p=prepare(f,candidate,{f.keya})
         eq(#p.entries[1].fragment.cell_writes,1,"one selected Local cell")
-        eq(#p.entries[2].fragment.raw_writes,1,"one selected Card callback")
+        eq(#p.entries[3].fragment.raw_writes,1,"one selected Card callback")
         local receipt=must(publish(f,p));eq(receipt.changed,true,"joint publication changed receipt")
-        eq(f.capture.snapshot.revision,1,"two owners advance file exactly once")
+        eq(f.capture.snapshot.revision,1,"three owners advance file exactly once")
         eq(f.transactions,1,"two writers use one transaction")
         local group=must(Files.Owner(f.capture,Card))
         eq(group.state.units[f.keya].definition_version,2,"selected Card definition advances")
@@ -187,7 +182,7 @@ function M.run()
             eq(#p.dependencies.blocked_roots,1,"Card business constraint blocks only helper root")
             eq(p.dependencies.blocked_roots[1].root_id,"local:helper","real Local root provenance retained")
             eq(p.dependencies.safe_roots[1].root_id,"local:independent","independent Local root survives")
-            eq(#p.entries[2].fragment.card_plan.registry_reads,0,"blocked facts leave no Card registry read")
+            eq(#p.entries[3].fragment.card_plan.registry_reads,0,"blocked facts leave no Card registry read")
             must(publish(f,p));eq(Anchor.Get(f.entry,"helper"),old,"blocked helper not installed")
             eq(Anchor.Get(f.entry,"independent")(),501,"safe independent root installed")
         end
@@ -195,19 +190,27 @@ function M.run()
     case("final registry and Current lifecycle drift refuse",function()
         local f=fixture();local p=prepare(f,source:gsub("return counter%+n","return _editor_class['Q']"),{"local:helper"})
         local before=f.capture.snapshot;local old=f.entry.map.helper
-        local receipt,err=publish(f,p,function() f.classes.Q={};return live(f) end)
+        eq(Files.Owner(f.capture,ClassAdapter).state.by_key.Q,nil,"external Q is not owned by the selected source")
+        eq(#p.entries[3].fragment.card_plan.registry_reads,1,"Card retains the selected external registry read")
+        eq(p.entries[3].fragment.card_plan.registry_reads[1].key,"Q","Card proof identifies the external dependency")
+        local refreshed=false
+        local receipt,err=publish(f,p,function() refreshed=true;f.classes.Q={};return live(f) end)
+        eq(refreshed,true,"registry drift reaches the final refresh after successful preparation")
         eq(receipt,nil,"post-flush registry drift has no receipt");eq(err.code,"stale","registry guard diagnostic")
+        eq(err.message,"candidate class registry identity changed","Card registry Guard owns the final refusal")
         eq(f.capture.snapshot,before,"registry drift leaves common snapshot")
         eq(Anchor.Get(f.entry,"helper"),old,"registry drift leaves actual helper")
         for _,field in ipairs({"mode","include_previous","names"}) do
             f=fixture();p=prepare(f,source:gsub("counter%+n","counter+n+10"),nil,"current")
-            before=f.capture.snapshot
+            before=f.capture.snapshot;refreshed=false
             receipt,err=publish(f,p,function()
+                refreshed=true
                 if field=="mode" then f.current.mode="debug"
                 elseif field=="include_previous" then f.current.include_previous=true
                 else f.classes.K.cards[2].name="renamed external sibling" end
                 return live(f)
             end)
+            eq(refreshed,true,"Current drift reaches final refresh: "..field)
             eq(receipt,nil,"Current lifecycle drift has no receipt")
             eq(f.capture.snapshot,before,"Current lifecycle drift installs no snapshot")
         end
@@ -216,8 +219,8 @@ function M.run()
         local initial=source:gsub("'B',1,2","'A',1,2")
         local f=fixture(initial)
         local candidate=initial:gsub("_tmp_sc=boss.card.New%('A',1,2,3,100%)\nfunction _tmp_sc:init%(n%) return helper%(n%)%+100 end\n","")
-        -- Rebuild from the held descriptor twice: a second insert alone would
-        -- be an unknown placeholder after the first insertion clears pending.
+        -- Reuse one matched descriptor in two final slots. Both old claimants
+        -- must remain ambiguous; traversal order cannot choose a winner.
         candidate=candidate.."\n_editor_class['K'].cards={_tmp_sc,_tmp_sc}"
         local d=discover(f,candidate);local location=must(Target.LocateFileDiscovery(d.snapshot,f.capture,live(f)))
         eq(location.by_key[f.keya].status,"ambiguous","first claimant cannot win by traversal order")
@@ -229,9 +232,11 @@ function M.run()
         local content="local function helper() return 1 end"
         local f=fixture(content,true);local cg=must(Files.Owner(f.capture,Card))
         eq(#cg.units,0,"genuine empty Card contribution has no fake unit")
-        eq(#f.capture.initial_owners[2].authority.raws,0,"empty Card has no raw write authority")
+        eq(#must(Files.Owner(f.capture,ClassAdapter)).units,0,"genuine empty Class contribution has no fake unit")
+        eq(#f.capture.initial_owners[3].authority.raws,0,"empty Card has no raw write authority")
         local p=prepare(f,"local function helper() return 2 end",{"local:helper"})
-        eq(#p.entries,2,"empty original Card owner still prepares")
+        eq(#p.entries,3,"empty original Class and Card owners still prepare")
+        eq(#p.entries[2].fragment.raw_writes,0,"empty Class has no raw writes")
         local receipt=must(publish(f,p));eq(receipt.changed,true,"Card-free Local publication has real receipt")
         eq(Files.Owner(f.capture,Card),cg,"empty Card group remains exact original")
         eq(Anchor.Get(f.entry,"helper")(),2,"Card-free real Local function updated")
@@ -249,14 +254,14 @@ function M.run()
             eq(p.dependencies.blocked_roots[1].root_id,"local:helper","class read refusal retains helper provenance")
             eq(#p.dependencies.safe_roots,1,"independent Local root survives empty Card constraints")
             eq(p.dependencies.safe_roots[1].root_id,"local:independent","independent provenance survives")
-            eq(#p.entries[2].fragment.card_plan.registry_reads,0,"empty Card retains no unsupported registry proof")
+            eq(#p.entries[3].fragment.card_plan.registry_reads,0,"empty Card retains no unsupported registry proof")
             local receipt=must(publish(f,p));eq(receipt.changed,true,"independent root still has changed receipt")
             eq(Anchor.Get(f.entry,"helper"),old,"class-reading helper remains actual old version")
             eq(Anchor.Get(f.entry,"independent")(),501,"independent update publishes despite rejected class read")
         end
     end)
     for _,tx in ipairs(controllers) do tx:Release() end
-    _G.boss=saved.boss;_G._editor_class=saved.classes;_G._tmp_sc=saved.tmp
+    if environment then environment:Restore() end
     return {passed=passed,failed=failed,failures=failures}
 end
 return M

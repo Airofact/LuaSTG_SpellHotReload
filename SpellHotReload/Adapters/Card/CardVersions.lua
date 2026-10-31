@@ -87,9 +87,10 @@ local function stored(record,version,ref)
 end
 local function project(state)
     local group={owner=state.owner,owner_id=state.owner_id,state=state,units={},records={},functions={},edges={}}
-    for _,class in ipairs(state.classes) do group.units[#group.units+1]={unit_ref=state.class_refs[class],private_ref={class_key=class}} end
     for _,key in ipairs(state.order) do
         local unit=state.units[key]
+        group.units[#group.units+1]={unit_ref=unit.unit_ref,private_ref={key=key}}
+        group.edges[#group.edges+1]={consumer=unit.unit_ref,provider=unit.class_ref}
         group.records[#group.records+1]={key=key,kind="card",definition=unit,definition_version=unit.definition_version,
             class_key=unit.class_key,slot=unit.slot}
         for _,name in ipairs(CALLBACKS) do
@@ -104,14 +105,14 @@ local function project(state)
 end
 -- provider(binding) is a genuine first-load owner's canonical declaration -> unit
 -- mapping. Store references only, never that owner's records, versions or state.
-function M.Seed(owner,entry,session,match,owners,ownership,classes,defaults,provider)
+function M.Seed(owner,entry,session,match,owners,ownership,classes,defaults,provider,class_provider)
     if not plain(owner) or type(owner.Id)~="string" or not plain(entry) or not Source.Validate(entry.source)
-        or not Anchor.Live(entry) or entry.reloadable~=true or not plain(entry.map) or not plain(match) or not dense(match.units) or not dense(owners)
-        or not dense(ownership) or not plain(classes) or not plain(defaults) or type(provider)~="function"
+        or not Anchor.Live(entry) or entry.reloadable~=true or not plain(entry.map) or not plain(match) or not dense(match.units) or not dense(match.classes) or not dense(owners)
+        or not dense(ownership) or not plain(classes) or not plain(defaults) or type(provider)~="function" or type(class_provider)~="function"
         or type(session)~="string" or session=="" then return fail("ownership","genuine complete Card first load required",entry) end
     local state={kind=M.Kind,version=M.Version,owner=owner,owner_id=owner.Id,file=entry.file,
         entry=entry,anchor=entry.anchor,loaded_source=entry.loaded_source,session_id=session,
-        classes={},class_refs={},layout={},order={},units={},providers={},defaults={}}
+        classes={},class_providers={},layout={},order={},units={},providers={},defaults={}}
     local authority={cells={},raws={},forbidden={}}
     for _,name in ipairs(CALLBACKS) do
         if type(rawget(defaults,name))~="function" then return fail("ownership","seven saved defaults required",state) end
@@ -153,15 +154,16 @@ function M.Seed(owner,entry,session,match,owners,ownership,classes,defaults,prov
         by_key[key]=record
     end
     local consumed={}
-    for i,class in ipairs(match.units) do
-        local ctx=plain(class) and class.context
+    for _,ctx in ipairs(match.classes) do
         if not plain(ctx) or type(ctx.class_key)~="string" or ctx.class_key=="" or not dense(ctx.layout) then
             return fail("ownership","complete Card class layout required",state)
         end
         local own=class_owners[ctx.class_key]
         if not own or state.layout[ctx.class_key] or #own.slots~=#ctx.layout then return fail("ownership","missing class owner",state) end
         state.classes[#state.classes+1]=ctx.class_key
-        local ref={owner=owner,id=i};state.class_refs[ctx.class_key]=ref;state.layout[ctx.class_key]=layout_copy(ctx.layout)
+        local parent=class_provider(ctx.class_key)
+        if not plain(parent) then return fail("ownership","original Class provider unavailable",state,ctx.class_key) end
+        state.class_providers[ctx.class_key]=parent;state.layout[ctx.class_key]=layout_copy(ctx.layout)
         for slot,desc in ipairs(ctx.layout) do
             if desc.kind=="card" and desc.callbacks.init then
                 local key=key_of(ctx.class_key,slot);local actual=by_key[key]
@@ -169,7 +171,8 @@ function M.Seed(owner,entry,session,match,owners,ownership,classes,defaults,prov
                     return fail("ownership","missing captured combat card",state,key)
                 end
                 consumed[key]=true
-                local unit={key=key,class_key=ctx.class_key,slot=slot,card=actual.card,unit_ref=ref,definition_version=1,callbacks={}}
+                local ref={owner=owner,id=#state.order+1}
+                local unit={key=key,class_key=ctx.class_key,slot=slot,card=actual.card,unit_ref=ref,class_ref=parent,definition_version=1,callbacks={}}
                 state.order[#state.order+1]=key;state.units[key]=unit
                 for _,name in ipairs(CALLBACKS) do
                     local fn=rawget(actual.callbacks,name)
@@ -187,22 +190,22 @@ function M.Seed(owner,entry,session,match,owners,ownership,classes,defaults,prov
     end
     for class in next,class_owners do if not state.layout[class] then return fail("ownership","unrecognized captured class",state) end end
     for key in next,by_key do if not consumed[key] then return fail("ownership","unrecognized combat owner",state,key) end end
-    local Evidence=require("SpellHotReload.Adapters.Card.CardReconcile")
+    local Evidence=require("SpellHotReload.Adapters.Class.ClassDefinitions")
     for _,statement in ipairs(entry.source.analysis.statements) do
-        local class=Evidence.ClassWriteKey(entry.source.analysis.syntax,statement.syntax)
+        local class=Evidence.StructureWriteKey(entry.source.analysis.syntax,statement.syntax)
         if class then initial.class_bindings[class]=rawget(classes,class);identity(rawget(classes,class)) end
     end
     local group=project(state);group.initial=initial;group.identity_objects=identities;group.authority=authority
     return group
 end
--- A genuinely Card-free first load contributes no invented registry/defaults.
+-- A genuinely registration-free first load contributes no invented registry/defaults.
 function M.Empty(owner,entry,session,match)
     if not plain(owner) or type(owner.Id)~="string" or not plain(entry) or not Anchor.Live(entry)
-        or not Source.Validate(entry.source) or not plain(match) or not dense(match.units) or #match.units~=0
+        or not Source.Validate(entry.source) or not plain(match) or not dense(match.units) or not dense(match.classes) or #match.classes~=0
         or type(session)~="string" or session=="" then return fail("ownership","genuine Card-free first load required",entry) end
     local state={kind=M.Kind,version=M.Version,owner=owner,owner_id=owner.Id,file=entry.file,
         entry=entry,anchor=entry.anchor,loaded_source=entry.loaded_source,session_id=session,
-        classes={},class_refs={},layout={},order={},units={},providers={},defaults={}}
+        classes={},class_providers={},layout={},order={},units={},providers={},defaults={}}
     local group=project(state)
     group.initial={source=entry.source,match=match,empty=true,ownership={},class_bindings={}}
     group.identity_objects={};group.authority={cells={},raws={},forbidden={}}
@@ -220,9 +223,9 @@ function M.Compare(group,initial,source,match,locations,rows)
     local view={kind=M.Kind..".View",version=M.Version,base=state,base_group=group,initial=initial,
         source=source,match=match,locations=locations,rows=rows,by_key={},pending_classes={},candidate_layout={},probes={}}
     local descriptors={}
-    for _,class in ipairs(match.units) do
-        view.candidate_layout[class.context.class_key]=class.context.layout
-        for slot,desc in ipairs(class.context.layout) do descriptors[desc]=class.context.class_key..":"..slot end
+    for _,class in ipairs(match.classes) do
+        view.candidate_layout[class.class_key]=class.layout
+        for slot,desc in ipairs(class.layout) do descriptors[desc]=class.class_key..":"..slot end
     end
     for class,layout in next,state.layout do
         if not same_layout(layout,view.candidate_layout[class]) then view.pending_classes[class]=true end
@@ -459,8 +462,8 @@ function M.Facts(source,match,pending_classes)
     end
     local excluded,wiring,binding_reads,structures={},{},{},{}
     for _,unit in ipairs(match.units) do
-        for _,desc in ipairs(unit.context.layout) do
-            for name,node in next,desc.callback_syntax or {} do
+        local desc=unit.context.descriptor
+        for name,node in next,desc.callback_syntax or {} do
                 local site=Source.Site(source,node)
                 if not allowed[name] or not site or not site.statement then
                     return fail("ownership","callback syntax is not owned by this source")
@@ -469,7 +472,6 @@ function M.Facts(source,match,pending_classes)
                 local callback,fn=CardSyntax.Callback(Tree,statement.syntax)
                 if callback~=name or not Tree.SameNode(fn,node) then return fail("ownership","callback is not a whole statement") end
                 excluded[site.statement]=true
-            end
         end
     end
     for index,statement in ipairs(source.analysis.statements) do
@@ -634,7 +636,7 @@ function M.Observations(snapshot,group,key)
         for _,unit in ipairs(owner.units) do refs[unit.unit_ref]=true end
         for _,record in ipairs(owner.records) do
             local ref=record.definition.unit_ref
-            if ref and record.kind=="function" then
+            if ref and (record.kind=="function" or record.kind=="class") then
                 records[ref]=records[ref] or {};records[ref][#records[ref]+1]=record
             end
         end
@@ -650,6 +652,7 @@ function M.Observations(snapshot,group,key)
         if not seen[ref] then seen[ref]=true;queue[#queue+1]=ref end
         return true
     end
+    if not enqueue(group.state.units[key].class_ref) then return fail("ownership","actual Class provider unavailable",group.state,key) end
     for _,name in ipairs(CALLBACKS) do
         local cb=group.state.units[key].callbacks[name]
         for _,dep in ipairs(cb.dependencies) do
@@ -698,7 +701,7 @@ function M.Coverage(view,plan)
         side.claims[site.statement]=key;return true
     end
     local originals={}
-    for _,class in ipairs(view.initial.match.units) do originals[class.context.class_key]=class.context.layout end
+    for _,class in ipairs(view.initial.match.classes) do originals[class.class_key]=class.layout end
     for _,key in ipairs(view.base.order) do
         local old,item=view.base.units[key],view.by_key[key]
         local initial=originals[old.class_key] and originals[old.class_key][old.slot]
@@ -732,8 +735,7 @@ function M.Coverage(view,plan)
 end
 
 
--- Card-only scalar projection. A public class unit can contain several slots;
--- refine final impact using this slot's effective callback provider references.
+-- Card-only scalar projection of single-card units and callback providers.
 function M.Describe(plan,snapshot,impact,dependencies)
     local view=plain(plan) and plan.view
     if not plain(view) or view.kind~=M.Kind..".View" or view.version~=M.Version
@@ -753,13 +755,7 @@ function M.Describe(plan,snapshot,impact,dependencies)
     for _,key in ipairs(view.base.order) do
         local unit,item=view.base.units[key],view.by_key[key]
         local selected=plan.selected[key]
-        local affected=direct[key]==true
-        for _,name in ipairs(CALLBACKS) do
-            local cb=selected and selected.callbacks[name] or unit.callbacks[name]
-            for _,dep in ipairs(cb.dependencies) do
-                if impact.affected[cb.providers[dep]] then affected=true end
-            end
-        end
+        local affected=direct[key]==true or impact.affected[unit.unit_ref]==true
         local observed,err=M.Observations(snapshot,view.base_group,key)
         if not observed then return nil,err end
         local blocked=view.blocked or item.blocked or root_blocks[key]

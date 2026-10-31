@@ -7,7 +7,7 @@ for _,name in ipairs({
     "AdapterDiscoverySpec","ReconciliationSpec","CardReconciliationSpec",
     "CardDeletionEvidenceSpec","DriverDiscoverySpec","WatcherSpec","CurrentRestartSpec",
     "DependenciesSpec","LocalVersionsSpec","LocalAdapterSpec","CardVersionCoreSpec",
-    "CardAdapterSpec","ObjectAdapterSpec","FileCommitSpec","FilePolicyIntegrationSpec","PluginEntrySpec",
+    "CardAdapterSpec","ClassAdapterSpec","ClassSpellSpec","TrialMatchSpec","FileCommitSpec","FilePolicyIntegrationSpec","PluginEntrySpec",
     "RetiredInterfacesSpec","NativeOwnershipSpec","IncrementalSourceSpec",
 }) do
     local result=require("SpellHotReload.tests."..name).run()

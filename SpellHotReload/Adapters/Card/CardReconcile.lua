@@ -5,25 +5,7 @@ local M={}
 local CALLBACKS={"before","init","frame","render","beforedel","del","after"}
 local function plain(v) return type(v)=="table" and getmetatable(v)==nil end
 local function label(v) return type(v)=="string" and v or "" end
--- Class implementations/metadata are NOT Card callback writes. They stay in
--- the complete file effect policy, and deletion requires the genuine first-load
--- class identities to be rechecked before and after invalidation. No setters run.
-function M.ClassWriteKey(Tree,ast)
-    local target,value=Tree.SingleAssignment(ast)
-    local member=Tree.Match(target,"member")
-    if not member or member.separator~="." then return nil end
-    local key=CardSyntax.ClassKey(Tree,member.base)
-    if not key or key=="" then return nil end
-    local name=member.name
-    if (name=="init" or name=="frame" or name=="render" or name=="kill") and Tree.Is(value,"function") then return key end
-    local literal=Tree.Match(value,"literal")
-    if (name=="name" or name=="bgm" or name=="difficulty")
-        and literal and literal.category=="string" then return key end
-    local referenced=Tree.Is(value,"name") and Tree.Identifier(value)
-    if name=="_bg" and (referenced and referenced~="_tmp_sc"
-        and referenced~="_editor_class" and referenced~="_sc_table"
-        or literal and literal.category=="nil") then return key end
-end
+local ClassDefinitions=require("SpellHotReload.Adapters.Class.ClassDefinitions")
 local function class_signature(keys)
     if not plain(keys) then return nil end
     local pieces,previous,count={},nil,0
@@ -42,14 +24,10 @@ local function rows_for(previous,candidate,context)
     local Tree=candidate.common.source.analysis.syntax
     local Card=require("SpellHotReload.Adapters.Card.Card")
     local base=previous.state
-    local entries={}
-    for _,entry in ipairs(candidate.entries) do
-        if entry.adapter==Card then entries[entry.unit.context.class_key]=entry end
-    end
+    local entries=context.adapter.by_class
     local rows,card_rows,claims,occurrences,callback_points,perform_points={},{},{},{},{},{}
-    for _,entry in ipairs(candidate.entries) do
-        if entry.adapter==Card then
-            for _,desc in ipairs(entry.unit.context.layout) do
+    for _,class in ipairs(context.adapter.classes) do
+            for _,desc in ipairs(class.layout) do
                 for _,point in next,desc.callback_points or {} do callback_points[point.first]=true end
                 if desc.perform_point then
                     local first=desc.perform_point.first
@@ -58,7 +36,6 @@ local function rows_for(previous,candidate,context)
                 local point=desc.callback_points and desc.callback_points.init
                 if point then occurrences[point.first]=(occurrences[point.first] or 0)+1 end
             end
-        end
     end
     -- Interpret the SAME full AST. Metadata must belong to one discovered
     -- descriptor; a class-field exception carries additional live obligations.
@@ -70,7 +47,7 @@ local function rows_for(previous,candidate,context)
         local ast=statement.syntax
         local modeled=callback_points[statement.source_range.first]
             or perform_points[statement.source_range.first]==1
-        local class_key=M.ClassWriteKey(Tree,ast)
+        local class_key=ClassDefinitions.StructureWriteKey(Tree,ast)
         if class_key and not class_seen[class_key] then
             class_seen[class_key]=true;class_keys[#class_keys+1]=class_key
         end
@@ -95,21 +72,21 @@ local function rows_for(previous,candidate,context)
             evidence=evidence or {},dependencies={},conditions={"fresh ownership and transaction guards required"}}
         rows[#rows+1]=r;return r
     end
-    local function candidate_at(entry,slot,callback)
-        return {entry=entry,slot=slot,descriptor=entry.unit.context.layout[slot],callback=callback}
+    local function candidate_at(class,slot,callback)
+        local descriptor=class.layout[slot]
+        local entry=descriptor.unit and candidate.by_key[descriptor.unit.key]
+        return {entry=entry,slot=slot,descriptor=descriptor,callback=callback,class_key=class.class_key}
     end
     -- New owners have no old runtime records. Candidate-only is an observation,
     -- never permission to seed a live card or to rewrite a list.
     if #previous.records==0 then
-        for _,entry in ipairs(candidate.entries) do
-            if entry.adapter==Card then
-                for slot,desc in ipairs(entry.unit.context.layout) do
+        for _,entry in ipairs(context.adapter.classes) do
+                for slot,desc in ipairs(entry.layout) do
                     if desc.kind=="card" and desc.callbacks.init then
                         row("candidate-only",nil,"candidate card has never been published",
                             candidate_at(entry,slot),{"no previous publications for this owner"})
                     end
                 end
-            end
         end
         return rows
     end
@@ -122,7 +99,7 @@ local function rows_for(previous,candidate,context)
             local r=row("unresolved",record,"published class/card has no proven candidate correspondence")
             card_rows[record.key]=r
             if entry then
-                local before,after=base.layout[record.class_key],entry.unit.context.layout
+                local before,after=base.layout[record.class_key],entry.layout
                 local desc=before[record.slot]
                 local old_name=label(desc.name)
                 local names,old_count,new_count={},0,0
@@ -159,7 +136,7 @@ local function rows_for(previous,candidate,context)
             if parent.status~="corresponding" then
                 row(parent.status,record,parent.reason)
             else
-                local into=candidate_at(parent.candidate.entry,parent.candidate.slot,record.callback)
+                local into=candidate_at(entries[parent.candidate.class_key],parent.candidate.slot,record.callback)
                 local descriptor=into.descriptor
                 local r=row("corresponding",record,"callback belongs to proven card correspondence",into,
                     {"owning card correspondence established"})
@@ -186,68 +163,71 @@ local function rows_for(previous,candidate,context)
     for _,r in next,card_rows do
         if r.status=="corresponding" then consumed[r.candidate.descriptor]=true end
     end
-    for _,entry in ipairs(candidate.entries) do
-        if entry.adapter==Card then
-            local has_old=false
-            for _,record in ipairs(previous.records) do
-                if record.kind=="card" and record.class_key==entry.unit.context.class_key then has_old=true end
-            end
-            for slot,desc in ipairs(entry.unit.context.layout) do
-                if desc.kind=="card" and desc.callbacks.init and not consumed[desc] then
-                    row(has_old and "unresolved" or "candidate-only",nil,
-                        has_old and "candidate card has no proven published correspondence" or "candidate class was never published",
-                        candidate_at(entry,slot),has_old and {} or {"no previous publication in this class"})
-                end
+    for _,class in ipairs(context.adapter.classes) do
+        local has_old=false
+        for _,record in ipairs(previous.records) do
+            if record.kind=="card" and record.class_key==class.class_key then has_old=true end
+        end
+        for slot,desc in ipairs(class.layout) do
+            if desc.kind=="card" and desc.callbacks.init and not consumed[desc] then
+                row(has_old and "unresolved" or "candidate-only",nil,
+                    has_old and "candidate card has no proven published correspondence" or "candidate class was never published",
+                    candidate_at(class,slot),has_old and {} or {"no previous publication in this class"})
             end
         end
     end
     return rows
 end
--- Reconcile keeps source-only Card member rules private. Public graph nodes
--- remain original class units; no Local records or versions appear here.
+-- Public graph nodes are actual single cards. Layout and callback selection
+-- stay private; source correspondence here never substitutes for live Locate.
 function M.Run(previous,candidate,context)
     local Card=require("SpellHotReload.Adapters.Card.Card")
     local Files=require("SpellHotReload.Pipeline.FileVersions")
-    local source=candidate.common.source
-    if not plain(context.adapter) or context.adapter.source~=source or not plain(context.adapter.units) then return nil end
+    local source=candidate.common.source;local matched_context=context.adapter
+    if not plain(matched_context) or matched_context.source~=source or not plain(matched_context.units)
+        or not plain(matched_context.classes) or not plain(matched_context.by_class) then return nil end
     local group,initial=Files.Owner(candidate.common.capture,Card)
     local owned=group and previous.owner==Card and previous.state==group.state and previous.records==group.records
     if not owned and (#previous.records~=0 or #previous.units~=0) then return nil end
-    local rows=rows_for(previous,candidate,context)
-    if not rows then return nil end
+    local rows=rows_for(previous,candidate,context);if not rows then return nil end
     local view={kind="SpellHotReload.Card.View",version=1,source=source,discovery=candidate,
         base_group=owned and group or nil,base=owned and group.state or nil,
-        initial=owned and initial.evidence or nil,match={units=context.adapter.units},
+        initial=owned and initial.evidence or nil,match=matched_context,
         units={},by_ref={},by_key={},selectors={},choices={},rows={}}
     for _,row in ipairs(rows) do if row.previous then view.rows[row.previous.key]=row end end
-    local entries={}
-    for _,entry in ipairs(candidate.entries) do
-        if entry.adapter==Card then entries[entry.unit.context.class_key]=entry end
-    end
-    local exports,matched={},{}
+    local proposals,counts={},{}
     if owned then
-        for _,class in ipairs(group.state.classes) do
-            local ref=group.state.class_refs[class];local entry=entries[class]
-            local item={class_key=class,unit_ref=ref,keys={},selectors={}}
-            local records={}
-            for _,record in ipairs(previous.records) do
-                if record.class_key==class then records[#records+1]=record end
+        for _,key in ipairs(group.state.order) do
+            local old=group.state.units[key];local class=matched_context.by_class[old.class_key]
+            if class then
+                local before=group.state.layout[old.class_key];local names={}
+                for i,desc in ipairs(before) do names[i]=label(desc.name) end
+                local slot=require("SpellHotReload.Adapters.Card.CardTarget").SourceSlot(before,class.layout,
+                    {slot=old.slot,name=names[old.slot],names=names})
+                local desc=slot and class.layout[slot]
+                local entry=desc and desc.unit and candidate.by_key[desc.unit.key]
+                if entry then proposals[key]=entry;counts[entry]=(counts[entry] or 0)+1 end
             end
-            local unit={unit_ref=ref,candidate_entry=entry,previous_records=records,
-                status=entry and "corresponding" or "old-only",private_ref=item}
-            item.unit=unit;view.units[#view.units+1]=unit;view.by_ref[ref]=item
-            for _,key in ipairs(group.state.order) do
-                if group.state.units[key].class_key==class then
-                    local selector={};item.keys[#item.keys+1]=key;item.selectors[selector]=key
-                    view.by_key[key]=item;view.selectors[key]=selector
-                end
-            end
-            if entry then matched[entry]=true end
-            exports[#exports+1]={unit_ref=ref,conditions={}}
         end
     end
+    local exports,used={},{}
+    if owned then for _,key in ipairs(group.state.order) do
+        local old=group.state.units[key];local ref=old.unit_ref
+        local entry=proposals[key];if entry and counts[entry]~=1 then entry=nil end
+        local selector={};local item={key=key,class_key=old.class_key,unit_ref=ref,keys={key},selectors={[selector]=key}}
+        local records={}
+        for _,record in ipairs(previous.records) do
+            if record.key==key or record.card_key==key then records[#records+1]=record end
+        end
+        local unit={unit_ref=ref,candidate_entry=entry,previous_records=records,
+            status=entry and "corresponding" or "old-only",private_ref=item}
+        item.unit=unit;view.units[#view.units+1]=unit;view.by_ref[ref]=item
+        view.by_key[key]=item;view.selectors[key]=selector
+        if entry then used[entry]=true end
+        exports[#exports+1]={unit_ref=ref,conditions={}}
+    end end
     for _,entry in ipairs(candidate.entries) do
-        if entry.adapter==Card and not matched[entry] then
+        if entry.adapter==Card and not used[entry] then
             view.units[#view.units+1]={candidate_entry=entry,previous_records={},status="candidate-only",private_ref=entry.unit.context}
         end
     end

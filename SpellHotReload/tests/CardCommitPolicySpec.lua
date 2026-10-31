@@ -12,7 +12,9 @@ function M.run(opts)
     local Guard=require("SpellHotReload.Apply.CommitCheck")
     local Files=require("SpellHotReload.Pipeline.FileVersions")
     local Source=require("SpellHotReload.Source.FileAnalysis")
-    local Load=require("SpellHotReload.Load.AnchorLoad")
+    local Load=require("SpellHotReload.Adapters.Class.ClassLoad")
+    local ClassAdapter=require("SpellHotReload.Adapters.Class.Class")
+    local ClassFixture=require("SpellHotReload.tests.ClassFixture")
     local Anchor=require("SpellHotReload.Load.Anchor")
     local Compose=require("SpellHotReload.Source.Compose")
     local passed,failed,failures=0,0,{}
@@ -24,7 +26,8 @@ function M.run(opts)
     local function must(v,e) assert(v,type(e)=="table" and e.message or e);return v end
     local function copy(v) local out={};for k,x in next,v do out[k]=x end;return out end
     local next_state,root,file_root,propose=Cards.Next,Target.CheckDiscovery,Target.CheckFileDiscovery,Files.Propose
-    local keys={"boss","_editor_class","_tmp_sc","_commit_policy_runs","jit"}
+    local keys={"_commit_policy_runs","jit"}
+    local environment
     local globals={};for _,key in ipairs(keys) do globals[key]=rawget(_G,key) end
     local get,set,join,id=debug.getupvalue,debug.setupvalue,debug.upvaluejoin,debug.upvalueid
     local traps,mutations=0,0
@@ -35,6 +38,7 @@ function M.run(opts)
     local keya,keyb="card:1:K:1","card:1:K:2"
     local source=table.concat({
         "local state=4","_commit_policy_runs=_commit_policy_runs+1",
+        "_editor_class['K']=Class(boss)",
         "_editor_class['K'].cards={}","_tmp_sc=boss.card.New('A',1,2,3,4)",
         "function _tmp_sc:init() return 10 end",
         "table.insert(_editor_class['K'].cards,_tmp_sc)",
@@ -72,21 +76,24 @@ function M.run(opts)
     end
     local function fixture(mode,bytes,ids)
         restore()
-        _commit_policy_runs=0;_editor_class={K={}}
+        if environment then environment:Restore() end
+        environment=ClassFixture.Install()
+        _commit_policy_runs=0
         local defaults={}
         for _,name in ipairs({"before","init","frame","render","beforedel","del","after"}) do
             defaults[name]=function() end
         end
-        boss={card={New=function(label)
+        boss.card={_default_card=defaults,New=function(label)
             local card={name=label,is_combat=true}
             for name,fn in next,defaults do card[name]=fn end
             return card
-        end}}
+        end}
         serial=serial+1
         local sid="CardCommitPolicySpec:"..serial
         local entry=must(Load.Capture(source,{name="Policy_Boss.lua"}))
         must(entry.reloadable,entry.reason);entry.file="Policy_Boss.lua"
         local f=must(Planning.Capture(entry,sid,_editor_class,defaults))
+        environment:FinishLoad()
         local c=f.capture
         local l={capture=c,snapshot=c.snapshot,entry=entry,session_id=sid,
             classes=_editor_class,content=source,generation=0,fixture=f}
@@ -146,6 +153,9 @@ function M.run(opts)
         local proposed=sealed.proposed_snapshot
         eq(proposed.revision,1,"one common proposed revision")
         eq(group(proposed,Local),group(base,Local),"no Local writes retain exact actual group")
+        eq(#base.owners,3,"one genuine Local/Class/Card publication")
+        eq(group(proposed,ClassAdapter),group(base,ClassAdapter),"no Class writes retain exact actual group")
+        eq(#fragment(p,ClassAdapter).raw_writes,0,"readonly Class does not gain callback write authority")
         eq(group(proposed,Card).state.units[keya].definition_version,
             group(base,Card).state.units[keya].definition_version+1,"selected Card version proposed")
         eq(group(proposed,Card).state.units[keyb].definition_version,
@@ -186,6 +196,9 @@ function M.run(opts)
             {"Local base group",function(x) fragment(x,Local).base_group={} end,"ownership","seal"},
             {"no-write Local metadata",function(x)
                 local f=fragment(x,Local);f.proposed_group=copy(f.proposed_group)
+            end,"ownership","seal"},
+            {"no-write Class metadata",function(x)
+                local f=fragment(x,ClassAdapter);f.proposed_group=copy(f.proposed_group)
             end,"ownership","seal"},
             {"live snapshot",function(_,_,live) live.snapshot={} end,"stale","locate"},
             {"live capture",function(_,_,live) live.capture={} end,"stale","locate"},
@@ -238,15 +251,15 @@ function M.run(opts)
         eq(located_calls,1,"real Current check reached once")
         eq(e.unit_key,keya,"owner key retained");eq(e.file,"Policy_Boss.lua","owner file retained")
 
-        -- Common proposal precedes two owner/native reads. FileCommit captures
+        -- Common proposal precedes both complete three-owner/native read passes. FileCommit captures
         -- neutral Guard functions at MODULE LOAD, not the mutable Card policy.
         p,c,l=fixture();base,fn=c.snapshot,l.classes.K.cards[1].init
-        local log,inputs,versions={}, {[Local]=0,[Card]=0},0
-        for _,owner in ipairs({Local,Card}) do
+        local log,inputs,versions={}, {[Local]=0,[ClassAdapter]=0,[Card]=0},0
+        for _,owner in ipairs({Local,ClassAdapter,Card}) do
             local raw_fragment=fragment(p,owner)
             local owner_guard=raw_fragment.owner_guard
             raw_fragment.owner_guard=function(f,cap,live)
-                inputs[owner]=inputs[owner]+1;log[#log+1]=owner==Local and "local" or "card"
+                inputs[owner]=inputs[owner]+1;log[#log+1]=owner.Id
                 test(f~=raw_fragment,"Guard consumes sealed owner fragment")
                 test(f.raw_writes~=raw_fragment.raw_writes,"Guard consumes sealed action array")
                 if owner==Card then test(f.raw_writes[1]~=raw_fragment.raw_writes[1],"Guard consumes sealed raw action") end
@@ -278,9 +291,10 @@ function M.run(opts)
         end),true,"policy-backed scope")
         test(receipt~=nil,"real policy-backed commit succeeds")
         eq(inputs[Local],2,"Local owner before and after refresh")
+        eq(inputs[ClassAdapter],2,"Class owner before and after refresh")
         eq(inputs[Card],2,"Card owner before and after refresh")
         eq(versions,1,"one common version proposal")
-        eq(table.concat(log,","),"seal,version,owners,local,card,mechanical,flush,fresh,owners,local,card,mechanical",
+        eq(table.concat(log,","),"seal,version,owners,local,class,card,mechanical,flush,fresh,owners,local,class,card,mechanical",
             "all policy before native final checks and Consume")
         eq(c.snapshot,receipt and receipt.snapshot,"kernel installs common proposal")
         eq(c.snapshot.revision,1,"one installed common revision")
@@ -335,6 +349,7 @@ function M.run(opts)
     end)
     restore()
     for _,tx in ipairs(controllers) do tx:Release() end
+    if environment then environment:Restore() end
     for _,key in ipairs(keys) do rawset(_G,key,globals[key]) end
     if not ok then error(problem) end
     for _,label in ipairs(failures) do print("FAIL CardCommitPolicySpec: "..label) end

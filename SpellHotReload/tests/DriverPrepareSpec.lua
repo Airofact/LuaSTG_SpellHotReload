@@ -1,5 +1,5 @@
--- Contract-5 preparation: pure discovery selection is tested separately.
--- Synthetic owners below prove dispatch only; the final case uses REAL Local/Card.
+-- Contract-7 preparation: pure discovery selection is tested separately.
+-- Synthetic owners below prove dispatch only; the final case uses REAL Local/Class/Card.
 local M={}
 local serial=0
 function M.run()
@@ -10,6 +10,9 @@ function M.run()
     local Fixture=require("SpellHotReload.tests.PlanningFixture")
     local Local=require("SpellHotReload.Adapters.Local.Local")
     local Card=require("SpellHotReload.Adapters.Card.Card")
+    local Class=require("SpellHotReload.Adapters.Class.Class")
+    local Observe=require("SpellHotReload.Adapters.Class.ClassLoad")
+    local ClassFixture=require("SpellHotReload.tests.ClassFixture")
     local Anchor=require("SpellHotReload.Load.Anchor")
     local Tx=require("SpellHotReload.Apply.FileCommit")
     local IR=require("SpellHotReload.Source.TopLevelIR")
@@ -21,27 +24,30 @@ function M.run()
     local traps,mutations=0,0
     local hostile=setmetatable({},{__index=function() traps=traps+1;error("hostile index") end,
         __tostring=function() traps=traps+1;error("hostile tostring") end})
-    local controllers={}
-    local saved={boss=rawget(_G,"boss"),classes=rawget(_G,"_editor_class"),tmp=rawget(_G,"_tmp_sc"),prepare=Driver.PrepareDiscovery}
+    local controllers={};local environment
+    local saved={prepare=Driver.PrepareDiscovery}
     local ids={"local","host","value"} -- Domain fixtures, NOT wrappers around production adapters.
     local function fixture()
         serial=serial+1
-        local entry=must(Load.Capture("local state=1",{name="Prepare_Boss.lua"}));entry.file="Prepare_Boss.lua"
+        local entry=must(Load.Capture("local state=1\nlocal host_state=2\nlocal value_state=3",{name="Prepare_Boss.lua"}));entry.file="Prepare_Boss.lua"
         local f={entry=entry,session="DriverPrepare:"..serial,driver=Driver.New(),adapters={},calls={},roots={}}
         local pieces={}
         for i,id in ipairs(ids) do
-            local owner={Id=id,ContractVersion=5}
+            local owner={Id=id,ContractVersion=7}
             local ref={owner=owner,id=1};local def={definition_version=1,unit_ref=ref}
             local key=id..":unit"
             local record={key=key,kind="fixture",definition=def,definition_version=1}
             pieces[i]={owner=owner,owner_id=id,state={},units={{unit_ref=ref,private_ref=def}},
                 records={record},functions={},edges={},initial={},identity_objects={},
                 authority={cells={},raws={},forbidden={}}}
-            owner.Match=function(source,common)
-                eq(source,common.source,"synthetic Match receives common facts")
-                return {units={{key=key,carrier=id,source_ranges={{first=i,last=i}},context={tag=key}}},
-                    claims={{kind="definition",key=key,unit_key=key}},context={tag=id}}
+            owner.Match=function(cursor,common)
+                if cursor:Mark()~=i then return nil end
+                eq(cursor:Peek(),common.source.analysis.statements[i],"synthetic Match consumes original common syntax")
+                local unit={key=key,carrier=id,context={tag=key}};cursor:Take()
+                return {units={unit},claims={{kind="definition",key=key,unit_key=key}},
+                    mappings={{unit=unit,first=i,last=i}}}
             end
+            owner.BuildContext=function(source,units) return {source=source,units=units,tag=id} end
             owner.Reconcile=function(previous,candidate,context)
                 local e=candidate.by_key[key];local private={tag=key,previous=previous.records[1]}
                 local unit={unit_ref=ref,private_ref=private,status="corresponding",candidate_entry=e,previous_records=previous.records}
@@ -95,6 +101,7 @@ function M.run()
         end
         for _,owner in pairs(f.adapters) do
             owner.Match=function() mutations=mutations+1;error("Match replay forbidden") end
+            owner.BuildContext=function() mutations=mutations+1;error("BuildContext replay forbidden") end
             owner.Reconcile=function() mutations=mutations+1;error("Reconcile replay forbidden") end
         end
         function f.operation(requested)
@@ -117,6 +124,9 @@ function M.run()
         eq(#f.calls,0,label.." all input validation precedes hooks")
     end
     local ok,problem=pcall(function()
+        local absent,reason=Fixture.Capture(nil,"missing-entry",{},{});
+        eq(absent,nil,"fixture rejects a missing entry before dereferencing it")
+        eq(reason.code,"ownership","missing entry remains an ownership refusal")
         local f=fixture();local op=f.operation({"value","host","local"})
         local p=must(f.driver:PrepareDiscovery(f.discovery,op))
         eq(p.kind,"SpellHotReload.Driver.PreparedDiscovery","preparation artifact")
@@ -184,17 +194,34 @@ function M.run()
         -- Real production owners: a shared helper and one Card root, no wrapper API.
         local names={"before","init","frame","render","beforedel","del","after"};local defaults={}
         for _,name in ipairs(names) do defaults[name]=function() end end
-        _G.boss={card={New=function(name)
+        environment=ClassFixture.Install()
+        boss.card={_default_card=defaults,New=function(name)
             local card={name=name,is_combat=true};for _,cb in ipairs(names) do card[cb]=defaults[cb] end;return card
-        end}}
-        _G._editor_class={K={}}
+        end}
         local source=table.concat({"local counter=3","local function helper(n) return counter+n end",
-            "local function independent() return 500 end","_editor_class['K'].cards={}",
+            "local function independent() return 500 end","_editor_class['K']=Class(boss)","_editor_class['K'].cards={}",
             "_tmp_sc=boss.card.New('A',1,2,3,100)","function _tmp_sc:init(n) return helper(n) end",
             "table.insert(_editor_class['K'].cards,_tmp_sc)","_tmp_sc=boss.card.New('B',1,2,3,100)",
             "function _tmp_sc:init(n) return helper(n)+100 end","table.insert(_editor_class['K'].cards,_tmp_sc)"},"\n")
-        local entry=must(Load.Capture(source,{name="RealPrepare_Boss.lua"}));entry.file="RealPrepare_Boss.lua"
-        local real=must(Fixture.Capture(entry,"RealPrepareSpec:"..serial,_editor_class,defaults))
+        local entry=must(Observe.Capture(source,{name="RealPrepare_Boss.lua"}));entry.file="RealPrepare_Boss.lua"
+        local build,analyze,parse=Source.Build,IR.Analyze,Syntax.Parse
+        local function no_first_load_rebuild() error("fixture rebuilt original complete source") end
+        Source.Build,IR.Analyze,Syntax.Parse=no_first_load_rebuild,no_first_load_rebuild,no_first_load_rebuild
+        local captured,real,refusal=pcall(Fixture.Capture,entry,"RealPrepareSpec:"..serial,_editor_class,defaults)
+        Source.Build,IR.Analyze,Syntax.Parse=build,analyze,parse
+        if not captured then error(real,0) end
+        must(real,refusal)
+        eq(real.initial_discovery.source,entry.source,"first-load fixture uses the original complete source")
+        eq(#real.capture.snapshot.owners,3,"all three contributions are captured together")
+        for i,owner in ipairs({Local,Class,Card}) do
+            eq(real.capture.snapshot.owners[i].owner,owner,"first-load contribution order "..i)
+        end
+        local class_ref=must(Files.Owner(real.capture,Class)).state.by_key.K.unit_ref
+        local captured_cards=must(Files.Owner(real.capture,Card)).state.units
+        eq(captured_cards["card:1:K:1"].class_ref,class_ref,"A retains the actual Class provider")
+        eq(captured_cards["card:1:K:2"].class_ref,class_ref,"B retains the same actual Class provider")
+        eq(captured_cards["card:1:K:1"].unit_ref==captured_cards["card:1:K:2"].unit_ref,false,"same-class cards retain separate units")
+        environment:FinishLoad()
         local classes=_editor_class;local a,b=classes.K.cards[1],classes.K.cards[2]
         local before=real.capture.snapshot;local old_helper=Anchor.Get(entry,"helper");local old_init=a.init
         local candidate=source:gsub("counter%+n","counter+n+10"):gsub("return helper%(n%) end","return helper(n)+1 end"):gsub("return 500","return 501")
@@ -220,9 +247,11 @@ function M.run()
         eq(prepared.operation,operation,"real operation identity")
         eq(report.prepared,prepared,"file policy consumes same prepared owners")
         eq(#operation.roots,1,"Current starts with only frozen Card root")
-        eq(#prepared.entries,2,"both real owners contribute")
+        eq(#prepared.entries,3,"all three real owners contribute")
         eq(#prepared.entries[1].fragment.cell_writes,1,"only required changed helper prepares")
-        eq(#prepared.entries[2].fragment.raw_writes,1,"only selected changed callback prepares")
+        eq(prepared.entries[2].owner,Class,"Class is a real common owner contribution")
+        eq(#prepared.entries[2].fragment.raw_writes,0,"readonly Class dependency gains no write authority")
+        eq(#prepared.entries[3].fragment.raw_writes,1,"only selected changed callback prepares")
         eq(Anchor.Get(entry,"helper"),old_helper,"preparation has no cell write")
         eq(a.init,old_init,"preparation has no raw publication")
         eq(real.capture.snapshot,before,"preparation has no snapshot publication")
@@ -230,7 +259,7 @@ function M.run()
         local tx=must(Tx.New(real.session));controllers[#controllers+1]=tx
         local receipt=must(Fixture.Publish(real,prepared,tx))
         eq(receipt.changed,true,"only explicit common publish produces changed receipt")
-        eq(receipt.snapshot.revision,1,"both owners advance file once")
+        eq(receipt.snapshot.revision,1,"all three owners advance file once")
         eq(a:init(2),16,"selected real callback uses changed helper")
         eq(b:init(2),115,"retained sibling sees actual helper without candidate wrapper")
         local card_group=must(Files.Owner(real.capture,Card));local local_group=must(Files.Owner(real.capture,Local))
@@ -245,10 +274,17 @@ function M.run()
         end
         eq(independent_pending,true,"fresh remainder identifies the unselected Local edit")
         eq(witness,nil,"partial actual adoption has no completion witness")
+        local unobserved=must(Load.Capture("local value=1\n_editor_class['Unobserved']=Class(boss)\n_editor_class['Unobserved'].cards={}",
+            {name="Unobserved_Boss.lua"}));unobserved.file="Unobserved_Boss.lua"
+        eq(_editor_class.Unobserved.is_class,true,"unobserved class really exists in the live registry")
+        local missing,why=Fixture.Capture(unobserved,"missing-class-observation",_editor_class,defaults)
+        eq(missing,nil,"fixture cannot manufacture missing Class history from live objects")
+        eq(why.code,"unsupported","missing Class observation is refused")
+        eq(why.message:find("normal Class construction observation unavailable",1,true)~=nil,true,"refusal names the missing observation")
     end)
     Driver.PrepareDiscovery=saved.prepare
     for _,controller in ipairs(controllers) do controller:Release() end
-    _G.boss,_G._editor_class,_G._tmp_sc=saved.boss,saved.classes,saved.tmp
+    if environment then environment:Restore() end
     if not ok then failed=failed+1;failures[#failures+1]=type(problem)=="string" and problem or "opaque spec error" end
     return {passed=passed,failed=failed,failures=failures}
 end

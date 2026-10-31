@@ -8,7 +8,10 @@ function M.run()
     local Local=require("SpellHotReload.Adapters.Local.Local")
     local Files=require("SpellHotReload.Pipeline.FileVersions")
     local Target=require("SpellHotReload.Adapters.Card.CardTarget")
-    local Load=require("SpellHotReload.Load.AnchorLoad")
+    local Load=require("SpellHotReload.Adapters.Class.ClassLoad")
+    local ClassAdapter=require("SpellHotReload.Adapters.Class.Class")
+    local ClassFixture=require("SpellHotReload.tests.ClassFixture")
+    local FileMatch=require("SpellHotReload.Pipeline.FileMatch")
     local Source=require("SpellHotReload.Source.FileAnalysis")
     local Planning=require("SpellHotReload.tests.PlanningFixture")
     local FileApply=require("SpellHotReload.Apply.FileApply")
@@ -51,6 +54,10 @@ function M.run()
         error("missing actual owner")
     end
     local function state(snapshot,owner) return group(snapshot,owner).state end
+    local function source_descriptor(snapshot,class,slot)
+        local context=must(FileMatch.ForOwner(snapshot,Card,snapshot.common.source))
+        return assert(context.by_class[class]).layout[slot]
+    end
     local function view(d,owner)
         for _,g in ipairs(d.reconciliation.groups) do if g.owner==owner then return g.view end end
         error("missing real reconciliation")
@@ -81,7 +88,8 @@ function M.run()
     end
     local callbacks={"before","init","frame","render","beforedel","del","after"}
     local defaults={};for _,n in ipairs(callbacks) do defaults[n]=function() return "default" end end
-    local globals={"boss","_editor_class","_tmp_sc","LOCATED_EFFECT","jit"}
+    local globals={"LOCATED_EFFECT","jit"}
+    local environment
     local saved={};for _,n in ipairs(globals) do saved[n]=rawget(_G,n) end
     local real_join,real_set=debug.upvaluejoin,debug.setupvalue
     local effects=0
@@ -92,6 +100,7 @@ function M.run()
             "local function other(n) return n+"..(opts.other or 100).." end",
             "LOCATED_EFFECT()"}
         local function add_class(key,items,with_move)
+            lines[#lines+1]="_editor_class["..string.format("%q",key).."]=Class(boss)"
             lines[#lines+1]="_editor_class["..string.format("%q",key).."].cards={}"
             if with_move then
                 lines[#lines+1]="table.insert(_editor_class["..string.format("%q",key).."].cards,boss.move.New(0,0,1))"
@@ -111,18 +120,22 @@ function M.run()
         return (opts.bom and "\239\187\191" or "")..table.concat(lines,"\n")
     end
     local function fixture(labels,slot,move)
-        local classes={K={},L={}};_G._editor_class=classes
+        if environment then environment:Restore() end
+        environment=ClassFixture.Install()
+        local classes=_editor_class
         _G.LOCATED_EFFECT=function() effects=effects+1 end
-        _G.boss={card={New=function(label)
+        boss.card={_default_card=defaults,New=function(label)
             local card={name=label,is_combat=true}
             for _,n in ipairs(callbacks) do card[n]=defaults[n] end
             return card
-        end},move={New=function() return {is_combat=false} end}}
+        end}
+        boss.move={New=function() return {is_combat=false} end}
         local bytes=source(labels,move)
         local entry=must(Load.Capture(bytes,{name="Located_Boss.lua"}))
         must(entry.reloadable,entry.reason);entry.file="Located_Boss.lua"
         serial=serial+1
         local f=must(Planning.Capture(entry,"CardLocatedVersionsSpec:"..serial,classes,defaults))
+        environment:FinishLoad()
         f.classes,f.slot,f.mode,f.content,f.generation=classes,slot,move and "debug" or "practice",bytes,0
         f.include_previous=false
         f.binding=function()
@@ -197,7 +210,13 @@ function M.run()
         eq(compared.source,x.discovery.source,"versions retain complete facts")
         eq(compared.source.content,bytes,"full raw candidate bytes")
         eq(locations.by_key[b].candidate_slot,2,"root uses shifted source descriptor")
-        eq(locations.by_key[b].source_key,"card:K","source key is class coordinate")
+        local root_descriptor=source_descriptor(x.discovery.snapshot,"K",2)
+        eq(locations.by_key[b].source_key,root_descriptor.unit.key,"source route names the matched single card")
+        eq(locations.by_key[b].entry,x.discovery.snapshot.by_key[root_descriptor.unit.key],"located route keeps actual source entry")
+        eq(location.descriptor,root_descriptor,"Current and full-file proof share source occurrence")
+        eq(#base.owners,3,"real Local/Class/Card first-load groups")
+        eq(old.units[a].unit_ref==old.units[b].unit_ref,false,"same-class cards have distinct published units")
+        eq(old.units[b].class_ref,state(base,ClassAdapter).by_key.K.unit_ref,"Current retains its actual Class provider")
         eq(compared.by_key[b].previous,old.units[b],"stable published identity")
         eq(compared.by_key[a].previous,old.units[a],"unmapped owner retained")
         eq(locations.by_key[a].status,"unmapped","cropping is not deletion")
@@ -289,9 +308,10 @@ function M.run()
                 local desc=describe(p)
                 eq(#runtime.file_location.unowned,2,"prefix and suffix unowned")
                 eq(#desc.pending_sources,2,"both unowned sources pending")
-                eq(desc.pending_sources[1].source_key,"card:K","pending source class coordinate")
+                local unowned_descriptor=source_descriptor(x.discovery.snapshot,"K",2)
+                eq(desc.pending_sources[1].source_key,unowned_descriptor.unit.key,"pending source has its actual single-card route")
                 eq(desc.pending_sources[1].candidate_slot,2,"unowned candidate slot")
-                eq(runtime.file_location.unowned[1].descriptor,x.discovery.snapshot.by_key["card:K"].unit.context.layout[2],"exact unowned source occurrence")
+                eq(runtime.file_location.unowned[1].descriptor,unowned_descriptor,"exact unowned source occurrence")
                 eq(desc.pending_sources[1].action,"restart-required","unowned not publishable")
                 eq(#cf.raw_writes,0,"helper-only does not publish Current wrapper")
                 eq(#state(seal(p).proposed_snapshot,Card).order,#old.order,"no new owners seeded")
@@ -311,7 +331,7 @@ function M.run()
         eq(rows[side].selected,false,"non-Current Side not selected")
         eq(rows[side].pending,false,"proven unchanged Side not an identity gap")
         eq(#description.pending_sources,1,"only new Extra unowned")
-        eq(description.pending_sources[1].source_key,"card:L","other candidate class retained")
+        eq(description.pending_sources[1].source_key,source_descriptor(x.discovery.snapshot,"L",2).unit.key,"other candidate single-card route retained")
         eq(description.pending_sources[1].candidate_slot,2,"Extra source occurrence retained")
         eq(#state(seal(p).proposed_snapshot,Card).order,#old.order,"Extra never seeded")
         changed_raw(old.units[side].card,"init",function() end,function()
@@ -330,8 +350,8 @@ function M.run()
         end)
         real_join(old_side,index(old_side,"other"),f.entry.anchor,f.entry.slots.other)
         must(sharing_ok,sharing_problem)
-        -- Fixed layouts retain sibling edits; a Current request cannot consume
-        -- another private selector merely because both share one public unit.
+        -- Current retains sibling edits. Distinct card units still share a
+        -- Class provider and helper; that does not authorize another selector.
         f=fixture({"A","B"},1,false);base=f.capture.snapshot;old=state(base,Card)
         bytes=source({"A","B"},false,{helper=3,bumps={A=15,B=25},other=200})
         p,x=prepare(f,bytes);must(p,x);cf=fragment(p,Card)
@@ -385,6 +405,7 @@ function M.run()
         eq(receipt.changed,true,"real common transaction changed")
         eq(receipt.snapshot,f.capture.snapshot,"actual snapshot installed")
         eq(receipt.snapshot.revision,1,"one common transaction revision")
+        eq(group(receipt.snapshot,ClassAdapter),group(base,ClassAdapter),"Card/Local publication retains actual Class group")
         eq(old.units[a].card.init,original_a,"unmapped wrapper not replaced")
         eq(old.units[b].card.init==original_b,false,"Current wrapper replaced")
         eq(old.units[a].card:init(1),22,"unmapped callback reads shared helper")
@@ -426,6 +447,7 @@ function M.run()
         eq(Anchor.Get(f.entry,"helper"),helper_before,"post-flush no cell write")
     end)
     debug.upvaluejoin,debug.setupvalue=real_join,real_set
+    if environment then environment:Restore() end
     for _,n in ipairs(globals) do rawset(_G,n,saved[n]) end
     for _,controller in ipairs(controllers) do eq(controller:Release(),true,"common controller released") end
     if not ok then failed=failed+1;failures[#failures+1]="uncaught: "..(type(problem)=="string" and problem or "opaque failure") end

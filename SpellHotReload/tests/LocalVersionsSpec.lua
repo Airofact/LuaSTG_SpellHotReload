@@ -2,6 +2,17 @@
 -- use of the common kernel. Production Card integration is tested separately.
 local M={}
 function M.run()
+    local Driver=require("SpellHotReload.Pipeline.Driver")
+    local FileMatch=require("SpellHotReload.Pipeline.FileMatch")
+    local LocalOwner=require("SpellHotReload.Adapters.Local.Local")
+    local function matched_projection(source)
+        local driver=Driver.New();assert(driver:RegisterDiscovery(LocalOwner))
+        local discovery,err=driver:Discover("LocalFixture_Boss.lua",source,{})
+        if not discovery then return nil,err end
+        local context,why=FileMatch.ForOwner(discovery.snapshot,LocalOwner,source)
+        if not context then return nil,why end
+        return context.projection,discovery.snapshot
+    end
     local Source=require("SpellHotReload.Source.FileAnalysis")
     local Definitions=require("SpellHotReload.Adapters.Local.LocalDefinitions")
     local Local=require("SpellHotReload.Adapters.Local.LocalVersions")
@@ -31,7 +42,7 @@ function M.run()
     local ok,problem=pcall(function()
         local owner={Id="local"}
         local entry=must(Load.Capture(source,{name="Only_Boss.lua"}));entry.file="Only_Boss.lua"
-        local projection=must(Definitions.Match(entry.source))
+        local projection=must(matched_projection(entry.source))
         local contribution=must(Local.Seed(owner,entry,"LocalVersionsSpec",projection))
         local capture=must(Versions.Capture(entry,"LocalVersionsSpec",{contribution}))
         local initial=capture.initial_owners[1].evidence
@@ -39,7 +50,7 @@ function M.run()
         local original_table=entry.map.shared
         local function view(content)
             local facts=must(Source.Build(content))
-            return must(Local.Compare(capture.snapshot.owners[1],initial,must(Definitions.Match(facts))))
+            return must(Local.Compare(capture.snapshot.owners[1],initial,must(matched_projection(facts))))
         end
         local unchanged=view(source)
         local constructions=0

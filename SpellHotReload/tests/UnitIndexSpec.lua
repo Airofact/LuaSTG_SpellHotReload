@@ -78,7 +78,9 @@ function M.run()
     end
     local function adapter(id, match)
         return {
-            ContractVersion = 5, Id = id, Match = match, Reconcile = function() error("unexpected reconciliation") end,
+            ContractVersion = 7, Id = id, Match = match,
+            BuildContext=function(source,units) return {source=source,units=units,all=true,count=#units} end,
+            Reconcile = function() error("unexpected reconciliation") end,
             Locate = hook, Inject = hook, Commit = hook, Restart = hook,
         }
     end
@@ -115,13 +117,12 @@ function M.run()
     ----------------------------------------------------------------------------
 
     local source = "local a = 1\nG = a\n"
-    local found = discover(registry(adapter("unit", function()
-        return {
-            units = { unit("a", "card", ranges(1, 11)), unit("g", "card", ranges(13, 17)) },
-            claims = { claim("slot-a", "a"), claim("stmt-g", "g", "declaration") },
-            context = { all = true },
-        }
-    end)), source)
+    local found=discover(registry(adapter("unit",function(cursor)
+        local position=cursor:Mark();local key=position==1 and "a" or "g"
+        local value=unit(key,"card");cursor:Take()
+        return {units={value},claims={claim(position==1 and "slot-a" or "stmt-g",key,
+            position==1 and "callback" or "declaration")},mappings={{unit=value,first=position,last=position}}}
+    end)),source)
     local index = build(found)
     eq(index.kind, "SpellHotReload.UnitIndex", "index kind")
     eq(index.version, 1, "index version")
@@ -168,11 +169,11 @@ function M.run()
     ----------------------------------------------------------------------------
 
     local function add_unit(r, id, key, first)
-        assert(r:RegisterDiscovery(adapter(id, function()
-            return {
-                units = { unit(key, "card", ranges(first, first + 3)) },
-                claims = {}, context = {},
-            }
+        assert(r:RegisterDiscovery(adapter(id, function(cursor)
+            if cursor:Peek().source_range.first~=first then return nil end
+            local position=cursor:Mark();local value=unit(key,"card")
+            cursor:Take()
+            return {units={value},claims={},mappings={{unit=value,first=position,last=position}}}
         end)))
     end
     local body = "local a = 1\nlocal z = 2\n"
@@ -190,6 +191,8 @@ function M.run()
         "positions are stable across adapter order")
     eq(forward.by_adapter.z[1].key, "zed", "adapter buckets follow normalization")
     eq(backward.by_adapter.a[1].key, "alpha", "reverse order keeps its own bucket")
+    eq(forward.by_key.zed.span.first,13,"matched syntax starts at the original second declaration")
+    eq(forward.by_key.zed.span.last,23,"mapping covers the complete declaration, not a fabricated prefix")
 
     ----------------------------------------------------------------------------
     -- ranges are sorted, de-duplicated, and span the full extent
@@ -504,8 +507,8 @@ function M.run()
     eq(functions, 0, "the index carries data only")
 
     local executions = 0
-    local counting = { ContractVersion = 5, Id = "counting", Reconcile=function() error("unexpected reconciliation") end }
-    for _, name in ipairs({ "Match", "Reconcile", "Locate", "Inject", "Commit", "Restart" }) do
+    local counting = { ContractVersion = 7, Id = "counting", Reconcile=function() error("unexpected reconciliation") end }
+    for _, name in ipairs({ "Match", "BuildContext", "Reconcile", "Locate", "Inject", "Commit", "Restart" }) do
         counting[name] = function() executions = executions + 1 end
     end
     local trapped = setmetatable({ Id = "trapped" }, {
@@ -530,19 +533,13 @@ function M.run()
         if f ~= nil then
             local body = f:read("*a")
             f:close()
-            local fixture = build(discover(registry(adapter("fixture", function(analysis)
-                local units, claims = {}, {}
-                for i, statement in ipairs(analysis.analysis.statements) do
-                    local key = "stmt" .. i
-                    local range = statement.source_range
-                    units[i] = {
-                        key = key, carrier = "fixture", context = { statement = i },
-                        source_ranges = { { first = range.first, last = range.last } },
-                    }
-                    claims[i] = { kind = "declaration", key = key, unit_key = key }
-                end
-                return { units = units, claims = claims, context = { count = #units } }
-            end)), body))
+            local fixture=build(discover(registry(adapter("fixture",function(cursor)
+                local position=cursor:Mark();local key="stmt"..position
+                local value={key=key,carrier="fixture",context={statement=position}}
+                cursor:Take()
+                return {units={value},claims={{kind="declaration",key=key,unit_key=key}},
+                    mappings={{unit=value,first=position,last=position}}}
+            end)),body))
             eq(fixture.unit_count > 300, true, "real file: many units")
             eq(fixture.unit_count, #fixture.snapshot.units, "real file: every unit is indexed")
             eq(fixture.range_count, fixture.unit_count, "real file: one range per statement")

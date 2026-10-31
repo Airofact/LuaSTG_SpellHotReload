@@ -4,7 +4,9 @@ local M={}
 function M.run(opts)
     opts=opts or {}
     local Target=opts.target or require("SpellHotReload.Adapters.Card.CardTarget")
-    local Load=require("SpellHotReload.Load.AnchorLoad")
+    local Load=require("SpellHotReload.Adapters.Class.ClassLoad")
+    local ClassFixture=require("SpellHotReload.tests.ClassFixture")
+    local FileMatch=require("SpellHotReload.Pipeline.FileMatch")
     local Planning=require("SpellHotReload.tests.PlanningFixture")
     local Files=require("SpellHotReload.Pipeline.FileVersions")
     local Source=require("SpellHotReload.Source.FileAnalysis")
@@ -19,10 +21,11 @@ function M.run(opts)
         else failed=failed+1;failures[#failures+1]=label end
     end
     local function must(v,e) assert(v,type(e)=="table" and e.message or e);return v end
-    local function refuse(fn,code,label)
+    local function refuse(fn,code,label,detail)
         local v,e=fn()
         eq(v,nil,label.." refused");eq(type(e),"table",label.." structured")
         eq(e and e.phase,"locate",label.." phase");eq(e and e.code,code,label.." code")
+        if detail then eq(e and e.message,detail,label.." exact reason") end
     end
     local function copy(v) local r={};for k,x in next,v do r[k]=x end;return r end
     local defaults={}
@@ -30,13 +33,20 @@ function M.run(opts)
         defaults[n]=function() return "default" end
     end
     local saved={}
-    for _,n in ipairs({"boss","_editor_class","_tmp_sc","_BOSS_ESCAPE","FILE_TARGET_EFFECT"}) do saved[n]=rawget(_G,n) end
-    local saved_apis={read=Callbacks.Read,match=Card.Match,build=Source.Build,analyze=IR.Analyze,
+    local environment
+    for _,n in ipairs({"_BOSS_ESCAPE","FILE_TARGET_EFFECT"}) do saved[n]=rawget(_G,n) end
+    local saved_apis={layout=Callbacks.Layout,match=Card.Match,build=Source.Build,analyze=IR.Analyze,
         tokenize=Syntax.Parse,create=Compose.Create}
     local function restore_apis()
-        Callbacks.Read,Card.Match=saved_apis.read,saved_apis.match
+        Callbacks.Layout,Card.Match=saved_apis.layout,saved_apis.match
         Source.Build,IR.Analyze,Syntax.Parse,Compose.Create=
             saved_apis.build,saved_apis.analyze,saved_apis.tokenize,saved_apis.create
+    end
+    local function card_context(snapshot)
+        return must(FileMatch.ForOwner(snapshot,Card,snapshot.common.source))
+    end
+    local function source_card(snapshot,class,slot)
+        return assert(card_context(snapshot).by_class[class]).layout[slot]
     end
     local function card_state(capture)
         return must(Files.Owner(capture,Card)).state
@@ -51,6 +61,7 @@ function M.run(opts)
         local lines={"local state=4","local function helper() return state end","FILE_TARGET_EFFECT()"}
         for _,class in ipairs(classes) do
             local key=string.format("%q",class.key)
+            lines[#lines+1]="_editor_class["..key.."]=Class(boss)"
             lines[#lines+1]="_editor_class["..key.."].cards={}"
             if class.move then
                 lines[#lines+1]="table.insert(_editor_class["..key.."].cards,boss.move.New(0,0,1))"
@@ -65,14 +76,16 @@ function M.run(opts)
         return (opts.bom and "\239\187\191" or "")..table.concat(lines,"\n")
     end
     local function fixture(labels,move,escape)
-        _editor_class={K={},L={},N={}}
+        if environment then environment:Restore() end
+        environment=ClassFixture.Install()
         FILE_TARGET_EFFECT=function() effects=effects+1 end
-        boss={card={New=function(label)
+        boss.card={_default_card=defaults,New=function(label)
             constructors=constructors+1
             local card={name=label,is_combat=true}
             for n,fn in next,defaults do card[n]=fn end
             return card
-        end},move={New=function() constructors=constructors+1;return {is_combat=false} end}}
+        end}
+        boss.move={New=function() constructors=constructors+1;return {is_combat=false} end}
         _BOSS_ESCAPE=function(class_key)
             escapes=escapes+1
             local list=_editor_class[class_key].cards
@@ -88,6 +101,7 @@ function M.run(opts)
         local entry=must(Load.Capture(bytes,{name="FileTarget_Boss.lua"}))
         entry.file="FileTarget_Boss.lua"
         local f=must(Planning.Capture(entry,"file-target:"..serial,_editor_class,defaults))
+        environment:FinishLoad()
         local capture=f.capture
         local live={capture=capture,snapshot=capture.snapshot,entry=entry,
             classes=_editor_class,session_id=f.session,generation=7}
@@ -123,6 +137,11 @@ function M.run(opts)
         eq(r.card_group,must(Files.Owner(f.capture,Card)),"proof retains actual Card contribution")
         eq(d.by_key["local:helper"].adapter.Id,"local","complete discovery retains independent Local owner")
         eq(a.target.slot,1,"live slot");eq(a.candidate_slot,1,"candidate slot")
+        local descriptor=source_card(d,"K",1)
+        eq(a.source_key,descriptor.unit.key,"file proof uses actual single-card source route")
+        eq(a.entry,d.by_key[descriptor.unit.key],"file proof retains exact source entry")
+        eq(a.descriptor,descriptor,"file proof retains exact private layout occurrence")
+        eq(a.source_key==a.key,false,"candidate route cannot replace publication identity")
         eq(a.target.mode,nil,"no invented practice mode")
         eq(a.target.include_previous,nil,"no invented restart flag")
         eq(Target.CheckFileDiscovery(r,f.capture,f.live),true,"fresh file check")
@@ -226,7 +245,7 @@ function M.run(opts)
             {"unindexed combat",function(_,_,c) local k=key("K",1);card_state(c).units[k]=nil;table.remove(card_state(c).order,1) end,"ownership"},
             {"unindexed discovery",function(_,d) d.by_key.extra={} end,"ownership"},
             {"filtered discovery",function(_,d) d.adapter_contexts.card.classes=9 end,"unsupported"},
-            {"other adapter",function(_,d) local e=d.by_key["card:K"];e.adapter={} end,"ownership"},
+            {"other adapter",function(_,d) local unit=assert(source_card(d,"K",1).unit);d.by_key[unit.key].adapter={} end,"ownership"},
             {"source index",function(r) r.by_key[key("K",2)]=r.by_key[key("K",1)] end,"stale"},
             {"candidate slot",function(r) row(r,"K",1).candidate_slot=99 end,"stale"},
             {"live slot",function(r) row(r,"K",1).target.slot=99 end,"stale"},
@@ -262,7 +281,7 @@ function M.run(opts)
             '(_editor_class%["L"%]%.cards={})',
             '_editor_class["K"].cards={_tmp_sc,_tmp_sc}\n%1')
         r,d=f.report(alias)
-        local k=d.by_key["card:K"].unit.context.layout
+        local k=card_context(d).by_class.K.layout
         eq(k[1],k[2],"genuine discovery reused descriptor")
         eq(row(r,"K",1).status,"ambiguous","first alias claimant rejected")
         eq(row(r,"K",2).status,"ambiguous","second alias claimant rejected")
@@ -273,7 +292,7 @@ function M.run(opts)
         f=fixture({"Same","Other"});r=f.report(alias)
         eq(row(r,"K",2).status,"ambiguous","one claimant still rejects reused source")
         eq(#r.unowned,2,"source aliases not treated as new identities")
-        -- Separate class parses can refer to one physical declaration as well.
+        -- Private class layouts can reuse the same matched single-card declaration.
         f=fixture({"Same"})
         local shared=source(layout({"Same"})):gsub(
             '_editor_class%["L"%]%.cards={}',
@@ -284,9 +303,9 @@ function M.run(opts)
         eq(row(r,"L",1).candidate_slot,2,"side follows proven prefix shift")
         eq(#r.unowned,2,"both cross-class reused positions remain unowned")
         f=fixture();d=f.discover(f.bytes)
-        d.by_key["card:K"].unit.context.layout[1].callback_points.init=nil
+        source_card(d,"K",1).callback_points.init=nil
         refuse(function() return Target.LocateFileDiscovery(d,f.capture,f.live) end,
-            "ownership","missing source occurrence")
+            "ownership","missing source occurrence","candidate combat source position unavailable")
         -- No compile/debug/write/cache/body execution during pure proof/recheck.
         f=fixture();d=f.discover(source(layout({"Prefix","A","B"})))
         local chunk=assert(loadfile(assert(opts.module_path,"module_path required")))
@@ -296,7 +315,7 @@ function M.run(opts)
             debug=setmetatable({},{__index=forbidden}),jit={flush=forbidden}},{__index=_G}))
         local pure=chunk()
         before_effect,before_ctor=effects,constructors
-        Callbacks.Read=forbidden;Card.Match=forbidden;Source.Build=forbidden
+        Callbacks.Layout=forbidden;Card.Match=forbidden;Source.Build=forbidden
         IR.Analyze=forbidden;Syntax.Parse=forbidden;Compose.Create=forbidden
         local ran,value=pcall(function()
             r=must(pure.LocateFileDiscovery(d,f.capture,f.live))
@@ -312,8 +331,9 @@ function M.run(opts)
         eq(traps,0,"no hostile handlers")
     end)
     restore_apis()
+    if environment then environment:Restore() end
     -- Restore nil saves as well as existing globals.
-    for _,n in ipairs({"boss","_editor_class","_tmp_sc","_BOSS_ESCAPE","FILE_TARGET_EFFECT"}) do rawset(_G,n,saved[n]) end
+    for _,n in ipairs({"_BOSS_ESCAPE","FILE_TARGET_EFFECT"}) do rawset(_G,n,saved[n]) end
     if not ok then error(problem) end
     for _,label in ipairs(failures) do print("FAIL FileCardTargetSpec: "..label) end
     print(string.format("FileCardTargetSpec: %d passed, %d failed",passed,failed))

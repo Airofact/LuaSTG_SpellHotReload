@@ -6,10 +6,14 @@ local serial=0
 function M.run()
     local Planning=require("SpellHotReload.tests.PlanningFixture")
     local Local=require("SpellHotReload.Adapters.Local.Local")
+    local ClassAdapter=require("SpellHotReload.Adapters.Class.Class")
+    local FileMatch=require("SpellHotReload.Pipeline.FileMatch")
     local Card=require("SpellHotReload.Adapters.Card.Card")
     local Files=require("SpellHotReload.Pipeline.FileVersions")
     local Source=require("SpellHotReload.Source.FileAnalysis")
-    local Load=require("SpellHotReload.Load.AnchorLoad")
+    local Load=require("SpellHotReload.Adapters.Class.ClassLoad")
+    local ClassFixture=require("SpellHotReload.tests.ClassFixture")
+    local environment
     local Anchor=require("SpellHotReload.Load.Anchor")
     local Compose=require("SpellHotReload.Source.Compose")
     local IR=require("SpellHotReload.Source.TopLevelIR")
@@ -56,6 +60,7 @@ function M.run()
 local state=4
 local function helper(n) return state+n end
 local function other(n) return n+100 end
+_editor_class["K"]=Class(boss)
 _editor_class["K"].cards={}
 _tmp_sc=boss.card.New("same",1,2,3,4)
 function _tmp_sc:init(n) return helper(n) end
@@ -63,6 +68,7 @@ table.insert(_editor_class["K"].cards,_tmp_sc)
 _tmp_sc=boss.card.New("same",1,2,3,4)
 function _tmp_sc:init(n) return helper(n)+10 end
 table.insert(_editor_class["K"].cards,_tmp_sc)
+_editor_class["L"]=Class(boss)
 _editor_class["L"].cards={}
 _tmp_sc=boss.card.New("same",1,2,3,4)
 function _tmp_sc:init(n) return other(n) end
@@ -75,16 +81,19 @@ VERSION_DISCOVERY_EFFECT()
     local ok,problem=pcall(function()
         must(Anchor.Supported(Compose.Capability(debug))) -- Real LuaJIT capability required.
         _G.VERSION_DISCOVERY_EFFECT=function() effects=effects+1 end
+        if environment then environment:Restore() end
+        environment=ClassFixture.Install()
         local classes={K={},L={}};_G._editor_class=classes
-        _G.boss={card={New=function(name)
+        boss.card={New=function(name)
             local card={name=name,is_combat=true}
             for _,n in ipairs(callbacks) do card[n]=defaults[n] end
             return card
-        end}}
+        end}
         local entry=must(Load.Capture(source,{name="Discovery_Boss.lua"}))
         must(entry.reloadable,entry.reason);entry.file="Discovery_Boss.lua"
         serial=serial+1
         local f=must(Planning.Capture(entry,"VersionDiscoverySpec:"..serial,classes,defaults))
+        environment:FinishLoad()
         local capture=f.capture;local initial=capture.snapshot
         local initial_local,initial_card=state(initial,Local),state(initial,Card)
         local keya,keyb,keyc="card:1:K:1","card:1:K:2","card:1:L:1"
@@ -106,22 +115,22 @@ VERSION_DISCOVERY_EFFECT()
             local before_local,before_card=local_matches,card_matches
             local d=must(Planning.Discover(f,input,generation))
             discovery_count=discovery_count+1
-            eq(local_matches,before_local+1,"one Local Match per NEW discovery")
-            eq(card_matches,before_card+1,"one Card Match per NEW discovery")
+            eq(local_matches,before_local+9,"Local tried at nine shared positions per NEW discovery")
+            eq(card_matches,before_card+9,"Card tried at the same nine shared positions")
             eq(d.source,input,"discovery retains complete facts")
             eq(d.snapshot.common.source,input,"common snapshot retains facts")
             eq(view(d,Local).source,input,"Local private view retains facts")
             eq(view(d,Card).source,input,"Card private view retains facts")
             eq(d.snapshot.analysis,nil,"no duplicate snapshot AST")
             eq(d.snapshot.bindings,nil,"no duplicate snapshot bindings")
-            eq(#d.snapshot.entries,5,"three Local bindings and two Card classes")
+            eq(#d.snapshot.entries,8,"three Local bindings, two Classes and three cards")
             local carriers={local_count=0,card_count=0}
             for _,item in ipairs(d.snapshot.entries) do
                 if item.adapter==Local then carriers.local_count=carriers.local_count+1 end
                 if item.adapter==Card then carriers.card_count=carriers.card_count+1 end
             end
             eq(carriers.local_count,3,"state/helper/other all discovered")
-            eq(carriers.card_count,2,"both classes discovered")
+            eq(carriers.card_count,3,"each card is independently discovered")
             return d
         end
         -- Each operation captures its own bytes/generation; preparing BOM input
@@ -164,11 +173,12 @@ VERSION_DISCOVERY_EFFECT()
         eq(#cf.raw_writes,1,"one explicit Card write")
         eq(#cf.card_plan.publications,1,"one explicit callback publication")
         eq(cf.card_plan.publications[1].unit_key,keya,"private card key selects A")
-        eq(snapshot.by_key["card:K"].unit.context.layout[2].callbacks.init~=nil,true,"unselected B source retained")
-        eq(snapshot.by_key["card:L"]~=nil,true,"unrelated class retained")
+        local card_context=must(FileMatch.ForOwner(snapshot,Card,facts))
+        eq(card_context.by_class.K.layout[2].callbacks.init~=nil,true,"unselected B source retained")
+        eq(snapshot.by_key[card_context.by_class.L.layout[1].unit.key]~=nil,true,"unrelated single card retained")
         local sealed=seal(p)
-        eq(local_matches,1,"Seal never re-Matches Local")
-        eq(card_matches,1,"Seal never re-Matches Card")
+        eq(local_matches,9,"Seal never re-Matches Local")
+        eq(card_matches,9,"Seal never re-Matches Card")
         eq(capture.snapshot,initial,"Seal never installs snapshot")
         eq(sealed.proposed_snapshot.revision,1,"one proposed common revision")
         local next_local,next_card=state(sealed.proposed_snapshot,Local),state(sealed.proposed_snapshot,Card)
@@ -287,8 +297,8 @@ VERSION_DISCOVERY_EFFECT()
         eq(a:init(1),26,"A preserved after B Apply");eq(b:init(1),36,"B new wrapper and same helper")
         eq(c:init(1),101,"C remains on actual old other")
         eq(discovery_count,5,"five independent discoveries exercised")
-        eq(local_matches,discovery_count,"no Local Match outside explicit discovery")
-        eq(card_matches,discovery_count,"no Card Match outside explicit discovery")
+        eq(local_matches,discovery_count*9,"no Local Match outside explicit discovery")
+        eq(card_matches,discovery_count*9,"no Card Match outside explicit discovery")
         eq(builds,0,"no hidden full Build")
         eq(analyzes,0,"no hidden whole-file parse")
         eq(effects,1,"only explicit miniature first load executed")
@@ -296,6 +306,7 @@ VERSION_DISCOVERY_EFFECT()
     Source.Build,IR.Analyze=old_build,old_analyze
     Local.Match,Card.Match=old_local_match,old_card_match
     debug.upvaluejoin,debug.setupvalue,_G.jit=old_join,old_set,old_jit
+    if environment then environment:Restore() end
     for _,n in ipairs(globals) do rawset(_G,n,saved[n]) end
     for _,controller in ipairs(controllers) do
         local released=controller:Release();eq(released,true,"common controller released")

@@ -13,25 +13,31 @@ function M.run()
     local handoff,replay=R.Handoff,Binding.IsReplay
     local globals={"_sc_table","lstg","stage","ext","boss","_editor_class","_tmp_sc"}
     local saved={};for _,k in ipairs(globals) do saved[k]=rawget(_G,k) end
+    local environment
     local ok,problem=pcall(function()
     local Files=require("SpellHotReload.Pipeline.FileVersions")
     local Local=require("SpellHotReload.Adapters.Local.Local")
     local Target=require("SpellHotReload.Adapters.Card.CardTarget")
-    local Load=require("SpellHotReload.Load.AnchorLoad")
+    local Load=require("SpellHotReload.Adapters.Class.ClassLoad")
+    local ClassFixture=require("SpellHotReload.tests.ClassFixture")
     local callbacks={"before","init","frame","render","beforedel","del","after"}
     local defaults={};for _,n in ipairs(callbacks) do defaults[n]=function() end end
-    _editor_class={K={}}
-    boss={card={New=function(n)
+    if environment then environment:Restore() end
+        environment=ClassFixture.Install()
+        _editor_class={K={}}
+    boss.card={New=function(n)
         local c={name=n,is_combat=true};for _,cb in ipairs(callbacks) do c[cb]=defaults[cb] end;return c
-    end}}
+    end}
     local source=table.concat({"local counter=3","local function helper(n) return counter+n end",
+        "_editor_class['K']=Class(boss)",
         "_editor_class['K'].cards={}","_tmp_sc=boss.card.New('Live')",
         "function _tmp_sc:init(n) return helper(n) end",
         "table.insert(_editor_class['K'].cards,_tmp_sc)"},"\n")
     local entry=assert(Load.Capture(source,{name="Request_Boss.lua"}));entry.file="Request_Boss.lua"
-    local lg=assert(Local.Capture(entry,"request:1"))
-    local cg=assert(Card.Capture(entry,"request:1",lg,_editor_class,defaults))
-    local capture=assert(Files.Capture(entry,"request:1",{lg,cg}))
+    local Planning=require("SpellHotReload.tests.PlanningFixture")
+    local f=assert(Planning.Capture(entry,"request:1",_editor_class,defaults))
+    local capture=f.capture
+    environment:FinishLoad()
     local snapshot=capture.snapshot
     local classes=_editor_class;local class=classes.K;local list=class.cards;local card=list[1]
     local live={entry=entry,classes=classes,session_id="request:1",capture=capture,snapshot=snapshot}
@@ -60,7 +66,7 @@ function M.run()
         eq(R.BindReceipt(run,wrong,capture),nil,"old owner-only receipt refused")
         wrong.kind=receipt.kind;wrong.owner_deltas={}
         eq(R.BindReceipt(run,wrong,capture),nil,"filtered owner deltas refused")
-        wrong.owner_deltas={{owner=Card,owner_id="card",changed=false,unit_refs={}},deltas[2]}
+        wrong.owner_deltas={deltas[3],deltas[2],deltas[1]}
         eq(R.BindReceipt(run,wrong,capture),nil,"foreign owner order refused")
         wrong.owner_deltas=deltas;wrong.changed=true
         eq(R.BindReceipt(run,wrong,capture),nil,"unchanged snapshot cannot claim changed")
@@ -127,6 +133,7 @@ function M.run()
         eq(lstg.var.sc_index,"EXT_POS","selected practice index")
     end)
     R.Handoff,Binding.IsReplay=handoff,replay
+    if environment then environment:Restore() end
     for _,k in ipairs(globals) do rawset(_G,k,saved[k]) end
     if not ok then failed=failed+1;failures[#failures+1]="unexpected: "..tostring(problem) end
     print(string.format("CurrentRestartSpec: %d passed / %d failed",passed,failed))

@@ -1,4 +1,3 @@
-local Syntax=require("SpellHotReload.Source.SyntaxTree")
 -- Card owns generated callback/member rules and live practice identity.
 -- Local owns its bindings; Driver resolves finite unit demands; FileCommit is
 -- the ONLY publisher. No nested Local ledger or single-owner transaction path.
@@ -6,8 +5,7 @@ local Source=require("SpellHotReload.Source.FileAnalysis")
 local Versions=require("SpellHotReload.Adapters.Card.CardVersions")
 local Files=require("SpellHotReload.Pipeline.FileVersions")
 local Binding=require("SpellHotReload.Adapters.Card.PracticeBinding")
-local CardSyntax=require("SpellHotReload.Adapters.Card.CardSyntax")
-local Card={name="Card",Id="card",ContractVersion=5}
+local Card={name="Card",Id="card",ContractVersion=7}
 local CALLBACKS={"before","init","frame","render","beforedel","del","after"}
 local VIEW="SpellHotReload.Card.View"
 local function plain(v) return type(v)=="table" and getmetatable(v)==nil end
@@ -30,128 +28,20 @@ local function names_of(map)
     return names
 end
 
----Enumerate the card-list classes of a shared TopLevelIR analysis.
----
----A class owns a unit when it publishes the `_editor_class["K"].cards = {` list
----anchor CardCallbacks.Read consumes. Classes without a card list (bullet and
----enemy classes) are not card units. The query reads the shared syntax nodes, so
----`_editor_class` text inside a comment or a string never becomes a class.
----The window of a class runs from its creation statement (when present) to the
----statement before the next class window; every class publishes one valid,
----dense `source_ranges` entry and the windows never overlap.
----@param analysis table
----@return table[]? classes  -- { { class_key=, ranges={ {first,last}, ... } }, ... }
----@return string? reason
----@return string? code  -- "unsupported" input/malformed, "ambiguous" interleave
-function Card.CardLists(analysis)
-    if type(analysis) ~= "table" or type(analysis.statements) ~= "table" or not Syntax.IsSnapshot(analysis.syntax) then
-        return nil, "card lists need the shared analysis", "unsupported"
-    end
-    local Tree=analysis.syntax
-    local statements = analysis.statements
-    local anchors, order = {}, {}
-    for position, statement in ipairs(statements) do
-        local target,value=Tree.SingleAssignment(statement.syntax)
-        local key=Tree.Is(value,"table") and CardSyntax.CardList(Tree,target) or nil
-        if key ~= nil then
-            if key == "" then
-                return nil, "card list class key is empty", "unsupported"
-            end
-            local entry = anchors[key]
-            if entry == nil then
-                entry = { class_key = key, first = position, last = position }
-                anchors[key] = entry
-                order[#order + 1] = entry
-            end
-            entry.last = position      -- a later `cards = {...}` rebuilds this list
-        end
-    end
-    table.sort(order, function(a, b) return a.first < b.first end)
-    -- Grow every window back over its class creation statement first, so a
-    -- window never swallows the next class's `... = Class(...)` line.
-    for _, entry in ipairs(order) do
-        local previous = statements[entry.first - 1]
-        local target,value
-        if previous then target,value=Tree.SingleAssignment(previous.syntax) end
-        local call=Tree.Match(value,"call")
-        if target and CardSyntax.ClassKey(Tree,target)==entry.class_key and call and Tree.IsName(call.callee,"Class") then
-            entry.first = entry.first - 1
-        end
-    end
-    for i, entry in ipairs(order) do
-        local stop = order[i + 1] ~= nil and order[i + 1].first or (#statements + 1)
-        if entry.last >= stop then
-            return nil, "card list blocks are interleaved: " .. entry.class_key, "ambiguous"
-        end
-        entry.last = stop - 1
-        entry.ranges = { {
-            first = statements[entry.first].source_range.first,
-            last = statements[entry.last].source_range.last,
-        } }
-    end
-    return order
+-- Source keys belong to this discovery; actual identity comes from capture.
+function Card.Match(cursor,common)
+    local desc,err=require("SpellHotReload.Adapters.Card.CardCallbacks").Match(cursor,common.source)
+    if not desc then return nil,err end
+    local key="card:@"..desc.first
+    local unit={key=key,carrier="card",context={descriptor=desc}}
+    local claims={{kind="constructor",key=key,unit_key=key}}
+    for _,name in ipairs(names_of(desc.callbacks)) do claims[#claims+1]={kind="callback",key=key..":"..name,unit_key=key} end
+    return {units={unit},claims=claims,mappings={{unit=unit,first=desc.first,last=desc.last}}}
+end
+function Card.BuildContext(source,units)
+    return require("SpellHotReload.Adapters.Card.CardCallbacks").Layout(source,units)
 end
 
----Assemble the practice-independent card unit for one card-list class. `layout`
----is the CardCallbacks.Read result; the context keeps it (the descriptor
----current preparation consumes) plus a slot summary, and never claims lexical
----binding safety.
----@param class_key string
----@param ranges table  -- dense { {first,last}, ... }
----@param layout table  -- CardCallbacks.Read entries
----@return table unit
-function Card.Unit(class_key, ranges, layout)
-    local slots, cards, others = {}, 0, 0
-    for slot, entry in ipairs(layout) do
-        slots[slot] = {
-            slot = slot, kind = entry.kind, name = entry.name,
-            callbacks = names_of(entry.callbacks),
-        }
-        if entry.kind == "card" then cards = cards + 1 else others = others + 1 end
-    end
-    return {
-        key = "card:" .. class_key,
-        carrier = "card",
-        source_ranges = ranges,
-        context = {
-            class_key = class_key,
-            slots = slots,
-            cards = cards,
-            others = others,
-            layout = layout,
-            binding_complete = false,
-        },
-    }
-end
-
-
-function Card.Match(source,common)
-    local valid,err=Source.Validate(source)
-    if not valid then return nil,err end
-    if not plain(common) or common.source~=source then return fail("match","ownership","same common FileAnalysis required") end
-    local classes,reason,code=Card.CardLists(source.analysis)
-    if not classes then return fail("match",code or "unsupported",reason) end
-    local units,claims={},{}
-    local Callbacks=require("SpellHotReload.Adapters.Card.CardCallbacks")
-    for _,class in ipairs(classes) do
-        local called,layout,why=pcall(Callbacks.Read,source,class.class_key)
-        if not called or not layout then
-            local reason=called and why or layout
-            return nil,{phase="match",code="unsupported",file=common.file,unit_key=class.class_key,
-                message="card parse failed: "..(type(reason)=="string" and reason or "non-string callback layout error")}
-        end
-        local unit=Card.Unit(class.class_key,class.ranges,layout);units[#units+1]=unit
-        for slot,desc in ipairs(layout) do
-            if desc.kind=="card" then
-                claims[#claims+1]={kind="constructor",key=class.class_key..":"..slot,unit_key=unit.key}
-                for _,name in ipairs(names_of(desc.callbacks)) do
-                    claims[#claims+1]={kind="callback",key=class.class_key..":"..slot..":"..name,unit_key=unit.key}
-                end
-            end
-        end
-    end
-    return {units=units,claims=claims,context={source=source,carrier="card",classes=#units,units=units}}
-end
 function Card.FreezeBinding(current)
     local names
     if type(current.names) == "table" then
@@ -188,12 +78,11 @@ function Card.CaptureOwnership(match, classes, entry)
             file=plain(e) and rawget(e,"file") or nil, unit_key=key}
     end
     local owners, ownership, seen = {}, {}, {}
-    for _, unit in ipairs(match.units) do
-        local ctx = unit.context
+    for _, ctx in ipairs(match.classes) do
         local cls = rawget(classes, ctx.class_key)
         local list = plain(cls) and rawget(cls, "cards") or nil
         if not plain(cls) or dense(list) ~= #ctx.layout then
-            return fail("ownership", "first-load class/list layout unavailable", entry, unit.key)
+            return fail("ownership", "first-load class/list layout unavailable", entry, ctx.class_key)
         end
         local slots = {}
         ownership[#ownership + 1] = {
@@ -201,12 +90,12 @@ function Card.CaptureOwnership(match, classes, entry)
         for slot, descriptor in ipairs(ctx.layout) do
             local card = rawget(list, slot)
             if not plain(card) or seen[card] then
-                return fail("ownership", "invalid or multiply owned first-load card", entry, unit.key)
+                return fail("ownership", "invalid or multiply owned first-load card", entry, ctx.class_key)
             end
             seen[card], slots[slot] = true, card
             if descriptor.kind == "card" and descriptor.callbacks.init then
                 if rawget(card, "is_combat") ~= true then
-                    return fail("ownership", "combat descriptor does not own a combat card", entry, unit.key)
+                    return fail("ownership", "combat descriptor does not own a combat card", entry, ctx.class_key)
                 end
                 local callbacks = {}
                 for _, name in ipairs(CALLBACKS) do callbacks[name] = rawget(card, name) end
@@ -221,18 +110,19 @@ end
 
 -- Called only by genuine first-load orchestration. It contributes Card's
 -- records; the caller atomically adopts the COMPLETE owner contribution set.
-function Card.Capture(entry,session,local_group,classes,defaults)
-    if not plain(entry) or not Source.Validate(entry.source) then return fail("capture","ownership","genuine complete first load required") end
-    local match,err=Card.Match(entry.source,{source=entry.source})
-    if not match then return nil,err end
-    if #match.units==0 then return Versions.Empty(Card,entry,session,match) end
+function Card.Capture(entry,session,local_group,class_group,classes,defaults,snapshot)
+    if not plain(entry) or not Source.Validate(entry.source) then return fail("capture","ownership","genuine complete load required") end
+    local match,err=require("SpellHotReload.Pipeline.FileMatch").ForOwner(snapshot,Card,entry.source)
+    if not match then return fail("capture","ownership",err) end
+    if #match.classes==0 then return Versions.Empty(Card,entry,session,match) end
     if not plain(classes) or not plain(defaults) then return fail("capture","ownership","first-load registry and defaults required") end
     local owners,ownership=Card.CaptureOwnership(match,classes,entry)
     if not owners then return nil,ownership end
     local Local=require("SpellHotReload.Adapters.Local.Local")
-    return Versions.Seed(Card,entry,session,match,owners,ownership,classes,defaults,function(binding)
-        return Local.CapturedProvider(local_group,binding)
-    end)
+    local Class=require("SpellHotReload.Adapters.Class.Class")
+    return Versions.Seed(Card,entry,session,match,owners,ownership,classes,defaults,
+        function(binding) return Local.CapturedProvider(local_group,binding) end,
+        function(key) return Class.CapturedProvider(class_group,key) end)
 end
 function Card.CaptureCurrent() return Binding.CaptureCurrent() end
 function Card.IsReplay() return Binding.IsReplay() end
@@ -242,7 +132,8 @@ end
 function Card.DefinesCurrent(discovery,current,capture)
     -- Candidate keys route new definitions; captured ownership keeps old-only
     -- classes visible to reconciliation. Neither route is live Locate permission.
-    if discovery.snapshot.by_key["card:"..current.class_key] then return true end
+    local matched=discovery.snapshot.adapter_contexts.card
+    if matched and matched.by_class[current.class_key] then return true end
     local group=Files.Owner(capture,Card)
     if group then
         for _,key in ipairs(group.state.order) do
@@ -323,7 +214,7 @@ end
 function Card.Locate(unit,context)
     if not scope(context) or context.scope~="unit" or context.phase~="locate" or not plain(unit)
         or context.view.by_ref[unit.unit_ref]~=unit.private_ref or unit.private_ref.unit~=unit then
-        return fail("locate","ownership","original Card class unit and scope required",context)
+        return fail("locate","ownership","original single-card unit and scope required",context)
     end
     local runtime,err=locate(context.view,context.operation)
     if not runtime then return nil,err end
@@ -344,12 +235,18 @@ local function resolve(handle,unit,context)
     local selected,err=Versions.Resolve(runtime.version_view,key)
     if not selected then return {blocked=err,needs={},affected={},source_facts={}} end
     local Local=require("SpellHotReload.Adapters.Local.Local")
-    local local_view
+    local Class=require("SpellHotReload.Adapters.Class.Class")
+    local local_view,class_view
     for _,group in ipairs(view.discovery.reconciliation.groups) do
         if group.owner==Local and not group.reason then local_view=group.view end
+        if group.owner==Class and not group.reason then class_view=group.view end
     end
     local choice={view=view,item=item,key=key,root_id=request.root_id,resolved=selected,demands={}}
     local needs,facts={},{}
+    local parent=Class.Requirement(class_view,selected.item.previous.class_ref)
+    if not parent then return {blocked={code="ownership",message="original Spell Class provider unavailable"},needs={},affected={},source_facts={}} end
+    local parent_need={root_id=request.root_id,provider_unit=parent.unit_ref,condition_ref=parent.condition_ref,cause_ref=choice}
+    needs[#needs+1]=parent_need;choice.demands[#choice.demands+1]=parent_need
     for _,ref in ipairs(selected.providers) do
         local provider=Local.Requirement(local_view,ref)
         if not provider then return fail("resolve","ownership","original callback provider domain unavailable",context) end
@@ -393,8 +290,7 @@ local function guard(fragment,capture,live)
     end
     ok,err=Versions.Guard(plan,live.classes)
     if not ok then return nil,err end
-    -- The public unit is a class; only Card can map a callback action back to
-    -- its exact selected member. Read the separate semantic publications, not
+    -- The public unit is one card; callbacks remain its private members. Read the separate semantic publications, not
     -- the caller's raw_writes array, so sealing still isolates later mutation.
     if dense(fragment.raw_writes)==nil or dense(plan.publications)==nil
         or #fragment.raw_writes~=#plan.publications then
@@ -434,7 +330,7 @@ local function guard(fragment,capture,live)
     end
     for _,key in ipairs(view.base.order) do
         local expected=proposed.state.units[key];local unit=actual.state.units[key]
-        if not plain(unit) or unit.card~=expected.card or unit.unit_ref~=expected.unit_ref
+        if not plain(unit) or unit.card~=expected.card or unit.unit_ref~=expected.unit_ref or unit.class_ref~=expected.class_ref
             or unit.definition_version~=expected.definition_version then return fail("commit","ownership","Card proposed unit changed") end
         for _,name in ipairs(CALLBACKS) do
             local a,b=unit.callbacks[name],expected.callbacks[name]

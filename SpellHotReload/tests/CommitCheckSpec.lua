@@ -1,10 +1,12 @@
 local Planning=require("SpellHotReload.tests.PlanningFixture")
--- Real dual-owner preparation and owner/native preflight; never publishes.
+-- Real three-owner preparation and owner/native preflight; never publishes.
 local M={}
 local serial=0
 function M.run()
     local Check=require("SpellHotReload.Apply.CommitCheck")
-    local Load=require("SpellHotReload.Load.AnchorLoad")
+    local Load=require("SpellHotReload.Adapters.Class.ClassLoad")
+    local ClassFixture=require("SpellHotReload.tests.ClassFixture")
+    local environment
     local Card=require("SpellHotReload.Adapters.Card.Card")
     local Local=require("SpellHotReload.Adapters.Local.Local")
     local Files=require("SpellHotReload.Pipeline.FileVersions")
@@ -37,6 +39,7 @@ function M.run()
         "local function other() return 100 end",
         "local function setter(v) state=v end",
         "_commit_runs=_commit_runs+1",
+        "_editor_class['K']=Class(boss)",
         "_editor_class['K'].cards={boss.move.New(0,0,1)}",
         "_tmp_sc=boss.card.New('A',1,2,3,100)",
         "function _tmp_sc:init() return helper() end",
@@ -44,6 +47,7 @@ function M.run()
         "_tmp_sc=boss.card.New('B',1,2,3,100)",
         "function _tmp_sc:init() return other() end",
         "table.insert(_editor_class['K'].cards,_tmp_sc)",
+        "_editor_class['L']=Class(boss)",
         "_editor_class['L'].cards={}",
         "_tmp_sc=boss.card.New('C',1,2,3,100)",
         "function _tmp_sc:init() return helper()+100 end",
@@ -70,17 +74,21 @@ function M.run()
     end
     local function seal(p) return Check.Seal(p.operation,fragments(p)) end
     local function fixture(bytes,roots)
+        if environment then environment:Restore() end
+        environment=ClassFixture.Install()
         reset();_commit_runs=0;_editor_class={K={},L={}}
-        boss={card={New=function(name)
+        boss.card={New=function(name)
             local card={name=name,is_combat=true}
             for _,cb in ipairs(names) do card[cb]=defaults[cb] end
             return card
-        end},move={New=function() return {is_combat=false} end}}
+        end}
+        boss.move={New=function() return {is_combat=false} end}
         local entry=must(Load.Capture(source,{name="Commit_Boss.lua"}))
         must(entry.reloadable,entry.reason);entry.file="Commit_Boss.lua"
         serial=serial+1
         local sid="CommitCheckSpec:"..serial
         local f=must(Planning.Capture(entry,sid,_editor_class,defaults))
+        environment:FinishLoad()
         local c=f.capture
         local l={capture=c,snapshot=c.snapshot,entry=entry,session_id=sid,
             classes=_editor_class,content=bytes or candidate,generation=1,fixture=f}
@@ -176,8 +184,8 @@ function M.run()
         end,"commit","ownership","Local proposed definition version","Local proposed definition/version changed")
         for _,case in ipairs({
             {"registry",function(s,c,l) l.classes={} end},
-            {"class",function(s,c,l) l.classes.K={} end},
-            {"list",function(s,c,l) l.classes.K.cards={} end},
+            {"class",function(s,c,l) l.classes.K={} end,"class","unsupported"},
+            {"list",function(s,c,l) l.classes.K.cards={} end,"class","unsupported"},
             {"placeholder",function(s,c,l) l.classes.K.cards[1]={} end},
             {"unselected sibling",function(s,c,l) l.classes.K.cards[3]={} end},
             {"other class",function(s,c,l) l.classes.L.cards[1]={} end},
@@ -185,7 +193,7 @@ function M.run()
             {"list hole",function(s,c,l) l.classes.K.cards[1]=nil end},
             {"extra key",function(s,c,l) l.classes.K.cards.tag={} end},
             {"combat tag",function(s,c,l) l.classes.K.cards[2].is_combat=false end},
-        }) do bad(Check.Check,case[2],"locate","ownership","Card ownership "..case[1]) end
+        }) do bad(Check.Check,case[2],case[3] or "locate",case[4] or "ownership","Card ownership "..case[1]) end
         for _,case in ipairs({
             {"selected callback",function(s,c,l) l.classes.K.cards[2].init=function() end end},
             {"unselected callback",function(s,c,l) l.classes.K.cards[3].frame=function() end end},
@@ -258,7 +266,7 @@ function M.run()
             local evidence=select(2,Files.Owner(c,Card)).evidence
             setmetatable(evidence.ownership[1].list,mt)
             l.classes.K.cards=setmetatable({},mt)
-        end,"locate","ownership","hostile lists never invoke equality")
+        end,"class","unsupported","hostile lists never invoke equality","readonly class member drifted")
         eq(traps,0,"no table metamethod invoked")
         local error_object=setmetatable({},{
             __tostring=function() traps=traps+1;error("unsafe error stringify") end,
@@ -310,6 +318,7 @@ function M.run()
         eq(traps,0,"all hostile metatables untouched")
     end)
     reset()
+    if environment then environment:Restore() end
     for _,key in ipairs(keys) do rawset(_G,key,saved[key]) end
     if not ok then error(problem,0) end
     for _,label in ipairs(failures) do print("FAIL CommitCheckSpec: "..label) end

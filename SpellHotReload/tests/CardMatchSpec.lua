@@ -4,8 +4,6 @@ local NodeRegistry = require("SpellHotReload.Pipeline.NodeRegistry")
 local FileMatch = require("SpellHotReload.Pipeline.FileMatch")
 local Card = require("SpellHotReload.Adapters.Card.Card")
 local CardCallbacks = require("SpellHotReload.Adapters.Card.CardCallbacks")
-local Driver = require("SpellHotReload.Pipeline.Driver")
-local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
 local IR = require("SpellHotReload.Source.TopLevelIR")
 local Source = require("SpellHotReload.Source.FileAnalysis")
 local Syntax = require("SpellHotReload.Source.SyntaxTree")
@@ -52,10 +50,10 @@ function M.run()
         for _, name in ipairs({ "before", "init", "frame", "render", "beforedel", "del", "after" }) do
             defaults[name] = function() end
         end
-        local card_news, class_news, side_effects = 0, 0, 0
+        local card_news, dialog_news, class_news, side_effects = 0, 0, 0, 0
 
         boss = { card = { _default_card = defaults },
-            dialog = { New = function() return { name = "", is_sc = false } end } }
+            dialog = { New = function() dialog_news = dialog_news + 1; return { name = "", is_sc = false } end } }
         boss.card.New = function(name)
             card_news = card_news + 1
             local card = { name = name, is_sc = name ~= "" }
@@ -126,7 +124,7 @@ function M.run()
         -- contract + discovery registration
         ------------------------------------------------------------------------
         eq(Card.Id, "card", "card: carries the discovery Id")
-        eq(Card.ContractVersion, 5, "card: declares ContractVersion 5")
+        eq(Card.ContractVersion, 7, "card: declares ContractVersion 7")
         eq(Adapter.ValidateDiscovery(Card), true, "card: satisfies the discovery contract")
         local registry = NodeRegistry.New()
         eq(registry:RegisterDiscovery(Card), true, "card: registers for discovery")
@@ -150,6 +148,7 @@ function M.run()
         _editor_class, _sc_table, _tmp_sc = nil, nil, nil
         local untouched = assert(discover(new))
         eq(card_news, 0, "match: no candidate card.New ran")
+        eq(dialog_news, 0, "match: no candidate dialog.New ran")
         eq(class_news, 0, "match: no candidate Class ran")
         eq(side_effects, 0, "match: a top-level side effect never ran")
         eq(_editor_class, nil, "match: no class table was created")
@@ -158,65 +157,86 @@ function M.run()
         ------------------------------------------------------------------------
         -- unit / claim / context shape
         ------------------------------------------------------------------------
-        eq(#untouched.units, 2, "match: one unit per card-list class")
-        eq(untouched.units[1].key, "card:Boss:Normal", "match: source order is preserved")
-        eq(untouched.units[2].key, "card:Boss:Hard", "match: the second class follows")
-        eq(untouched.by_key["card:Fake"], nil, "match: a comment is never a class")
-        eq(untouched.by_key["card:Boss:Enemy"], nil, "match: a class without a card list is skipped")
-        eq(untouched.adapter_contexts.card.carrier, "card", "match: file context carrier")
-        eq(untouched.adapter_contexts.card.classes, 2, "match: file context class count")
+        eq(#untouched.units, 4, "match: one syntax unit per constructor block")
+        local file_context = untouched.adapter_contexts.card
+        eq(file_context.carrier, "card", "match: file context carrier")
+        eq(#file_context.classes, 2, "match: two private class layouts")
+        eq(#file_context.units, 4, "match: layout retains all accepted units")
+        eq(file_context.by_class.Fake, nil, "match: a comment is never a class layout")
+        eq(file_context.by_class["Boss:Enemy"], nil, "match: class without cards has no layout")
         eq(Source.Validate(untouched.common.source),true,"match: complete shared source retained")
         eq(untouched.common.source.content,new,"match: exact complete bytes retained")
-        eq(untouched.adapter_contexts.card.source,untouched.common.source,"match: Card reuses same complete source")
-
-        local normal = untouched.by_key["card:Boss:Normal"]
-        local hard = untouched.by_key["card:Boss:Hard"]
-        eq(normal.context.adapter.file, untouched.adapter_contexts.card,
-            "match: unit context carries the file context")
-        eq(normal.context.adapter.unit, normal.unit.context,
-            "match: unit context carries the practice-independent descriptor")
-        check(normal.context.common == untouched.common, "match: one shared common")
-
-        local ctx = normal.unit.context
-        eq(ctx.class_key, "Boss:Normal", "context: class key")
-        eq(ctx.binding_complete, false, "context: no binding-safety claim")
-        eq(#ctx.slots, 3, "context: one slot summary per registration")
-        eq(ctx.slots[1].kind, "dialog", "context: a dialog is not a combat slot")
-        eq(ctx.slots[2].kind, "card", "context: the empty-name slot is a card")
-        eq(ctx.slots[3].name, "Inline", "context: the live card name is described")
-        eq(table.concat(ctx.slots[3].callbacks, ","), "before,frame,init,render",
-            "context: slot callbacks are sorted")
-        eq(ctx.cards, 2, "context: combat card count")
-        eq(ctx.others, 1, "context: non-card slot count")
-        check(type(ctx.layout) == "table" and #ctx.layout == 3, "context: keeps the parsed layout")
-
-        local ranges = normal.unit.source_ranges
-        eq(#ranges, 1, "window: one dense range per unit")
-        local span = new:sub(ranges[1].first, ranges[1].last)
-        contains(span, '_editor_class["Boss:Normal"] = Class(boss)', "window: covers the class line")
-        contains(span, '_editor_class["Boss:Normal"].cards = {}', "window: covers the card list")
-        contains(span, '"Boss:Normal", "Inline"', "window: covers the last registration")
-        eq(span:find('_editor_class["Boss:Hard"]', 1, true), nil,
-            "window: never swallows the next class")
-        eq(ranges[1].last < hard.unit.source_ranges[1].first, true, "window: ranges do not overlap")
-        contains(new:sub(hard.unit.source_ranges[1].first, hard.unit.source_ranges[1].last),
-            '"Boss:Hard", "HardCard"', "window: the second class owns its own block")
+        eq(file_context.source,untouched.common.source,"match: Card reuses same complete source")
+        local expected = {
+            {kind="dialog",name="",class_key="Boss:Normal",slot=1},
+            {kind="card",name="",class_key="Boss:Normal",slot=2},
+            {kind="card",name="Inline",class_key="Boss:Normal",slot=3},
+            {kind="card",name="HardCard",class_key="Boss:Hard",slot=1},
+        }
+        local previous_last = 0
+        for i,wanted in ipairs(expected) do
+            local unit,entry = untouched.units[i],untouched.entries[i]
+            local ctx = unit.context;local desc = ctx.descriptor
+            eq(entry.unit,unit,"match: source-ordered entry retains its unit")
+            eq(file_context.units[i],unit,"match: layout consumes accepted unit identity")
+            eq(untouched.by_key[unit.key],entry,"match: discovery key resolves exact entry")
+            eq(entry.context.adapter.file,file_context,"match: shared owner file context")
+            eq(entry.context.adapter.unit,ctx,"match: original private unit context")
+            eq(entry.context.common,untouched.common,"match: one full common")
+            eq(desc.unit,unit,"context: layout retains the same descriptor owner")
+            eq(desc.kind,wanted.kind,"context: constructor kind")
+            eq(desc.name,wanted.name,"context: source order and name")
+            eq(ctx.class_key,wanted.class_key,"context: registration class")
+            eq(ctx.slot,wanted.slot,"context: registration slot")
+            eq(#ctx.placements,1,"context: one registration occurrence")
+            eq(file_context.by_class[wanted.class_key].layout[wanted.slot],desc,
+                "context: layout uses the original single-card descriptor")
+            eq(unit.unit_ref,nil,"context: syntax unit is not a captured live unit")
+            eq(ctx.class_ref,nil,"context: layout grants no actual Class provider")
+            local visible={};for _,name in ipairs(desc.locals) do visible[name]=true end
+            for _,name in ipairs({"counter","absent","disabled"}) do
+                eq(visible[name],true,"context: full lexical visibility retains "..name)
+            end
+            for _,node in pairs(desc.callback_syntax) do
+                eq(Source.Owns(untouched.common.source,node),true,"context: callback belongs to full source")
+            end
+            eq(#unit.source_ranges,1,"window: one contiguous constructor block")
+            eq(unit.source_ranges[1].first>previous_last,true,"window: ordered disjoint blocks")
+            previous_last=unit.source_ranges[1].last
+            local span=new:sub(unit.source_ranges[1].first,unit.source_ranges[1].last)
+            contains(span,"_tmp_sc = boss.","window: starts at the constructor")
+            eq(span:find(" = Class(boss)",1,true),nil,"window: excludes Class setup")
+            eq(span:find(".cards = {}",1,true),nil,"window: excludes class list initialization")
+        end
+        local normal,hard = untouched.entries[3],untouched.entries[4]
+        local ctx=normal.unit.context
+        local callbacks={};for name in pairs(ctx.descriptor.callbacks) do callbacks[#callbacks+1]=name end
+        table.sort(callbacks)
+        eq(table.concat(callbacks,","),"before,frame,init,render","context: exact Inline callback set")
+        eq(#file_context.by_class["Boss:Normal"].layout,3,"context: dialog and both cards retain slots")
+        local range=normal.unit.source_ranges[1];local span=new:sub(range.first,range.last)
+        contains(span,'boss.card.New("Inline"',"window: owns only the Inline constructor")
+        contains(span,'table.insert(_editor_class["Boss:Normal"].cards, _tmp_sc)',"window: includes own registration")
+        eq(span:find("_other_init",1,true),nil,"window: stops before the independent assignment")
+        eq(span:find("table.insert(_sc_table",1,true),nil,"window: does not jump across unknown syntax")
+        eq(range.last<hard.unit.source_ranges[1].first,true,"window: never swallows the next card")
+        contains(new:sub(hard.unit.source_ranges[1].first,hard.unit.source_ranges[1].last),
+            '"Boss:Hard", "HardCard"',"window: contiguous practice registration stays with its card")
 
         local claims = {}
-        for _, claim in ipairs(untouched.claims) do
-            claims[claim.kind .. "|" .. claim.key] = claim.unit_key
-            check(untouched.by_key[claim.unit_key] ~= nil, "claim: owner unit exists")
+        for _,claim in ipairs(untouched.claims) do
+            claims[claim.kind.."|"..claim.key]=claim.unit_key
+            check(untouched.by_key[claim.unit_key]~=nil,"claim: exact owner unit exists")
         end
-        eq(#untouched.claims, 10, "claims: constructor + callbacks per combat slot")
-        eq(claims["constructor|Boss:Normal:2"], "card:Boss:Normal", "claim: constructor")
-        eq(claims["callback|Boss:Normal:2:init"], "card:Boss:Normal", "claim: slot 2 init")
-        eq(claims["callback|Boss:Normal:1:init"], nil, "claim: dialogs are not claimed")
-        for _, name in ipairs({ "before", "frame", "init", "render" }) do
-            eq(claims["callback|Boss:Normal:3:" .. name], "card:Boss:Normal",
-                "claim: slot 3 " .. name)
+        eq(#untouched.claims,12,"claims: four constructors and eight callback declarations")
+        for _,unit in ipairs(untouched.units) do
+            eq(claims["constructor|"..unit.key],unit.key,"claim: constructor belongs to one block")
+            for name in pairs(unit.context.descriptor.callbacks) do
+                eq(claims["callback|"..unit.key..":"..name],unit.key,"claim: callback belongs to its block")
+            end
         end
-        eq(claims["constructor|Boss:Hard:1"], "card:Boss:Hard", "claim: second class constructor")
-        eq(claims["callback|Boss:Hard:1:frame"], "card:Boss:Hard", "claim: second class callback")
+        eq(claims["callback|"..untouched.units[1].key..":init"],untouched.units[1].key,
+            "claim: dialog declaration is syntax coverage, not combat publication authority")
 
         ------------------------------------------------------------------------
         -- fail-whole-file policy
@@ -236,34 +256,50 @@ function M.run()
             '_tmp_sc = boss.card.New("Bad", 1, 2, 3, 100, {}, false)',
             'function _tmp_sc:bogus() end',
             'table.insert(_editor_class["Boss:Bad"].cards, _tmp_sc)',
-        }, "\n"), "an unparseable card class fails the file", "unsupported")
-        eq(bad.unit_key, "Boss:Bad", "a parse failure names the class")
+        }, "\n"), "an unsupported callback refuses the complete file", "unsupported")
+        eq(bad.file,"Test_Boss.lua","callback refusal retains the physical file")
+        contains(bad.message,"unsupported card callback: bogus","callback refusal retains the concrete reason")
         reject(table.concat({
             '_editor_class["Boss:Syntax"] = Class(boss)',
             '_editor_class["Boss:Syntax"].cards = {}',
             'this is not lua',
         }, "\n"), "a syntax error fails the file", "compile", "analyze")
-        reject(table.concat({
+        local interleaved=assert(discover(table.concat({
             '_editor_class["A"] = Class(boss)',
             '_editor_class["A"].cards = {}',
             '_editor_class["B"] = Class(boss)',
             '_editor_class["B"].cards = {}',
             '_editor_class["A"].cards = {}',
-        }, "\n"), "an interleaved rebuild is ambiguous", "ambiguous")
+        },"\n")))
+        eq(#interleaved.units,0,"interleaved empty list setup creates no card unit")
+        eq(#interleaved.adapter_contexts.card.classes,2,"interleaved lists retain two private layouts")
+        eq(#interleaved.adapter_contexts.card.by_class.A.layout,0,"A uses its final source-order list")
+        eq(#interleaved.adapter_contexts.card.by_class.B.layout,0,"B keeps its independent list")
         reject('_editor_class[""].cards = {}', "an empty class key is rejected", "unsupported")
+        local detached=reject(table.concat({
+            '_editor_class["A"].cards = {}',
+            '_tmp_sc = boss.card.New("A",1,2,3,100)',
+            'local unrelated = 1',
+            'function _tmp_sc:init() end',
+            'table.insert(_editor_class["A"].cards,_tmp_sc)',
+        },"\n"),"callback outside a contiguous card block refuses the complete file","unsupported")
+        contains(detached.message,"outside a matched single-card definition","detached callback reason")
         local no_lists = assert(discover("G = 1"))
         eq(#no_lists.units, 0, "a file without card lists is an empty success")
-        local _,no_input=Card.Match(nil,{})
-        eq(no_input.code,"unsupported","Match needs complete shared source")
-        eq(no_input.phase,"analyze","incomplete source rejected at input boundary")
-        local facts=assert(Source.Build("G = 1"))
-        local _,no_common=Card.Match(facts,{})
-        eq(no_common.code,"ownership","Match needs original common.source")
-        eq(no_common.phase,"match","common source mismatch is owner boundary")
+        local _,no_input=FileMatch.Discover(registry,nil,{file="Test_Boss.lua"})
+        eq(no_input.code,"unsupported","public boundary needs complete shared source")
+        eq(no_input.phase,"analyze","incomplete source rejected before matching")
+        local facts=assert(Source.Build("G = 1"));local common={file="Test_Boss.lua"}
+        local supplied=assert(FileMatch.Discover(registry,facts,common))
+        eq(supplied.common.source,facts,"public boundary supplies authoritative common.source")
+        eq(common.source,nil,"public boundary leaves the caller's common table unchanged")
+        local _,no_common=FileMatch.Discover(registry,facts,{file="Test_Boss.lua",source={}})
+        eq(no_common.code,"ownership","explicit common.source cannot disagree")
+        eq(no_common.phase,"analyze","source identity checked at public input boundary")
         local other=assert(Source.Build("G = 1"))
-        local _,foreign=Card.Match(facts,{source=other})
+        local _,foreign=FileMatch.Discover(registry,facts,{file="Test_Boss.lua",source=other})
         eq(foreign.code,"ownership","same bytes cannot replace source identity")
-        local _,raw_source=Card.Match("G = 1",{source=facts})
+        local _,raw_source=FileMatch.Discover(registry,"G = 1",{file="Test_Boss.lua"})
         eq(raw_source.code,"unsupported","raw text does not replace complete source")
 
         ------------------------------------------------------------------------
@@ -286,53 +322,63 @@ function M.run()
             if ran and snapshot then
                 eq(snapshot.common.source,facts,"match reuse: exact source object")
                 eq(snapshot.adapter_contexts.card.source,facts,"match reuse: owner retains same facts")
-                eq(#snapshot.units,2,"match reuse: complete class set retained")
-                eq(#snapshot.claims,10,"match reuse: complete claims retained")
+                eq(#snapshot.units,4,"match reuse: complete constructor set retained")
+                eq(#snapshot.claims,12,"match reuse: complete syntax claims retained")
             end
         end
 
         ------------------------------------------------------------------------
-        -- Refusal and throw keep Card's class diagnostic without a partial result.
+        -- Both actual owner seams refuse the whole file, without error coercion.
         ------------------------------------------------------------------------
         do
             local facts=assert(Source.Build(new))
-            local read=CardCallbacks.Read
+            local match,layout=CardCallbacks.Match,CardCallbacks.Layout
             local metamethods=0
             local hostile=setmetatable({},{__tostring=function() metamethods=metamethods+1;error("unsafe diagnostic") end})
-            for _,fault in ipairs({"refuse-string","throw-string","refuse-object","throw-object"}) do
-                local seen={}
-                CardCallbacks.Read=function(input,class_key)
-                    eq(input,facts,"layout fault: exact complete source")
-                    seen[#seen+1]=class_key
-                    if class_key~="Boss:Hard" then return read(input,class_key) end
-                    if fault=="throw-string" then error("layout fixture throw") end
-                    if fault=="throw-object" then error(hostile) end
-                    if fault=="refuse-string" then return nil,"layout fixture refusal" end
-                    return nil,hostile
-                end
-                local ran,result,problem=pcall(FileMatch.Discover,registry,facts,{file="Test_Boss.lua"})
-                CardCallbacks.Read=read
-                check(ran,"layout fault: exceptions contained")
-                eq(result,nil,"layout fault: earlier successful class cannot escape as partial snapshot")
-                if ran and problem then
-                    eq(problem.code,"unsupported","layout fault: refusal category")
-                    eq(problem.phase,"match","layout fault: owner phase")
-                    eq(problem.file,"Test_Boss.lua","layout fault: physical file retained")
-                    eq(problem.unit_key,"Boss:Hard","layout fault: failing class retained")
-                    contains(problem.message,"card parse failed:","layout fault: parse diagnostic category")
-                    if fault=="refuse-string" then contains(problem.message,"layout fixture refusal","layout refusal reason")
-                    elseif fault=="throw-string" then contains(problem.message,"layout fixture throw","layout throw reason")
-                    else contains(problem.message,"non-string callback layout error","opaque layout reason") end
-                else check(false,"layout fault: structured failure required") end
-                eq(table.concat(seen,","),"Boss:Normal,Boss:Hard","layout fault: class boundary retained")
+            local function fault(mode,seam)
+                if mode=="throw-string" then error(seam.." fixture throw") end
+                if mode=="throw-object" then error(hostile,0) end
+                if mode=="refuse-string" then return nil,seam.." fixture refusal" end
+                return nil,hostile
             end
-            eq(metamethods,0,"layout fault: diagnostic never coerces hostile errors")
+            for _,seam in ipairs({"match","layout"}) do
+                for _,mode in ipairs({"refuse-string","throw-string","refuse-object","throw-object"}) do
+                    local seen,layout_calls={},0
+                    CardCallbacks.Match=function(cursor,input)
+                        eq(input,facts,"fault: Match keeps exact complete source")
+                        local desc,reason=match(cursor,input)
+                        if not desc then return nil,reason end
+                        seen[#seen+1]=desc.kind..":"..desc.name
+                        if seam=="match" and desc.name=="HardCard" then return fault(mode,seam) end
+                        return desc
+                    end
+                    CardCallbacks.Layout=function(input,units)
+                        layout_calls=layout_calls+1
+                        eq(input,facts,"fault: Layout keeps exact complete source")
+                        eq(#units,4,"fault: Layout receives every accepted single-card unit")
+                        local context,reason=layout(input,units)
+                        assert(context,reason)
+                        if seam=="layout" then return fault(mode,seam) end
+                        return context
+                    end
+                    local ran,result,problem=pcall(FileMatch.Discover,registry,facts,{file="Test_Boss.lua"})
+                    CardCallbacks.Match,CardCallbacks.Layout=match,layout
+                    check(ran,"fault: exceptions contained at "..seam)
+                    eq(result,nil,"fault: earlier accepted units cannot escape as a partial snapshot")
+                    if ran and problem then
+                        eq(problem.code,"unsupported","fault: refusal category")
+                        eq(problem.phase,"match","fault: discovery phase retained")
+                        eq(problem.file,"Test_Boss.lua","fault: physical file retained")
+                        if mode=="refuse-string" then contains(problem.message,seam.." fixture refusal","explicit refusal reason")
+                        elseif mode=="throw-string" then contains(problem.message,seam.." fixture throw","thrown reason")
+                        else eq(problem.message,"non-string error (table)","opaque error has a safe diagnostic") end
+                    else check(false,"fault: structured failure required") end
+                    eq(table.concat(seen,","),"dialog:,card:,card:Inline,card:HardCard","fault: all four source blocks were reached")
+                    eq(layout_calls,seam=="layout" and 1 or 0,"fault: exact failure boundary")
+                end
+            end
+            eq(metamethods,0,"fault: diagnostics never coerce hostile errors")
         end
-        eq(card_news,0,"all matching: no card constructor execution")
-        eq(class_news,0,"all matching: no class construction")
-        eq(side_effects,0,"all matching: no top-level effects")
-        eq(_editor_class,nil,"all matching: no live registry created")
-        eq(_sc_table,nil,"all matching: no practice registry created")
 
         ------------------------------------------------------------------------
         -- real generated file (skipped when the runtime mod is absent)
@@ -343,21 +389,33 @@ function M.run()
                 local body = f:read("*a")
                 f:close()
                 local snapshot_real = assert(discover(body, { file = "DiMS_Stage1_Boss.lua" }))
-                eq(#snapshot_real.units, 8, "real file: every card-list class has a unit")
-                eq(snapshot_real.adapter_contexts.card.classes, 8, "real file: file context count")
+                eq(#snapshot_real.units, 38, "real file: 22 card and 16 dialog constructor blocks")
+                eq(#snapshot_real.adapter_contexts.card.classes, 8, "real file: eight private class layouts")
+                local kinds={card=0,dialog=0}
                 local previous_last = 0
                 for _, real in ipairs(snapshot_real.units) do
                     eq(real.carrier, "card", "real file: card carrier")
-                    eq(real.context.binding_complete, false, "real file: no binding-safety claim")
-                    eq(#real.source_ranges, 1, "real file: one dense window")
+                    eq(real.unit_ref,nil,"real file: source discovery grants no live ownership")
+                    local desc=real.context.descriptor
+                    kinds[desc.kind]=(kinds[desc.kind] or 0)+1
+                    eq(desc.unit,real,"real file: layout retains accepted unit identity")
+                    eq(#real.source_ranges, 1, "real file: one contiguous constructor block")
                     eq(real.source_ranges[1].first > previous_last, true,
                         "real file: windows are ordered and disjoint")
                     previous_last = real.source_ranges[1].last
                     check(snapshot_real.by_key[real.key] ~= nil, "real file: key resolves")
                 end
-                eq(#snapshot_real.claims > 0, true, "real file: combat slots are claimed")
+                eq(kinds.card,22,"real file: exact card constructor count")
+                eq(kinds.dialog,16,"real file: exact dialog constructor count")
+                eq(#snapshot_real.claims > 0, true, "real file: declarations have syntax claims")
             end
         end
+        eq(card_news,0,"all matching: no card constructor execution")
+        eq(dialog_news,0,"all matching: no dialog constructor execution")
+        eq(class_news,0,"all matching: no class construction")
+        eq(side_effects,0,"all matching: no top-level effects")
+        eq(_editor_class,nil,"all matching: no live registry created")
+        eq(_sc_table,nil,"all matching: no practice registry created")
     end, debug.traceback)
 
     for _, key in ipairs(GLOBALS) do _G[key] = saved[key] end

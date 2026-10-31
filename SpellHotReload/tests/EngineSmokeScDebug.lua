@@ -105,8 +105,18 @@ local function capture_debug_binding(Binding, Card)
     if state.file_name == nil then
         local file_name, source = find_generated_file(current.class_key)
         if file_name == nil then return nil, tostring(source) end
-        local layout, lerr = Card.Read(source, current.class_key)
-        if layout == nil then return nil, "layout: " .. tostring(lerr) end
+        local Driver=require("SpellHotReload.Pipeline.Driver")
+        local FileMatch=require("SpellHotReload.Pipeline.FileMatch")
+        local driver=Driver.New()
+        assert(driver:RegisterDiscovery(require("SpellHotReload.Adapters.Local.Local")))
+        assert(driver:RegisterDiscovery(require("SpellHotReload.Adapters.Class.Class")))
+        assert(driver:RegisterDiscovery(Card))
+        local discovery,why=driver:Discover(file_name,source,{})
+        if not discovery then return nil,"layout: "..tostring(why and why.message) end
+        local context=assert(FileMatch.ForOwner(discovery.snapshot,Card,source))
+        local row=context.by_class[current.class_key]
+        if not row then return nil,"layout: class has no matched card list" end
+        local layout=row.layout
         local selectable = {}
         for i, entry in ipairs(layout) do
             if entry.kind == "card" and entry.callbacks.init ~= nil then selectable[i] = true end
@@ -184,7 +194,7 @@ local function install()
     lstg.FileManager.CreateDirectory(output_root)
     local View = require("SpellHotReload.UI.View")
     local Binding = require("SpellHotReload.Adapters.Card.PracticeBinding")
-    local Card = require("SpellHotReload.Adapters.Card.CardCallbacks")
+    local Card = require("SpellHotReload.Adapters.Card.Card")
     local live = assert(View.plugin, "plugin view not initialized")
     captured_source = function(file_name)
         local entry = live:GetLoad(file_name)

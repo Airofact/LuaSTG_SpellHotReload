@@ -12,7 +12,10 @@ function M.run(opts)
     local Local=require("SpellHotReload.Adapters.Local.Local")
     local Files=require("SpellHotReload.Pipeline.FileVersions")
     local Source=require("SpellHotReload.Source.FileAnalysis")
-    local Load=require("SpellHotReload.Load.AnchorLoad")
+    local Load=require("SpellHotReload.Adapters.Class.ClassLoad")
+    local ClassAdapter=require("SpellHotReload.Adapters.Class.Class")
+    local ClassFixture=require("SpellHotReload.tests.ClassFixture")
+    local FileMatch=require("SpellHotReload.Pipeline.FileMatch")
     local Anchor=require("SpellHotReload.Load.Anchor")
     local Compose=require("SpellHotReload.Source.Compose")
     local Guard=require("SpellHotReload.Apply.CommitCheck")
@@ -28,7 +31,8 @@ function M.run(opts)
     local capture_ownership=Card.CaptureOwnership
     local card_guard,card_reads=Cards.Guard,Cards.Reads
     local check_file,check_publications=Target.CheckFileDiscovery,Reconcile.CheckPublications
-    local globals,keys={},{"boss","_editor_class","_tmp_sc","_ownership_runs"}
+    local globals,keys={},{"_ownership_runs"}
+    local environment
     for _,key in ipairs(keys) do globals[key]=rawget(_G,key) end
     local get,set,join,id=debug.getupvalue,debug.setupvalue,debug.upvaluejoin,debug.upvalueid
     local saved_jit=rawget(_G,"jit")
@@ -50,9 +54,10 @@ function M.run(opts)
         for _,name in ipairs(names) do a[name]=function() end;b[name]=function() end end
         local classes={K={cards={placeholder,a,b}},L={cards={other}}}
         local descriptor={kind="card",callbacks={init=true}}
-        local match={units={
-            {key="card:K",context={class_key="K",layout={{kind="other"},descriptor,descriptor}}},
-            {key="card:L",context={class_key="L",layout={descriptor}}},
+        -- Private raw-metadata input only; never adopted as source/publication.
+        local match={classes={
+            {class_key="K",layout={{kind="other"},descriptor,descriptor}},
+            {class_key="L",layout={descriptor}},
         }}
         local entry={file="Owners_Boss.lua"}
         return match,classes,entry,a,b,other,placeholder
@@ -61,6 +66,7 @@ function M.run(opts)
     local source=table.concat({
         "local state=4","local function helper() return state+1 end",
         "_ownership_runs=_ownership_runs+1",
+        "_editor_class['K']=Class(boss)","_editor_class['L']=Class(boss)",
         "_editor_class['K'].cards={boss.move.New(0,0,1)}",
         "_tmp_sc=boss.card.New('A',1,2,3,100)",
         "function _tmp_sc:init() return helper() end",
@@ -96,17 +102,21 @@ function M.run(opts)
         do local state=88
             for _,name in ipairs(names) do defaults[name]=function() return state end end
         end
-        _ownership_runs=0;_editor_class={K={},L={}}
-        boss={card={New=function(name)
+        if environment then environment:Restore() end
+        environment=ClassFixture.Install()
+        _ownership_runs=0
+        boss.card={_default_card=defaults,New=function(name)
             local card={name=name,is_combat=true}
             for cb,fn in next,defaults do card[cb]=fn end
             return card
-        end},move={New=function() return {is_combat=false} end}}
+        end}
+        boss.move={New=function() return {is_combat=false} end}
         serial=serial+1
         local sid="CardOwnershipSpec:"..serial
         local entry=must(Load.Capture(source,{name="Owners_Boss.lua"}))
         must(entry.reloadable,entry.reason);entry.file="Owners_Boss.lua"
         local f=must(Planning.Capture(entry,sid,_editor_class,defaults))
+        environment:FinishLoad()
         f.defaults=defaults
         local c=f.capture
         local l={capture=c,snapshot=c.snapshot,entry=entry,session_id=sid,
@@ -173,11 +183,17 @@ function M.run(opts)
         }) do
             match,classes,entry=direct();case[2](match,classes)
             local v,err=Card.CaptureOwnership(match,classes,entry)
-            refusal(v,err,"capture","ownership",case[3],"card:K",case[1])
+            refusal(v,err,"capture","ownership",case[3],"K",case[1])
         end
         eq(mutations,0,"first-load metadata policy pure")
         local p,capture,live=real_fixture()
+        eq(#capture.snapshot.owners,3,"one complete Local/Class/Card capture")
+        local class_group=group(capture,ClassAdapter)
+        eq(#class_group.units,2,"both source classes have observed first-load owners")
         local base=group(capture,Card).state
+        check(base.units[keya].unit_ref~=base.units[keyb].unit_ref,"same-class cards own distinct public units")
+        eq(base.units[keya].class_ref,class_group.state.by_key.K.unit_ref,"A keeps its actual Class provider")
+        eq(base.units[keyb].class_ref,class_group.state.by_key.K.unit_ref,"B keeps the same actual Class provider")
         local evidence=select(2,Files.Owner(capture,Card)).evidence
         local location=fragment(p,Card).card_runtime.file_location
         eq(Target.CheckFileDiscovery(location,capture,live),true,"all captured classes and placeholders checked")
@@ -303,12 +319,17 @@ function M.run(opts)
         v,e=Guard.Check(sealed,capture,live)
         refusal(v,e,"commit","ownership","duplicate Card callback action",nil,"duplicate semantic publication")
 
-        -- Native class authority must still reject an unknown physical slot
-        -- independently of Card's finer selected-member map.
+        -- Common raw authority validates each actual card unit independently
+        -- of Card's selected callback map.
         p,capture,live=real_fixture();sealed=must(seal(p))
         sealed.journal[1].key="name";sealed.journal[1].before="A"
         v,e=Guard.Mechanical(sealed,capture,live)
         refusal(v,e,"commit","ownership","raw write authority or preimage changed",nil,"native raw permission")
+        p,capture,live=real_fixture();sealed=must(seal(p))
+        sealed.journal[1].target=live.classes.K.cards[3]
+        sealed.journal[1].before=live.classes.K.cards[3].frame
+        v,e=Guard.Mechanical(sealed,capture,live)
+        refusal(v,e,"commit","ownership","raw write authority or preimage changed",nil,"same-class foreign card permission")
 
         local joining=source:gsub("return state%+1","return state+2")
             :gsub("return helper%(%) end","return helper()+3 end",1)
@@ -351,11 +372,16 @@ function M.run(opts)
         local called=0
         Card.CaptureOwnership=function(m,classes,entry)
             called=called+1;eq(classes,live.classes,"capture registry delegation")
-            eq(entry,live.entry,"capture entry delegation");eq(#m.units,2,"complete class match delegated")
+            eq(entry,live.entry,"capture entry delegation")
+            eq(m,must(FileMatch.ForOwner(live.fixture.initial_discovery.snapshot,Card,entry.source)),
+                "capture consumes the same complete shared match")
+            eq(#m.units,3,"three single-card syntax units delegated")
+            eq(#m.classes,2,"both private class layouts delegated")
             return nil,marker
         end
-        local local_piece=must(Local.Capture(live.entry,live.session_id))
-        v,e=Card.Capture(live.entry,live.session_id,local_piece,live.classes,live.fixture.defaults)
+        local local_piece=group(capture,Local);local class_piece=group(capture,ClassAdapter)
+        v,e=Card.Capture(live.entry,live.session_id,local_piece,class_piece,live.classes,live.fixture.defaults,
+            live.fixture.initial_discovery.snapshot)
         eq(called,1,"real Card contribution consumes capture policy")
         eq(v,nil,"capture policy stops contribution");eq(e,marker,"capture policy error identity")
 
@@ -416,7 +442,11 @@ function M.run(opts)
         marker={phase="commit",code="ownership",message="native authority refused",file=live.entry.file}
         checks.Mechanical=function(s,c,l)
             called=called+1;check(s.operation~=p.operation,"kernel checks sealed operation")
-            check(s.fragments[2]~=fragment(p,Card),"kernel checks sealed owner fragment")
+            local sealed_card
+            for _,owner_fragment in ipairs(s.fragments) do
+                if owner_fragment.owner==Card then sealed_card=owner_fragment end
+            end
+            check(sealed_card~=nil and sealed_card~=fragment(p,Card),"kernel checks sealed owner fragment")
             eq(s.base_snapshot,before,"kernel actual common base")
             return nil,marker
         end
@@ -436,6 +466,7 @@ function M.run(opts)
     end)
     restore()
     for _,tx in ipairs(controllers) do tx:Release() end
+    if environment then environment:Restore() end
     for _,key in ipairs(keys) do rawset(_G,key,globals[key]) end
     if not ok then failed=failed+1;failures[#failures+1]="unexpected: "..(type(problem)=="string" and problem or "non-string error") end
     print(string.format("CardOwnershipSpec: %d passed / %d failed",passed,failed))

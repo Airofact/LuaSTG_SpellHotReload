@@ -25,54 +25,50 @@ end
 local function append(map,name,value)
     local list=map[name] or {};map[name]=list;list[#list+1]=value
 end
-function M.Match(source)
-    local valid,err=Source.Validate(source)
-    if not valid then return nil,err end
+-- Assemble lexical support once from accepted local units and complete facts.
+-- This does not discover units or run a second source analyzer.
+function M.Build(source,units,mappings)
+    local valid,err=Source.Validate(source);if not valid then return nil,err end
     local a=source.analysis;local Tree=a.syntax
     local policy,why=Anchor.Policy(source)
     if not policy then return fail(why or "capture policy unavailable") end
     local projection={kind=M.Kind,version=M.Version,source=source,policy=policy,
         definitions={},writes={},blocked={},initializers={}}
-    -- Group existing IR nodes ONCE. Selected preparation never rebuilds this.
-    local by_statement={}
-    for _,node in ipairs(a.nodes) do
-        local syntax=node.syntax
-        local bucket=by_statement[syntax] or {};by_statement[syntax]=bucket
-        bucket[#bucket+1]=node
+    local matched={}
+    for _,mapping in ipairs(mappings) do
+        for index=mapping.first,mapping.last do matched[index]=true end
     end
     for index,statement in ipairs(a.statements) do
-        local ast=statement.syntax
-        local definition=Tree.Match(ast,"definition")
-        local target=definition and definition.target
-        local name=Tree.Identifier(target)
-        if name and not definition.method
-            and (Tree.Match(ast,"declaration") or Source.ResolveLocal(source,index,name)) then
-            local fn,self_visible=definition.fn,definition.self_visible
-            local names,nerr=Source.Visible(source,fn)
-            if not names then return nil,nerr end
-            local form=definition.self_visible and "statement" or "expression"
-            append(projection.definitions,name,{source=source,name=name,
-                statement=index,syntax=fn,visible=names,form=form,self_visible=self_visible,
-                signature=form=="statement" and Tree.Signature(ast)
-                    or Tree.FunctionSignature(fn),
-                source_range=statement.source_range})
-        end
-        for _,node in ipairs(by_statement[ast] or {}) do
-            if node.carrier=="effect" and node.kind=="block" then
-                for _,ref in ipairs(Tree.Names(ast)) do
-                    local name=Tree.Identifier(ref)
-                    if Source.ResolveLocal(source,index,name) then projection.blocked[name]=true end
-                end
+        if matched[index] then
+            local ast=statement.syntax;local definition=Tree.Match(ast,"definition")
+            local name=definition and Tree.Identifier(definition.target)
+            if name and not definition.method then
+                local fn,self_visible=definition.fn,definition.self_visible
+                local names,nerr=Source.Visible(source,fn);if not names then return nil,nerr end
+                local form=self_visible and "statement" or "expression"
+                append(projection.definitions,name,{source=source,name=name,statement=index,
+                    syntax=fn,visible=names,form=form,self_visible=self_visible,
+                    signature=form=="statement" and Tree.Signature(ast) or Tree.FunctionSignature(fn),
+                    source_range=statement.source_range})
             end
-            local name=(node.carrier=="local" and node.kind~="declare"
-                or node.carrier=="global" and Source.ResolveLocal(source,index,node.name)) and node.name
-            if name then append(projection.writes,name,index) end
         end
+    end
+    -- These facts include statements consumed by Class/Spell or left unmatched.
+    for _,node in ipairs(a.nodes) do
+        local index=node.statement
+        if node.carrier=="effect" and node.kind=="block" then
+            for _,ref in ipairs(Tree.Names(node.syntax)) do
+                local name=Tree.Identifier(ref)
+                if Source.ResolveLocal(source,index,name) then projection.blocked[name]=true end
+            end
+        end
+        local name=(node.carrier=="local" and node.kind~="declare"
+            or node.carrier=="global" and Source.ResolveLocal(source,index,node.name)) and node.name
+        if name then append(projection.writes,name,index) end
     end
     for _,declaration in ipairs(Source.Declarations(source)) do
         if projection.definitions[declaration.name]==nil then
-            projection.initializers[declaration.name]=Tree.Signature(
-                a.statements[declaration.statement].syntax)
+            projection.initializers[declaration.name]=Tree.Signature(a.statements[declaration.statement].syntax)
         end
     end
     return projection

@@ -4,7 +4,7 @@ local Definitions=require("SpellHotReload.Adapters.Local.LocalDefinitions")
 local Versions=require("SpellHotReload.Adapters.Local.LocalVersions")
 local Files=require("SpellHotReload.Pipeline.FileVersions")
 local Source=require("SpellHotReload.Source.FileAnalysis")
-local M={Id="local",ContractVersion=5}
+local M={Id="local",ContractVersion=7}
 local VIEW="SpellHotReload.Local.View"
 local function plain(v) return type(v)=="table" and getmetatable(v)==nil end
 local function dense(v)
@@ -20,35 +20,54 @@ local function fail(phase,code,message,context)
     return nil,{phase=phase,code=code,message=message,
         file=plain(context) and plain(context.common) and context.common.file}
 end
-function M.Match(source,common)
-    local projection,err=Definitions.Match(source)
-    if not projection then return nil,err end
-    local units,claims,by_name,declarations={},{},{},{}
-    for _,declaration in ipairs(Source.Declarations(source)) do
-        local ranges=declarations[declaration.name] or {};declarations[declaration.name]=ranges
-        ranges[#ranges+1]=declaration.source_range
+-- Match declarations/writes at the shared position; reuse the same candidate
+-- binding unit when its definition follows a separate declaration.
+function M.Match(cursor,common,accepted)
+    local source=common.source;local row=cursor:Peek();local index=cursor:Mark()
+    local Tree=source.analysis.syntax;local ast=row.syntax
+    local declaration=Tree.Match(ast,"declaration")
+    local names,seen={},{}
+    local function add(name)
+        if name and not seen[name] then names[#names+1]=name;seen[name]=true end
     end
-    for _,name in ipairs(Source.DeclaredNames(source)) do
-        local ranges=declarations[name]
-        for _,definition in ipairs(projection.definitions[name] or {}) do
-            if definition.source_range~=ranges[1] then ranges[#ranges+1]=definition.source_range end
+    if declaration then
+        for _,binding in ipairs(declaration.names) do add(Tree.Identifier(binding)) end
+    else
+        local assignment=Tree.Match(ast,"assignment")
+        local definition=Tree.Match(ast,"definition")
+        local targets=assignment and assignment.targets or definition and {definition.target} or {}
+        for _,target in ipairs(targets) do
+            local name=Tree.Identifier(target)
+            if name and Source.ResolveLocal(source,index,name) then add(name) end
         end
-        local key="local:"..name
-        local unit={key=key,carrier="local",source_ranges=ranges,context={name=name}}
-        units[#units+1]=unit;by_name[name]=unit
-        claims[#claims+1]={kind="declaration",key=key,unit_key=key}
     end
-    return {units=units,claims=claims,context={source=source,projection=projection,by_name=by_name}}
+    if #names==0 then return nil end
+    local units,claims,mappings={},{},{}
+    for _,name in ipairs(names) do
+        local key="local:"..name;local unit=accepted[key]
+        if not unit then
+            unit={key=key,carrier="local",context={name=name}}
+            claims[#claims+1]={kind="declaration",key=key,unit_key=key}
+        end
+        units[#units+1]=unit;mappings[#mappings+1]={unit=unit,first=index,last=index}
+    end
+    cursor:Take()
+    return {units=units,claims=claims,mappings=mappings}
 end
--- Only the synchronous genuine-first-load caller may invoke this contributor.
--- Runtime hooks never seed missing history from the current live instance.
-function M.Capture(entry,session_id)
+function M.BuildContext(source,units,mappings)
+    local projection,err=Definitions.Build(source,units,mappings)
+    if not projection then return nil,err end
+    local by_name={};for _,unit in ipairs(units) do by_name[unit.context.name]=unit end
+    return {source=source,units=units,projection=projection,by_name=by_name}
+end
+-- Only the synchronous genuine-first-load caller may contribute a new owner.
+function M.Capture(entry,session_id,snapshot)
     if not plain(entry) or not Source.Validate(entry.source) then
         return fail("versions","ownership","genuine first-load entry required")
     end
-    local loaded,err=Definitions.Match(entry.source)
-    if not loaded then return nil,err end
-    return Versions.Seed(M,entry,session_id,loaded)
+    local context,err=require("SpellHotReload.Pipeline.FileMatch").ForOwner(snapshot,M,entry.source)
+    if not context then return fail("versions","ownership",err) end
+    return Versions.Seed(M,entry,session_id,context.projection)
 end
 function M.Reconcile(previous,candidate,context)
     local file_context=context.adapter

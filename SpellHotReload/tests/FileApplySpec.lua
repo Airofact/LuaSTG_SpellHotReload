@@ -13,7 +13,9 @@ function M.run()
     package.loaded[modules[2]]={}
     package.loaded[modules[3]]=nil;package.loaded[modules[4]]=nil
     local Plugin=require("SpellHotReload.Runtime.Plugin")
-    local Load=require("SpellHotReload.Load.AnchorLoad")
+    local Load=require("SpellHotReload.Adapters.Class.ClassLoad")
+    local ClassFixture=require("SpellHotReload.tests.ClassFixture")
+    local environment
     local Anchor=require("SpellHotReload.Load.Anchor")
     local Binding=require("SpellHotReload.Adapters.Card.PracticeBinding")
     local Restart=require("SpellHotReload.Runtime.CurrentRestart")
@@ -38,6 +40,7 @@ function M.run()
     for _,name in ipairs(callbacks) do defaults[name]=function() return "default" end end
     local FILE="Apply_Boss.lua"
     local SIDE=table.concat({
+        "_editor_class['L']=Class(boss)",
         "_editor_class['L'].cards={}",
         "_tmp_sc=boss.card.New('C',1,2,3,100)",
         "function _tmp_sc:init(n) return helper(n)+300 end",
@@ -50,6 +53,7 @@ function M.run()
         "local function idle(n) return n+1000 end",
         "local function setstate(v) state=v end",
         "_va_runs=_va_runs+1","_va_api={set=setstate}",
+        "_editor_class['K']=Class(boss)",
         "_editor_class['K'].cards={boss.move.New(0,0,1)}",
         "_tmp_sc=boss.card.New('A',1,2,3,100)",
         "function _tmp_sc:init(n) return helper(n) end",
@@ -159,11 +163,13 @@ function M.run()
         eq(f.p._completion_checks[FILE],nil,label.." no completion witness")
         return result
     end
-    local function fixture(first_source)
+    local function fixture(first_source,expect_refusal)
         debug.getupvalue,debug.setupvalue,debug.upvaluejoin=get,set,join
         _G.jit=saved.jit;Card.Reconcile=old_reconcile;Versions.Resolve=old_resolve
         _va_runs=0
         _G.IsValid=function() return true end
+        if environment then environment:Restore() end
+        environment=ClassFixture.Install()
         _editor_class={K={},L={}}
         _sc_table={}
         ext={replay={IsReplay=function() return current and current.replay==true end}}
@@ -171,16 +177,20 @@ function M.run()
         local f={constructions=0,restarts=0,reads=0,discoveries=0,creates=0,classes=_editor_class,
             kernels=0,freezes=0,receipts={},discovered={}}
         current=f
-        boss={card={_default_card=defaults,New=function(name)
+        boss.card={_default_card=defaults,New=function(name)
             f.constructions=f.constructions+1
             local c={name=name,is_combat=true}
             for _,cb in ipairs(callbacks) do c[cb]=defaults[cb] end
             return c
-        end},move={New=function() return {is_combat=false} end}}
+        end}
+        boss.move={New=function() return {is_combat=false} end}
         f.p=Plugin.New();plugins[#plugins+1]=f.p
         f.entry=must(Load.Capture(first_source or SOURCE,{name=FILE}))
         must(f.p:AdoptLoad(FILE,f.entry))
-        f.capture=must(f.p:GetVersions(FILE))
+        environment:FinishLoad()
+        f.capture,f.capture_error=f.p:GetVersions(FILE)
+        if expect_refusal then return f end
+        must(f.capture,f.capture_error)
         must(Files.Validate(f.capture));eq(#f.capture.snapshot.owners,3,"real complete owner capture")
         f.p._activated,f.p._supported=true,true
         f.p._activation_attempted=true
@@ -441,7 +451,9 @@ function M.run()
             f=fixture();candidate(f,(EDIT:gsub(SIDE:gsub("([^%w])","%%%1"),added.."\n"..SIDE)))
             result=f.p:ApplyFileFromUI(FILE)
             has(result,"definitions committed; no restart","new suffix leaves proved cards publishable")
-            pending(f,"identity","card:K:4","new source slot explicit")
+            local discovery=f.prepared.driver_prepared.discovery
+            local descriptor=assert(require("SpellHotReload.Pipeline.FileMatch").ForOwner(discovery.snapshot,Card,discovery.source)).by_class.K.layout[4]
+            pending(f,"identity",descriptor.unit.key..":4","new source slot explicit")
             eq(#f.classes.K.cards,3,"new slot not installed")
             eq(f.constructions,3,"new constructor not called")
             -- Same narrow generated format as the real 4B export: drop tuple,
@@ -550,7 +562,7 @@ function M.run()
             eq(f.classes.K.cards[2]:init(1),15,"unsafe-source old callback uses actual shared update")
             eq(f.classes.K.cards[3]:init(1),215,"later safe wrapper published")
             -- Unbounded top-level edits never become safe by absent graph edges.
-            for _,bytes in ipairs({EDIT.."\nUNREPLAYED_UNKNOWN()",
+            for input_index,bytes in ipairs({EDIT.."\nUNREPLAYED_UNKNOWN()",
                 (EDIT:gsub("_va_runs=_va_runs%+1","_va_runs=_va_runs+2")),
                 (EDIT:gsub("'B',1,2,3,100","'B',1,2,3,unproved()")),
                 (EDIT:gsub("'B',1,2,3,100","'B',1,2,3,1-2")),
@@ -559,13 +571,30 @@ function M.run()
                 (EDIT:gsub("'B',1,2,3,100","'B',1,2,3,100,{x=1,0,0},false")),
                 (EDIT:gsub("'B',1,2,3,100","'B',1,2,3,100,{{1},0,0},false")),
                 EDIT.."\ntable.insert(_sc_table,{'K',unproved(),_tmp_sc,#_editor_class['K'].cards,false})",
-                (EDIT:gsub("return helper%(n%)%+200 end","return helper(n)+200 end UNREPLAYED_UNKNOWN()")),
-                EDIT.."\n_editor_class['N']=Class(boss)"}) do
+                (EDIT:gsub("return helper%(n%)%+200 end","return helper(n)+200 end UNREPLAYED_UNKNOWN()"))}) do
                 f=fixture();base=f.capture.snapshot;candidate(f,bytes)
-                has(f.p:ApplyFileFromUI(FILE),"unbounded top-level change","unknown effect refused")
-                unchanged(f,base,"unbounded effect")
+                has(f.p:ApplyFileFromUI(FILE),"unbounded top-level change","unknown effect refused "..input_index)
+                unchanged(f,base,"unbounded effect "..input_index)
                 eq(_va_runs,1,"unknown initializer not executed")
             end
+            -- A recognized new Class constructor is retained structure, not an
+            -- unbounded effect or permission to execute/adopt the new class.
+            f=fixture();base=f.capture.snapshot
+            local class_count=#all_class
+            candidate(f,EDIT.."\n_editor_class['N']=Class(boss)")
+            has(f.p:ApplyFileFromUI(FILE),"definitions committed; no restart","independent safe roots survive pending Class construction")
+            eq(f.kernels,1,"one common transaction for existing definitions")
+            eq(f.receipts[1].receipt.changed,true,"pending constructor accompanies a real changed receipt")
+            eq(f.capture.snapshot.revision,base.revision+1,"one actual installed revision")
+            eq(f.classes.N,nil,"candidate Class constructor never executes")
+            eq(#all_class,class_count,"no new class registration")
+            local class_group=must(Files.Owner(f.capture,require("SpellHotReload.Adapters.Class.Class")))
+            eq(class_group.state.by_key.N,nil,"candidate-only Class has no captured provider")
+            local structure=pending(f,"structure",nil,"new Class remains pending")
+            eq(f.disk:sub(structure.first,structure.last),"_editor_class['N']=Class(boss)","exact pending constructor bytes")
+            eq(f.classes.K.cards[3]:init(1),215,"existing callback and shared helper really published")
+            eq(_va_runs,1,"pending constructor does not replay source effects")
+            eq(f.restarts,0,"file publication never restarts")
             -- Pending new class creation cannot be assumed by a changed body.
             f=fixture();base=f.capture.snapshot
             local unavailable=SOURCE:gsub("function _tmp_sc:init%(n%) return helper%(n%) end",
@@ -634,15 +663,15 @@ function M.run()
             local function generated(text)
                 local decorated=text:gsub("function _tmp_sc:init",
                     "_tmp_sc.perform=false\nfunction _tmp_sc:init")
-                return table.concat({
-                    "-- Generated by LuaSTG Editor Sharp",
+                local header=table.concat({
+                    "_editor_class['K']=Class(boss)",
                     "_editor_class['K'].name='Generated Boss'",
                     "_editor_class['K']._bg=nil",
                     "_editor_class['K'].difficulty='Normal'",
                     "_editor_class['K'].init=function(self) end",
                     "_editor_class['K'].render=function(self) end",
-                    decorated,
                 },"\n")
+                return (decorated:gsub("_editor_class%['K'%]=Class%(boss%)",header,1))
             end
             local generated_frame,generated_deleted=generated(with_frame),generated(SOURCE)
             f=fixture(generated_frame)
@@ -682,17 +711,17 @@ function M.run()
             -- An unchanged direct Card setter is still unmodeled, even when it
             -- writes back the same value during the genuine initial load.
             local old_setter="\n_editor_class['K'].cards[2].frame=_editor_class['K'].cards[2].frame"
-            f=fixture(generated_frame..old_setter);base=f.capture.snapshot
-            candidate(f,generated_deleted..old_setter)
-            current_refused(f,"deletion lacks exact owner/version evidence",
-                "unchanged unknown Card setter is not whitelisted")
-            source_reason(f,key..":frame","unmodeled callback/registry write","unchanged setter hazard retained")
-            unchanged(f,base,"generated old Card setter")
+            f=fixture(generated_frame..old_setter,true)
+            eq(f.capture,nil,"unbounded first-load registry write cannot establish a Class provider")
+            eq(f.capture_error.code,"ownership","unbounded first-load write ownership refusal")
+            has(f.capture_error.message,"original Class provider unavailable","unchanged raw setter is not whitelisted at capture")
+            eq(f.kernels,0,"unbounded first-load setter grants no publication")
+            eq(f.constructions,3,"rejection does not replay card construction")
             -- Class implementations stay under the full effect policy.
             f=fixture(generated_frame);base=f.capture.snapshot
             candidate(f,(generated_deleted:gsub("init=function%(self%) end",
                 "init=function(self) return 123 end")))
-            has(f.p:ApplyFromUI(),"unbounded top-level change","changed generated class implementation refused")
+            has(f.p:ApplyFromUI(),"class identity, structure or support changed","changed readonly Class blocks its Card dependency")
             unchanged(f,base,"generated class change")
             -- Metadata is tied to the actual selected constructor, not just
             -- the same number of perform tokens somewhere in the file.
@@ -729,14 +758,16 @@ function M.run()
             local function shadowed(text)
                 return text:gsub("local state=4","local _editor_class=_editor_class\nlocal state=4",1)
             end
-            f=fixture((shadowed(generated_frame)));base=f.capture.snapshot
-            candidate(f,(shadowed(generated_deleted)))
-            current_refused(f,"generated wiring name is shadowed","Current deletion rejects shadowed registry")
-            unchanged(f,base,"shadowed deletion")
+            f=fixture(shadowed(generated_frame),true)
+            eq(f.capture,nil,"shadowed first load cannot invent a Class provider")
+            eq(f.capture_error.code,"ownership","shadowed first-load ownership refusal")
+            has(f.capture_error.message,"original Class provider unavailable","shadowed source rejected at real capture boundary")
+            eq(f.kernels,0,"shadowed load has no publication")
+            eq(f.constructions,3,"only the genuine initial card construction ran")
             f=fixture(generated_frame);base=f.capture.snapshot
             candidate(f,(generated_deleted:gsub("_editor_class%['K'%].name='Generated Boss'\n","")..
                 "\n_editor_class['K'].name='Generated Boss'"))
-            has(f.p:ApplyFromUI(),"unbounded top-level change","unchanged class assignment reorder refused")
+            has(f.p:ApplyFromUI(),"class identity, structure or support changed","Class member reordering blocks its Card dependency")
             unchanged(f,base,"reordered class source")
             for _,effect in ipairs({
                 "\n_editor_class[class_key].frame=function(self) end",
@@ -748,7 +779,7 @@ function M.run()
                 f=fixture(generated_frame);base=f.capture.snapshot
                 candidate(f,generated_deleted..effect)
                 if effect:find("render,_tmp_sc",1,true) then
-                    has(f.p:ApplyFromUI(),"unsupported multi-target","multi-target rejected during match")
+                    has(f.p:ApplyFromUI(),"multi-target or multi-value card assignment","multi-target inside the final card block rejected during match")
                     eq(f.kernels,0,"multi-target never reaches transaction")
                     eq(f.freezes,0,"multi-target never freezes restart")
                 else
@@ -898,6 +929,7 @@ function M.run()
         old_restart,old_create,old_reconcile,old_freeze,old_resolve
     for _,p in ipairs(plugins) do p:Release() end
     for _,name in ipairs(modules) do package.loaded[name]=loaded[name] end
+    if environment then environment:Restore() end
     for _,name in ipairs(globals) do rawset(_G,name,saved[name]) end
     if not ok then failed=failed+1;failures[#failures+1]="unexpected error: "..tostring(problem) end
     print(string.format("FileApplySpec: %d passed / %d failed",passed,failed))

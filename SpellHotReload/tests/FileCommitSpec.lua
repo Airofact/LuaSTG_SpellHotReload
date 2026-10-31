@@ -3,6 +3,17 @@
 local M={}
 local serial=0
 function M.run()
+    local Driver=require("SpellHotReload.Pipeline.Driver")
+    local FileMatch=require("SpellHotReload.Pipeline.FileMatch")
+    local LocalOwner=require("SpellHotReload.Adapters.Local.Local")
+    local function matched_projection(source)
+        local driver=Driver.New();assert(driver:RegisterDiscovery(LocalOwner))
+        local discovery,err=driver:Discover("LocalFixture_Boss.lua",source,{})
+        if not discovery then return nil,err end
+        local context,why=FileMatch.ForOwner(discovery.snapshot,LocalOwner,source)
+        if not context then return nil,why end
+        return context.projection,discovery.snapshot
+    end
     local Source=require("SpellHotReload.Source.FileAnalysis")
     local Load=require("SpellHotReload.Load.AnchorLoad")
     local Versions=require("SpellHotReload.Pipeline.FileVersions")
@@ -100,7 +111,7 @@ function M.run()
         else fragments[2].read_set[1]={owner=owners[2],unit_ref=ref_callback,target=target,key="callback",value=nil} end
         reads(fragments[2],spare.fn,ref_callback,nil,"spare")
         if mode~="noop" then
-            local projection=must(Definitions.Match(facts))
+            local projection=must(matched_projection(facts))
             local descriptor=projection.definitions.helper[1]
             local probe=must(Plan.Probe(facts,descriptor))
             local hp=must(Compose.Plan(probe.created,entry))

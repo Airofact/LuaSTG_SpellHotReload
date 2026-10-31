@@ -1,25 +1,25 @@
--- Card domain/version core plus real two-owner FileCommit fixture. This is NOT
--- coverage of production Card's five hooks, Target/Current or FileApply remainder.
+-- Card domain/version core plus one real three-owner publication case.
+-- This is not complete hook, Target/Current or FileApply remainder coverage.
 local M={}
 local serial=0
 function M.run()
     local Cards=require("SpellHotReload.Adapters.Card.CardVersions")
     local Card=require("SpellHotReload.Adapters.Card.Card")
-    local Callbacks=require("SpellHotReload.Adapters.Card.CardCallbacks")
     local Source=require("SpellHotReload.Source.FileAnalysis")
     local Local=require("SpellHotReload.Adapters.Local.Local")
-    local LV=require("SpellHotReload.Adapters.Local.LocalVersions")
-    local Definitions=require("SpellHotReload.Adapters.Local.LocalDefinitions")
+    local ClassAdapter=require("SpellHotReload.Adapters.Class.Class")
+    local ClassFixture=require("SpellHotReload.tests.ClassFixture")
+    local Fixture=require("SpellHotReload.tests.PlanningFixture")
+    local FileMatch=require("SpellHotReload.Pipeline.FileMatch")
     local Files=require("SpellHotReload.Pipeline.FileVersions")
     local Tx=require("SpellHotReload.Apply.FileCommit")
-    local Load=require("SpellHotReload.Load.AnchorLoad")
-    local Anchor=require("SpellHotReload.Load.Anchor")
+    local Load=require("SpellHotReload.Adapters.Class.ClassLoad")
     local Compose=require("SpellHotReload.Source.Compose")
-    local Tree=require("SpellHotReload.Source.SyntaxTree")
     local IR=require("SpellHotReload.Source.TopLevelIR")
     local names={"before","init","frame","render","beforedel","del","after"}
     local defaults={};for _,name in ipairs(names) do defaults[name]=function() end end
-    local saved={boss=rawget(_G,"boss"),_editor_class=rawget(_G,"_editor_class"),_tmp_sc=rawget(_G,"_tmp_sc")}
+    local environment
+    local controllers={}
     local passed,failed,failures=0,0,{}
     local function eq(a,b,label) assert(rawequal(a,b),label);passed=passed+1 end
     local function must(v,e) assert(v,type(e)=="table" and e.message or e);return v end
@@ -31,50 +31,52 @@ function M.run()
         "local counter=3",
         "local function helper(n) return counter+n end",
         "local function unused() return 100 end",
+        "_editor_class['K']=Class(boss)",
         "_editor_class['K'].cards={}",
         "_tmp_sc=boss.card.New('A',1,2,3,100)",
         "function _tmp_sc:init(n) return helper(n) end",
         "_tmp_sc.frame=function(self) return counter end",
         "table.insert(_editor_class['K'].cards,_tmp_sc)",
     },"\n")
-    -- Match is deliberately source/layout only, not a fake production Card hook.
-    local function match(s)
-        local result={units={}}
-        for _,class in ipairs(must(Card.CardLists(s.analysis))) do
-            result.units[#result.units+1]=Card.Unit(class.class_key,class.ranges,must(Callbacks.Read(s,class.class_key)))
-        end
-        return result
+    -- Consume the completed shared discovery, never rebuild retired class units.
+    local function match(f,s)
+        local snapshot=must(f.driver:Discover(f.entry.file,s)).snapshot
+        local card_context=must(FileMatch.ForOwner(snapshot,Card,s))
+        local local_context=must(FileMatch.ForOwner(snapshot,Local,s))
+        return card_context,local_context.projection
     end
     local function fixture()
         serial=serial+1
-        _G.boss={card={New=function(name)
+        if environment then environment:Restore() end
+        environment=ClassFixture.Install()
+        boss.card={_default_card=defaults,New=function(name)
             local card={name=name,is_combat=true}
             for _,cb in ipairs(names) do card[cb]=defaults[cb] end
             return card
-        end}}
-        _G._editor_class={K={},Q={}}
+        end}
+        -- A real external Class, not an invented owner for this source.
+        _editor_class.Q=Class(boss)
         local entry=must(Load.Capture(source,{name="CardCore_Boss.lua"}));entry.file="CardCore_Boss.lua"
         local session="CardCoreSpec:"..serial
-        local local_piece=must(Local.Capture(entry,session))
-        local loaded=match(entry.source);local owners,ownership={},{}
-        for _,unit in ipairs(loaded.units) do
-            local key=unit.context.class_key;local class=_editor_class[key];local slots={}
-            for slot,card in ipairs(class.cards) do
-                slots[slot]=card
-                local callbacks={};for _,cb in ipairs(names) do callbacks[cb]=rawget(card,cb) end
-                owners[#owners+1]={class_key=key,slot=slot,card=card,callbacks=callbacks}
-            end
-            ownership[#ownership+1]={class_key=key,class=class,list=class.cards,slots=slots}
+        local f=must(Fixture.Capture(entry,session,_editor_class,defaults))
+        environment:FinishLoad()
+        f.classes=_editor_class;f.key="card:1:K:1"
+        local lp=must(Files.Owner(f.capture,Local));local cp=must(Files.Owner(f.capture,Card))
+        for _,name in ipairs(Source.DeclaredNames(entry.source)) do
+            local binding=Source.Declaration(entry.source,name)
+            local ref=lp.state.by_name[name].unit_ref
+            eq(Local.CapturedProvider(lp,binding),ref,"first-load provider uses canonical declaration")
+            eq(cp.state.providers[name],ref,"Card retains the canonical Local provider ref")
         end
-        local card_piece=must(Cards.Seed(Card,entry,session,loaded,owners,ownership,_editor_class,defaults,function(binding)
-            eq(Source.Declaration(entry.source,binding.name),binding,"first-load provider uses canonical Binding")
-            return local_piece.state.by_name[binding.name].unit_ref
-        end))
-        local capture=must(Files.Capture(entry,session,{local_piece,card_piece}))
-        return {entry=entry,session=session,capture=capture,classes=_editor_class,key="card:1:K:1"}
+        local parent=must(Files.Owner(f.capture,ClassAdapter))
+        eq(cp.state.units[f.key].class_ref,parent.state.by_key.K.unit_ref,"Card retains its genuine Class provider")
+        eq(parent.state.by_key.Q,nil,"external Class is not owned by this source")
+        eq(#cp.units,1,"one actual card contributes one public unit")
+        return f
     end
     local function view(f,content,deleted)
-        local s=must(Source.Build(content));local m=match(s);local desc=m.units[1].context.layout[1]
+        local s=must(Source.Build(content));local m,projection=match(f,s)
+        local desc=m.by_class.K.layout[1]
         local group,initial=Files.Owner(f.capture,Card);local rows={}
         if deleted then
             local previous
@@ -84,7 +86,7 @@ function M.run()
             rows[previous.key]=row
         end
         local locations={by_key={[f.key]={key=f.key,status="located",descriptor=desc,candidate_slot=1}}}
-        return must(Cards.Compare(group,initial.evidence,s,m,locations,rows)),s
+        return must(Cards.Compare(group,initial.evidence,s,m,locations,rows)),s,projection
     end
     local function no_scan(body)
         local create,analyze=Compose.Create,IR.Analyze
@@ -102,7 +104,7 @@ function M.run()
     case("source reuse and callback-only preparation",function()
         local f=fixture();local v=view(f,source)
         no_scan(function(count)
-            local m=match(v.source);eq(#m.units,1,"layout consumes existing public syntax")
+            local m=match(f,v.source);eq(#m.units,1,"layout consumes existing public syntax")
             local r=must(Cards.Resolve(v,f.key))
             eq(r.changed,false,"unchanged callbacks use actual records")
             eq(count(),0,"unchanged callback selection creates no closures")
@@ -133,7 +135,7 @@ function M.run()
     case("selected Local AST constraints and root pruning",function()
         local f=fixture()
         local candidate=source:gsub("return counter%+n","return _editor_class['K']"):gsub("'A',1,2","'A',2,2")
-        local v,s=view(f,candidate);local projection=must(Definitions.Match(s))
+        local v,s,projection=view(f,candidate)
         local node=projection.definitions.helper[1].syntax
         local independent=projection.definitions.unused[1].syntax
         local d=dependencies(v,{{source=s,node=node,root_id="bad"},{source=s,node=independent,root_id="good"}},
@@ -146,12 +148,12 @@ function M.run()
         for _,body in ipairs({"_tmp_sc","_sc_table","_editor_class[n]","_editor_class['missing']",
             "function() return _tmp_sc end"}) do
             local content=source:gsub("return counter%+n","return "..body):gsub("'A',1,2","'A',2,2")
-            v,s=view(f,content);projection=must(Definitions.Match(s))
+            v,s,projection=view(f,content)
             local bad=dependencies(v,{{source=s,node=projection.definitions.helper[1].syntax,root_id="bad"}},{{root_id="bad"}})
             eq(#must(Cards.Constraints(v,bad)).blocked_roots,1,"full helper AST rejects pending/dynamic/missing generated binding")
         end
-        v,s=view(f,(source:gsub("return counter%+n","return _editor_class['Q']")))
-        projection=must(Definitions.Match(s));d=dependencies(v,{{source=s,node=projection.definitions.helper[1].syntax,root_id="safe"}},{{root_id="safe"}})
+        v,s,projection=view(f,(source:gsub("return counter%+n","return _editor_class['Q']")))
+        d=dependencies(v,{{source=s,node=projection.definitions.helper[1].syntax,root_id="safe"}},{{root_id="safe"}})
         c=must(Cards.Constraints(v,d));local reads=must(Cards.RetainConstraints(v,c,d))
         eq(#reads,1,"safe helper produces one Card-owned registry proof")
         local p=must(Cards.Prepare(v,{},reads));eq(Cards.Guard(p,f.classes),true,"no-write Card still guards helper registry")
@@ -183,11 +185,12 @@ function M.run()
         eq(facts.binding_reads[#s.analysis.statements],nil,"ordinary delayed function body is not a top-level read")
         local content=source:gsub("'A',1,2,3,100","'A',1,2,3,100,{1,2,3}")
         v,s=view(f,content);facts=must(Cards.Facts(s,v.match,{}))
-        local constructor=5
+        local constructor=v.match.by_class.K.layout[1].first
         eq(facts.excluded[constructor],true,"literal sixth three-number array is safe wiring")
         v,s=view(f,(content:gsub("{1,2,3}","{1,2,3+4}",1)));facts=must(Cards.Facts(s,v.match,{}))
         eq(facts.excluded[constructor],nil,"arithmetic sixth argument is not safe wiring")
-        eq(Cards.Facts(s,{units={}},{}).excluded[6],nil,"unowned callback statement is never masked")
+        local callback=must(Source.Site(s,v.match.by_class.K.layout[1].callback_syntax.init)).statement
+        eq(Cards.Facts(s,{units={}},{}).excluded[callback],nil,"unowned callback statement is never masked")
     end)
     case("optional deletion and complete actual callback read set",function()
         local f=fixture();local content=source:gsub("_tmp_sc.frame=function%(self%) return counter end\n","")
@@ -205,37 +208,43 @@ function M.run()
     end)
     case("helper-only real common transaction and derived observation",function()
         local f=fixture();local content=source:gsub("counter%+n","counter+n+10")
-        local v,s=view(f,content);local lg,li=Files.Owner(f.capture,Local)
-        local lv=must(LV.Compare(lg,li.evidence,must(Definitions.Match(s))))
-        must(LV.Resolve(lv,"helper"));local lp=must(LV.Prepare(lv,{"counter","helper"}))
-        local cp=must(Cards.Prepare(v,{},{}));local old_card=v.base_group
-        local operation={capture=f.capture,base_snapshot=f.capture.snapshot,source=s,file=f.entry.file,
-            entry=f.entry,anchor=f.entry.anchor,loaded_source=source,session_id=f.session,generation=1,mode="file"}
-        local function fragment(owner,base,plan,next_group,guard)
-            return {operation=operation,owner=owner,base_group=base,proposed_group=next_group,
-                joins=plan.joins,cell_writes=plan.cell_writes,raw_writes=plan.raw_writes,
-                read_set=plan.read_set,capture_reads=plan.capture_reads,owner_guard=guard}
+        local s=must(Source.Build(content));local base=f.capture.snapshot
+        local old_card=must(Files.Owner(f.capture,Card));local old_class=must(Files.Owner(f.capture,ClassAdapter))
+        local function live() return {capture=f.capture,snapshot=f.capture.snapshot,entry=f.entry,
+            classes=f.classes,session_id=f.session,content=content,generation=1} end
+        local discovery=must(Fixture.Discover(f,s,1))
+        local prepared=must(Fixture.Prepare(f,discovery,{mode="file",root_ids={f.key},refresh=live}))
+        eq(#prepared.entries,3,"complete actual Local/Class/Card preparation")
+        eq(prepared.entries[2].owner,ClassAdapter,"Class has its real common fragment")
+        eq(#prepared.entries[2].fragment.raw_writes,0,"unchanged Class grants no new raw write")
+        local tx=must(Tx.New(f.session));controllers[#controllers+1]=tx
+        local receipt=must(Fixture.Publish(f,prepared,tx))
+        eq(#receipt.owner_deltas,3,"one common transaction contains all three actual owners")
+        for _,delta in ipairs(receipt.owner_deltas) do
+            eq(delta.changed,delta.owner==Local,"only Local actually installs a definition")
         end
-        local fragments={fragment(Local,lg,lp,must(LV.Next(lp)),function() return LV.Reads(lv)~=nil end),
-            fragment(Card,old_card,cp,must(Cards.Next(cp)),function() return Cards.Guard(cp,f.classes) end)}
-        local tx=must(Tx.New(f.session));local live={capture=f.capture,snapshot=f.capture.snapshot,
-            entry=f.entry,session_id=f.session,content=content,generation=1}
-        local ran,receipt,err=tx:Run(function(token) return tx:Commit(token,operation,fragments,live) end)
-        must(tx:Release());eq(ran,true,"one real common transaction returned normally");must(receipt,err)
         eq(receipt.changed,true,"helper-only transaction has real changed receipt")
         eq(f.capture.snapshot.revision,1,"common file revision advances once")
         local card_group=must(Files.Owner(f.capture,Card))
         eq(card_group,old_card,"helper-only publication retains exact Card group")
+        eq(Files.Owner(f.capture,ClassAdapter),old_class,"helper-only publication retains exact Class group")
         eq(card_group.state.units[f.key].definition_version,1,"Card source version stays v1")
         eq(card_group.state.units[f.key].callbacks.init.definition_version,1,"callback source version stays v1")
         local observations=must(Cards.Observations(f.capture.snapshot,card_group,f.key))
-        eq(#observations,1,"ordinary evolving state is not a function observation")
-        eq(observations[1].name,"helper","display names actual direct provider")
-        eq(observations[1].version,2,"display derives helper v2 from common actual snapshot")
+        eq(#observations,2,"only actual Class and helper definitions are observed")
+        local observed={};for _,row in ipairs(observations) do observed[row.name]=row.version end
+        eq(observed["class:K"],1,"display includes the actual owning Class v1")
+        eq(observed.helper,2,"display derives helper v2 from common actual snapshot")
+        eq(observed.counter,nil,"ordinary evolving state is not a definition observation")
+        eq(observed["class:Q"],nil,"external Class has no invented ownership record")
         eq(f.classes.K.cards[1]:init(2),15,"retained actual callback observes newly installed helper")
-        eq(Cards.Observations(operation.base_snapshot,card_group,f.key)[1].version,1,"old snapshot display remains v1")
+        local previous={}
+        for _,row in ipairs(must(Cards.Observations(base,card_group,f.key))) do previous[row.name]=row.version end
+        eq(previous.helper,1,"old snapshot display remains helper v1")
+        eq(previous["class:K"],1,"old snapshot retains genuine Class v1")
     end)
-    _G.boss=saved.boss;_G._editor_class=saved._editor_class;_G._tmp_sc=saved._tmp_sc
+    for _,tx in ipairs(controllers) do eq(tx:Release(),true,"common controller released") end
+    if environment then environment:Restore() end
     return {passed=passed,failed=failed,failures=failures}
 end
 return M

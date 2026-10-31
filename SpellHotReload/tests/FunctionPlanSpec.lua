@@ -12,6 +12,17 @@ local Files = require("SpellHotReload.Pipeline.FileVersions")
 local M = {}
 
 function M.run()
+    local Driver=require("SpellHotReload.Pipeline.Driver")
+    local FileMatch=require("SpellHotReload.Pipeline.FileMatch")
+    local LocalOwner=require("SpellHotReload.Adapters.Local.Local")
+    local function matched_projection(source)
+        local driver=Driver.New();assert(driver:RegisterDiscovery(LocalOwner))
+        local discovery,err=driver:Discover("LocalFixture_Boss.lua",source,{})
+        if not discovery then return nil,err end
+        local context,why=FileMatch.ForOwner(discovery.snapshot,LocalOwner,source)
+        if not context then return nil,why end
+        return context.projection,discovery.snapshot
+    end
     local passed, failed, failures = 0, 0, {}
     local function check(value, label)
         if value then passed = passed + 1 else
@@ -24,8 +35,8 @@ function M.run()
     -- is no legacy preparer, scan cache, source-scope guard or version ledger here.
     local function prepare(content,entry,names,published)
         local facts,err=Source.Build(content);if not facts then return nil,err end
-        local loaded,why=Definitions.Match(entry.source);if not loaded then return nil,why end
-        local candidate,problem=Definitions.Match(facts);if not candidate then return nil,problem end
+        local loaded,why=matched_projection(entry.source);if not loaded then return nil,why end
+        local candidate,problem=matched_projection(facts);if not candidate then return nil,problem end
         local pair,perr=Definitions.Pair(loaded,candidate);if not pair then return nil,perr end
         local selected,serr=Definitions.Select(pair,names);if not selected then return nil,serr end
         return Plan.Prepare(facts,entry,selected,published)
@@ -128,17 +139,18 @@ function M.run()
         local Syntax=require("SpellHotReload.Source.SyntaxTree")
         local facts=must(Source.Build(candidate))
         local original_analysis=facts.analysis
-        local loaded=must(Definitions.Match(entry.source))
-        local projection=must(Definitions.Match(facts))
+        local loaded=must(matched_projection(entry.source))
+        local projection=must(matched_projection(facts))
         local pair=must(Definitions.Pair(loaded,projection))
         local helper_defs=must(Definitions.Select(pair,{"helper"}))
         local probe=must(Plan.Probe(facts,helper_defs[1]))
         local probes={[helper_defs[1]]=probe}
         -- A genuine Local-only common scope, not a production two-owner fixture.
-        local contribution=must(Local.Capture(entry,"FunctionPlan:scope"))
+        local _,initial_snapshot=matched_projection(entry.source)
+        local contribution=must(Local.Capture(entry,"FunctionPlan:scope",initial_snapshot))
         local common=must(Files.Capture(entry,"FunctionPlan:scope",{contribution}))
         local slots={{Source,"Build"},{IR,"Analyze"},
-            {Syntax,"Parse"},{Definitions,"Match"}}
+            {Syntax,"Parse"},{Definitions,"Build"}}
         local apis,scans={},{}
         for i,slot in ipairs(slots) do
             local index=i;apis[i]=slot[1][slot[2]];scans[i]=0
@@ -208,7 +220,7 @@ function M.run()
         -- A new comparison explicitly constructs a new source. Old probes cannot
         -- cross that source identity even when the bytes and definition match.
         local next_facts=must(Source.Build(candidate))
-        local next_pair=must(Definitions.Pair(loaded,must(Definitions.Match(next_facts))))
+        local next_pair=must(Definitions.Pair(loaded,must(matched_projection(next_facts))))
         local next_defs=must(Definitions.Select(next_pair,{"helper"}))
         check(next_facts~=facts,"new comparison has independent complete facts")
         local bad,why=Plan.Prepare(next_facts,entry,next_defs,published,{[next_defs[1]]=probe})
@@ -260,8 +272,8 @@ function M.run()
                 "error('candidate body executed'); "..case.body)
             check(loadstring(invalid)~=nil,"selected body is host-language valid")
             local bad_facts=must(Source.Build(invalid))
-            local bad_pair=must(Definitions.Pair(must(Definitions.Match(entry.source)),
-                must(Definitions.Match(bad_facts))))
+            local bad_pair=must(Definitions.Pair(must(matched_projection(entry.source)),
+                must(matched_projection(bad_facts))))
             local bad_defs=must(Definitions.Select(bad_pair,{"helper"}))
             local value,why=Plan.Probe(bad_facts,bad_defs[1])
             refusal(value,why,"compile","selected unsupported syntax")
@@ -273,8 +285,8 @@ function M.run()
             local recovered=must(Source.Build(candidate,nil,bad_facts))
             eq(recovered.analysis.syntax.revision.session,bad_facts.analysis.syntax.revision.session,
                 "next valid input reuses the successful native baseline")
-            local recovery_pair=must(Definitions.Pair(must(Definitions.Match(entry.source)),
-                must(Definitions.Match(recovered))))
+            local recovery_pair=must(Definitions.Pair(must(matched_projection(entry.source)),
+                must(matched_projection(recovered))))
             must(Plan.Probe(recovered,must(Definitions.Select(recovery_pair,{"helper"}))[1]))
         end
         local invalid_hidden=source:gsub("local config = { tag = 'old' }",
@@ -340,7 +352,7 @@ function M.run()
         local meta_calls = 0
         local meta = setmetatable({}, { __index=function() meta_calls=meta_calls+1 error("metamethod") end })
         local core_source=must(Source.Build(candidate))
-        local core_pair=must(Definitions.Pair(must(Definitions.Match(entry.source)),must(Definitions.Match(core_source))))
+        local core_pair=must(Definitions.Pair(must(matched_projection(entry.source)),must(matched_projection(core_source))))
         local core_selected=must(Definitions.Select(core_pair,{"helper"}))
         local bad,why=Plan.Prepare(core_source,{},core_selected,published)
         refusal(bad,why,"unsupported","dead entry")

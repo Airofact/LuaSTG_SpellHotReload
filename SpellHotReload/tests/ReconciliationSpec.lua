@@ -7,7 +7,7 @@ function M.run()
     local empty=assert(Source.Build(""))
     local passed=0
     local function eq(a,b,label) assert(a==b,label);passed=passed+1 end
-    local calls,mutations=0,0
+    local calls,mutations,matches,contexts=0,0,0,0
     local function domain(rows,old)
         local units,exports={},{}
         for _,unit in ipairs(old.units) do
@@ -18,8 +18,11 @@ function M.run()
         return {rows=rows,view={},units=units,exports=exports}
     end
     local function adapter(id)
-        return {Id=id,ContractVersion=5,
-            Match=function(a,c) return {units={},claims={},context={}} end,
+        return {Id=id,ContractVersion=7,
+            Match=function() matches=matches+1;return nil end,
+            BuildContext=function(source,units)
+                contexts=contexts+1;return {source=source,units=units}
+            end,
             Reconcile=function(old,candidate,ctx)
                 calls=calls+1
                 eq(ctx.previous,old,"original group passed")
@@ -46,6 +49,8 @@ function M.run()
     local driver=Driver.New();assert(driver:RegisterDiscovery(original))
     local d=assert(driver:DiscoverPublished("A.lua",empty,publication,{candidate_generation=9}))
     eq(calls,1,"zero-match owner still reconciled")
+    eq(matches,0,"empty source never calls Match at EOF")
+    eq(contexts,1,"empty source still builds the original owner context")
     eq(#d.index.list,0,"zero candidate units")
     eq(#d.reconciliation.rows,1,"old-only record retained")
     local r=d.reconciliation.rows[1]
@@ -71,11 +76,11 @@ function M.run()
     eq(failed.problem,"candidate bytes unavailable","read failure distinguished")
     eq(failed.rows[1].result.previous,record,"read failure retains last record")
     original.Match=function() return nil,{code="ambiguous",message="broken layout"} end
-    b,e,failed=driver:DiscoverPublished("A.lua",empty,publication)
+    b,e,failed=driver:DiscoverPublished("A.lua",assert(Source.Build("UNMATCHED()")),publication)
     eq(b,nil,"Match failure is failure");eq(e.code,"ambiguous","Match diagnostic retained")
     eq(failed.problem,"candidate Match failed","Match failure distinguished")
     eq(failed.rows[1].result.status,"unresolved","Match failure never means absence")
-    original.Match=function() return {units={},claims={},context={}} end
+    original.Match=function() return nil end
     local replacement=adapter("a");local other=Driver.New();assert(other:RegisterDiscovery(replacement))
     local replacement_seen
     replacement.Reconcile=function(old)
