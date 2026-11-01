@@ -225,6 +225,44 @@ function M.run()
     local no_range,range_error=Source.ByteRange(empty,empty.analysis.syntax.root)
     eq(no_range,nil,"empty node has no fabricated byte range")
     eq(range_error.code,"unsupported","empty range is explicit")
+    -- Traversal order, empty bodies, reentrancy and eager immediate-child refusal.
+    do
+        local tree=assert(Syntax.Parse("while flag do end; repeat until done; return f(arg)"))
+        local order={};local reentered=false
+        tree.Walk(tree.root,function(n,parent,functions,calls)
+            if tree.Is(n,"name") then
+                local name=tree.Identifier(n)
+                order[#order+1]=name..":"..functions..":"..calls
+                if name=="f" then
+                    tree.Walk(n,function(s,p,fd,cd)
+                        eq(s,n,"reentrant walk keeps node identity")
+                        eq(p,nil,"reentrant walk has its own root parent")
+                        eq(fd,0,"reentrant function depth starts at zero")
+                        eq(cd,0,"reentrant call depth starts at zero")
+                    end)
+                    reentered=true
+                end
+            end
+        end)
+        eq(table.concat(order,","),"flag:0:0,done:0:0,f:0:1,arg:0:1","empty control bodies and call order")
+        eq(reentered,true,"visitor can start an independent walk")
+        local guarded=assert(Syntax.Parse([[return a,'\x41']]))
+        local visits=0
+        guarded.Walk(guarded.root,function(n)
+            visits=visits+1
+            if guarded.Is(n,"return") then return false end
+        end)
+        eq(visits,2,"pruned children are not materialized")
+        local names={}
+        local ok=pcall(guarded.Walk,guarded.root,function(n)
+            if guarded.Is(n,"name") then names[#names+1]=guarded.Identifier(n) end
+        end)
+        eq(ok,false,"value walk still rejects unsupported escape")
+        eq(#names,0,"all immediate children resolve before first child callback")
+        local refs=guarded.Names(guarded.root)
+        eq(#refs,1,"failed value walk preserves opaque reference traversal")
+        eq(guarded.Identifier(refs[1]),"a","reference traversal skips literal decoding")
+    end
     print("SyntaxTreeSpec: "..passed.." passed / 0 failed")
     return {passed=passed,failed=0}
 end

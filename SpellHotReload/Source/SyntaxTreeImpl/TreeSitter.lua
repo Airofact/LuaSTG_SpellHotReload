@@ -18,8 +18,6 @@ local native_roles={chunk='chunk',block='block',identifier='name',['nil']='liter
  assignment_statement='assign',return_statement='return',break_statement='break',do_statement='do',
  while_statement='while',repeat_statement='repeat',if_statement='if'}
 local function check(value,why) if not value then error('syntax: '..why,0) end;return value end
-local function append(a,b) for _,v in ipairs(b) do a[#a+1]=v end;return a end
-local function add(a,b) if b then a[#a+1]=b end;return a end
 local function decode(raw)
  if raw:sub(1,1)=='[' then
   local open=assert(raw:find('[',2,true));local value=raw:sub(open+1,#raw-open)
@@ -95,11 +93,11 @@ function M.Parse(source,previous)
    return e
   end
   local function named(node) return node and parts(node).named or {} end
-  local function fields(node,key) return parts(node).fields[key] or {} end
   local function get(node,key,required)
-   local values=fields(node,key);check(#values<=1,'ambiguous field '..key)
-   if required then check(values[1],'missing field '..key) end
-   return values[1]
+   local values=parts(node).fields[key];check(not values or #values<=1,'ambiguous field '..key)
+   local value=values and values[1]
+   if required then check(value,'missing field '..key) end
+   return value
   end
   local function one(node,kind)
    local found
@@ -162,6 +160,21 @@ function M.Parse(source,previous)
     if entry(p).info.kind=='vararg_expression' then vararg=true else params[#params+1]=resolve(p,true) end
    end
    return {params=params,vararg=vararg,body=resolve(get(value,'body'))},parameters
+  end
+  -- Shared shape checks return nodes directly; public Match owns its result tables.
+  local function unary_parts(value,resolve)
+   local operator
+   for _,child in ipairs(parts(value).parts) do local i=entry(child).info
+    if not i.named and not i.extra then operator=i.kind;break end
+   end
+   check(operator=='not' or operator=='#' or operator=='-','unsupported unary operator')
+   return operator,resolve(get(value,'operand',true))
+  end
+  local function table_field(value,resolve)
+   check(entry(value).info.kind=='field','table field required');resolve(value)
+   local key,label;local native_key=get(value,'name')
+   if native_key then if text(value):sub(1,1)=='[' then key=resolve(native_key) else label=text(native_key) end end
+   return key,label,resolve(get(value,'value',true))
   end
   function s.IsNode(value) return by_node[value]~=nil and not revision.closed end
   function s.SameNode(a,b) return s.IsNode(a) and s.IsNode(b) and Native.Equal(a,b) or false end
@@ -228,20 +241,14 @@ function M.Parse(source,previous)
     return {category=category,value=e.literal,raw=raw}
    end
    elseif pattern=='unary' then if k=='unary' then
-    local operator
-    for _,child in ipairs(parts(value).parts) do local i=entry(child).info
-     if not i.named and not i.extra then operator=i.kind;break end
-    end
-    check(operator=='not' or operator=='#' or operator=='-','unsupported unary operator')
-    return {operator=operator,operand=resolve(get(value,'operand',true))}
+    local operator,operand=unary_parts(value,resolve)
+    return {operator=operator,operand=operand}
    end
    elseif pattern=='table' then if k=='table' then
     local out={}
     for _,f in ipairs(named(value)) do
-     check(entry(f).info.kind=='field','table field required');resolve(f)
-     local key,label;local native_key=get(f,'name')
-     if native_key then if text(f):sub(1,1)=='[' then key=resolve(native_key) else label=text(native_key) end end
-     out[#out+1]={node=f,key=key,name=label,array=key==nil and label==nil,value=resolve(get(f,'value',true))}
+     local key,label,field_value=table_field(f,resolve)
+     out[#out+1]={node=f,key=key,name=label,array=key==nil and label==nil,value=field_value}
     end
     return {fields=out}
    end
@@ -250,51 +257,123 @@ function M.Parse(source,previous)
   end
   function s.Match(value,pattern) return match(value,pattern,node) end
   function s.String(value) local v=s.Match(value,'literal');if v and v.category=='string' then return v.value end end
-  local function children(value,resolve)
+  -- Walk borrows snapshot-owned sequences. Resolve immediate children before
+  -- visiting them, as the former children array did, without retaining an array.
+  local function sequence(value,resolve,binding)
+   if value==nil then return nil end
+   local values=named(value)
+   for _,child in ipairs(values) do resolve(child,binding) end
+   return values
+  end
+  local walk
+  local function walk_list(values,parent,visit,resolve,functions,calls)
+   if values then for _,child in ipairs(values) do walk(child,parent,visit,resolve,functions,calls) end end
+  end
+  walk=function(value,parent,visit,resolve,functions,calls)
+   if value==nil then return end
    local k=kind(value)
-   if k=='chunk' or k=='block' then return s.Statements(value)
-   elseif is_function(value) then
-    local f=function_parts(value,resolve);local out={}
-    if k=='local_function' then add(out,resolve(get(value,'name',true),true))
-    elseif k=='function_statement' then add(out,resolve(get(value,'name',true))) end
-    append(out,f.params);return add(out,f.body)
-   elseif k=='local' then local d=declarations(value,resolve);return append(d.names,d.values)
-   elseif k=='assign' then local a=match(value,'assignment',resolve);return append(a.targets,a.values)
-   elseif k=='member' then return {match(value,'member',resolve).base}
-   elseif k=='index' then local v=match(value,'index',resolve);return {v.base,v.key}
-   elseif k=='call' then local v=match(value,'call',resolve);return append({v.callee},v.args)
-   elseif k=='paren' then return refs(value,nil,resolve)
-   elseif k=='unary' then return {match(value,'unary',resolve).operand}
-   elseif k=='binary' then return {resolve(get(value,'left',true)),resolve(get(value,'right',true))}
-   elseif k=='table' then local out={};for _,f in ipairs(match(value,'table',resolve).fields) do add(out,f.key);add(out,f.value) end;return out
-   elseif k=='return' then return match(value,'return',resolve).values
-   elseif k=='do' then return add({},resolve(get(value,'body')))
-   elseif k=='while' then return add({resolve(get(value,'condition',true))},resolve(get(value,'body')))
-   elseif k=='repeat' then local out=add({},resolve(get(value,'body')));return add(out,resolve(get(value,'condition',true)))
-   elseif k=='for_numeric' or k=='for_generic' then
-    local c=get(value,'clause',true);local out
-    if k=='for_numeric' then out={resolve(get(c,'name',true),true),resolve(get(c,'start',true)),resolve(get(c,'end',true))};add(out,resolve(get(c,'step')))
-    else out=append(refs(one(c,'variable_list'),true,resolve),refs(one(c,'expression_list'),nil,resolve)) end
-    return add(out,resolve(get(value,'body')))
-   elseif k=='if' then
-    local out={resolve(get(value,'condition',true))};add(out,resolve(get(value,'consequence')))
-    for _,alternative in ipairs(fields(value,'alternative')) do
-     if entry(alternative).info.kind=='elseif_statement' then add(out,resolve(get(alternative,'condition',true)));add(out,resolve(get(alternative,'consequence')))
-     else check(entry(alternative).info.kind=='else_statement','if alternative');add(out,resolve(get(alternative,'body'))) end
+   if is_function(value) then functions=functions+1 end
+   if k=='call' then calls=calls+1 end
+   if visit(value,parent,functions,calls)==false then return end
+   if k=='chunk' or k=='block' then
+    local values=named(value)
+    for _,child in ipairs(values) do
+     if entry(child).info.kind~='empty_statement' then entry(child).statement=true;node(child) end
     end
-    return out
+    for _,child in ipairs(values) do
+     if entry(child).info.kind~='empty_statement' then walk(child,value,visit,resolve,functions,calls) end
+    end
+   elseif is_function(value) then
+    local parameters=named(get(value,'parameters',true))
+    for _,p in ipairs(parameters) do if entry(p).info.kind~='vararg_expression' then resolve(p,true) end end
+    local body=resolve(get(value,'body'));local target
+    if k=='local_function' then target=resolve(get(value,'name',true),true)
+    elseif k=='function_statement' then target=resolve(get(value,'name',true)) end
+    walk(target,value,visit,resolve,functions,calls)
+    for _,p in ipairs(parameters) do
+     if entry(p).info.kind~='vararg_expression' then walk(p,value,visit,resolve,functions,calls) end
+    end
+    walk(body,value,visit,resolve,functions,calls)
+   elseif k=='local' or k=='assign' then
+    local variables,values
+    if k=='local' then
+     local p=named(value);check(#p==1,'local declaration shape')
+     if entry(p[1]).info.kind=='assignment_statement' then variables,values=one(p[1],'variable_list'),one(p[1],'expression_list')
+     else variables=p[1];check(entry(variables).info.kind=='variable_list','local variable list') end
+    else variables,values=one(value,'variable_list'),one(value,'expression_list') end
+    variables=sequence(variables,resolve,k=='local' or nil);values=sequence(values,resolve)
+    walk_list(variables,value,visit,resolve,functions,calls);walk_list(values,value,visit,resolve,functions,calls)
+   elseif k=='member' then
+    local base=resolve(get(value,'table',true));get(value,entry(value).info.kind=='method_index_expression' and 'method' or 'field',true)
+    walk(base,value,visit,resolve,functions,calls)
+   elseif k=='index' then
+    local base,key=resolve(get(value,'table',true)),resolve(get(value,'field',true))
+    walk(base,value,visit,resolve,functions,calls);walk(key,value,visit,resolve,functions,calls)
+   elseif k=='call' then
+    local callee=resolve(get(value,'name',true));local args=sequence(get(value,'arguments',true),resolve)
+    walk(callee,value,visit,resolve,functions,calls);walk_list(args,value,visit,resolve,functions,calls)
+   elseif k=='paren' then
+    walk_list(sequence(value,resolve),value,visit,resolve,functions,calls)
+   elseif k=='unary' then
+    local _,operand=unary_parts(value,resolve);walk(operand,value,visit,resolve,functions,calls)
+   elseif k=='binary' then
+    local left,right=resolve(get(value,'left',true)),resolve(get(value,'right',true))
+    walk(left,value,visit,resolve,functions,calls);walk(right,value,visit,resolve,functions,calls)
+   elseif k=='table' then
+    local fields=named(value)
+    for _,field in ipairs(fields) do table_field(field,resolve) end
+    for _,field in ipairs(fields) do
+     local key=get(field,'name')
+     if key and text(field):sub(1,1)=='[' then walk(key,value,visit,resolve,functions,calls) end
+     walk(get(field,'value',true),value,visit,resolve,functions,calls)
+    end
+   elseif k=='return' then
+    local p=named(value);check(#p<=1,'return shape')
+    walk_list(sequence(p[1],resolve),value,visit,resolve,functions,calls)
+   elseif k=='do' then
+    walk(resolve(get(value,'body')),value,visit,resolve,functions,calls)
+   elseif k=='while' or k=='repeat' then
+    local condition,body
+    if k=='while' then condition=resolve(get(value,'condition',true));body=resolve(get(value,'body'))
+    else body=resolve(get(value,'body'));condition=resolve(get(value,'condition',true)) end
+    if k=='while' then
+     walk(condition,value,visit,resolve,functions,calls);walk(body,value,visit,resolve,functions,calls)
+    else
+     walk(body,value,visit,resolve,functions,calls);walk(condition,value,visit,resolve,functions,calls)
+    end
+   elseif k=='for_numeric' or k=='for_generic' then
+    local c=get(value,'clause',true)
+    if k=='for_numeric' then
+     local name,first,last=resolve(get(c,'name',true),true),resolve(get(c,'start',true)),resolve(get(c,'end',true))
+     local step,body=resolve(get(c,'step')),resolve(get(value,'body'))
+     walk(name,value,visit,resolve,functions,calls);walk(first,value,visit,resolve,functions,calls)
+     walk(last,value,visit,resolve,functions,calls);walk(step,value,visit,resolve,functions,calls)
+     walk(body,value,visit,resolve,functions,calls)
+    else
+     local variables=sequence(one(c,'variable_list'),resolve,true);local values=sequence(one(c,'expression_list'),resolve)
+     local body=resolve(get(value,'body'))
+     walk_list(variables,value,visit,resolve,functions,calls);walk_list(values,value,visit,resolve,functions,calls)
+     walk(body,value,visit,resolve,functions,calls)
+    end
+   elseif k=='if' then
+    local condition=resolve(get(value,'condition',true));local body=resolve(get(value,'consequence'))
+    local alternatives=parts(value).fields.alternative
+    if alternatives then for _,alternative in ipairs(alternatives) do
+     if entry(alternative).info.kind=='elseif_statement' then resolve(get(alternative,'condition',true));resolve(get(alternative,'consequence'))
+     else check(entry(alternative).info.kind=='else_statement','if alternative');resolve(get(alternative,'body')) end
+    end end
+    walk(condition,value,visit,resolve,functions,calls);walk(body,value,visit,resolve,functions,calls)
+    if alternatives then for _,alternative in ipairs(alternatives) do
+     if entry(alternative).info.kind=='elseif_statement' then
+      walk(get(alternative,'condition',true),value,visit,resolve,functions,calls)
+      walk(get(alternative,'consequence'),value,visit,resolve,functions,calls)
+     else walk(get(alternative,'body'),value,visit,resolve,functions,calls) end
+    end end
    end
-   return {}
   end
   local function walk_nodes(value,visit,resolve)
    if value==nil then return end;check(type(visit)=='function','visitor required')
-   local function walk(current,parent,functions,calls)
-    if is_function(current) then functions=functions+1 end
-    if kind(current)=='call' then calls=calls+1 end
-    if visit(current,parent,functions,calls)==false then return end
-    for _,child in ipairs(children(current,resolve)) do walk(child,current,functions,calls) end
-   end
-   walk(value,nil,0,0)
+   return walk(value,nil,visit,resolve,0,0)
   end
   function s.Walk(value,visit) return walk_nodes(value,visit,node) end
   -- Names are structural references, including delayed function bodies. The
