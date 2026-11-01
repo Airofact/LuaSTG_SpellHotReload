@@ -210,13 +210,6 @@ function MonitorTab.layout(view)
             local model = plugin:GetCandidateInspection(file_name,current)
             if model then describe_inspection(ImGui,model,file_name)
             else ImGui.TextDisabled("    Not inspected / inspection invalidated; Apply checks independently") end
-            if stable and current and plugin:IsSandboxOk() and not Binding.IsReplay() then
-                if ImGui.Button("Inspect Current##inspect_" .. file_name) then
-                    local result, reason = plugin:InspectCandidate(file_name)
-                    view.last_result = result and ("inspected " .. file_name .. "; not committed")
-                        or ("inspection refused: " .. tostring(reason))
-                end
-            end
 
             -- File publication never restarts the current practice. These are
             -- cheap hints only; the scoped action independently checks all owners.
@@ -229,6 +222,14 @@ function MonitorTab.layout(view)
             ImGui.SameLine()
             if ImGui.Button("Dismiss##dismiss_" .. idx) then
                 plugin:Dismiss(file_name)
+            end
+            ImGui.SameLine()
+            if stable and current and plugin:IsSandboxOk() and not Binding.IsReplay() then
+                if ImGui.Button("Inspect Current##inspect_" .. file_name) then
+                    local result, reason = plugin:InspectCandidate(file_name)
+                    view.last_result = result and ("inspected " .. file_name .. "; not committed")
+                        or ("inspection refused: " .. tostring(reason))
+                end
             end
         end
 
