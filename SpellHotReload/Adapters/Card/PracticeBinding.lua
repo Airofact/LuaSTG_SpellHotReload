@@ -32,7 +32,7 @@ end
 ---Capture the current binding while in the normal Spell Practice stage group.
 ---`slot` stays the engine's live list index (as `_sc_table` records it); the
 ---generated source may rebuild a class list, so textual registration order is
----not used here. CardCallbacks re-reads the loaded source to resolve it.
+---not used here. CardTarget resolves it against Card's complete matched layout.
 ---@return SpellHotReload.CurrentBinding?, string?
 local function capture_practice()
 	if lstg.var.sc_index == nil then

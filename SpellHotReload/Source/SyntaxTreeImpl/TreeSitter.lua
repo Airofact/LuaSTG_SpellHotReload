@@ -8,7 +8,7 @@ local roles={chunk=true,block=true,name=true,binding=true,literal=true,vararg=tr
  ['table']=true,field=true,['local']=true,local_function=true,assign=true,
  function_statement=true,call_statement=true,['return']=true,['break']=true,
  ['do']=true,['while']=true,['repeat']=true,for_numeric=true,for_generic=true,['if']=true}
-local patterns={declaration=true,assignment=true,definition=true,member=true,index=true,
+local patterns={declaration=true,assignment=true,definition=true,function_statement=true,member=true,index=true,
  call=true,call_statement=true,literal=true,unary=true,['table']=true,['function']=true,['return']=true}
 local native_roles={chunk='chunk',block='block',identifier='name',['nil']='literal',['true']='literal',['false']='literal',
  number='literal',string='literal',vararg_expression='vararg',dot_index_expression='member',
@@ -206,7 +206,8 @@ function M.Parse(source,previous)
    local e=entry(value);local k=kind(value)
    if pattern=='declaration' then if k=='local' or k=='local_function' then return declarations(value,resolve) end
    elseif pattern=='assignment' then if k=='assign' then return {targets=refs(one(value,'variable_list'),nil,resolve),values=refs(one(value,'expression_list'),nil,resolve)} end
-   elseif pattern=='definition' then
+   elseif pattern=='definition' or pattern=='function_statement' then
+    if pattern=='function_statement' and k~='function_statement' then return nil end
     local target,fn,method,self_visible,form
     if k=='local_function' then target,fn,self_visible,form=resolve(get(value,'name',true),true),value,true,'local-function'
     elseif k=='function_statement' then target,fn,form=resolve(get(value,'name',true)),value,'function-statement';method=entry(target).info.kind=='method_index_expression'

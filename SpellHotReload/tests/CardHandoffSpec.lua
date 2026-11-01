@@ -17,7 +17,6 @@ function M.run()
     local Anchor=require("SpellHotReload.Load.Anchor")
     local Binding=require("SpellHotReload.Adapters.Card.PracticeBinding")
     local Restart=require("SpellHotReload.Runtime.CurrentRestart")
-    local Callbacks=require("SpellHotReload.Adapters.Card.CardCallbacks")
     local ClassAdapter=require("SpellHotReload.Adapters.Class.Class")
     local function owned(snapshot,owner)
         for _,group in ipairs(snapshot.owners) do if group.owner==owner then return group end end
@@ -145,7 +144,7 @@ function M.run()
         eq(ctx.adapter.transaction,nil,"no owner publisher")
         eq(#record(p,Local).fragment.cell_writes,1,"genuine helper update")
         eq(#fragment.raw_writes,0,"unchanged Card wrappers are not recompiled")
-        eq(Callbacks.Publish,nil,"retired publication export absent")
+        eq(package.loaded["SpellHotReload.Adapters.Card.CardCallbacks"],nil,"retired matcher module not loaded")
         refuse(function() return Card.Commit(h,fragment,ctx) end,"register","missing registrar","ownership")
         ctx.adapter.register=hostile
         refuse(function() return Card.Commit(h,fragment,ctx) end,"register","nonfunction registrar","ownership")
@@ -183,7 +182,7 @@ function M.run()
         eq(value,nil,"transaction refusal forwarded");eq(err,marker,"transaction error identity preserved")
         eq(calls,1,"exactly one publisher callback");eq(registrations,3,"all three real hooks called")
         refuse(function() return retained(h,fragment,ctx) end,"register","expired registrar","stale")
-        unchanged(f,original,"registration-only");eq(Callbacks.Publish,nil,"no legacy publication export")
+        unchanged(f,original,"registration-only");eq(package.loaded["SpellHotReload.Adapters.Card.CardCallbacks"],nil,"retired matcher module stays unloaded")
         reset_hooks()
         -- Identity failures use the REAL bound registrar, in separate operations.
         -- A foreign attempt poisons that registration; never probe a success path.
@@ -215,7 +214,7 @@ function M.run()
         unchanged(f,original,"missing join");eq(tx:Poisoned(),false,"capability refusal not poison")
         reset_hooks()
         f=fixture();p=f.prepared;original=f.initial.card.init;tx=controller(f)
-        eq(Callbacks.Publish,nil,"retired publication export absent")
+        eq(package.loaded["SpellHotReload.Adapters.Card.CardCallbacks"],nil,"retired matcher module not loaded")
         local run=must(Restart.Freeze(f.target,f.capture))
         local failed_run=must(Restart.Freeze(f.target,f.capture))
         local engine=0;Binding.IsReplay=function() return false end
@@ -311,7 +310,7 @@ function M.run()
             x.candidate=must(p._store:GetCandidate(x.entry.file))
             Binding.CaptureCurrent=function() return x.initial end
             Binding.IsReplay=function() return false end
-            eq(Callbacks.Publish,nil,"retired publication export absent")
+            eq(package.loaded["SpellHotReload.Adapters.Card.CardCallbacks"],nil,"retired matcher module not loaded")
             return x
         end
         f=plugin_fixture()
@@ -404,7 +403,7 @@ function M.run()
         eq(pending.state,"accepted","retry only accepts handoff")
         eq(pending.attempts,2,"production two attempts")
         eq(pending.ready,"unobserved","production does not claim Boss readiness")
-        eq(Callbacks.Publish,nil,"production no legacy publication")
+        eq(package.loaded["SpellHotReload.Adapters.Card.CardCallbacks"],nil,"production no legacy publication")
 
         -- Independent first load: a Missing lifecycle cannot be revived for Apply.
         f=plugin_fixture();plugin=f.plugin
@@ -429,7 +428,7 @@ function M.run()
         eq(retained.generation,f.candidate.generation,"refusal retains candidate generation")
         eq(retained.first_content,f.candidate.first_content,"refusal retains candidate bytes")
         eq(retained.stable,true,"refusal retains stable candidate")
-        eq(Callbacks.Publish,nil,"refusal no legacy publication")
+        eq(package.loaded["SpellHotReload.Adapters.Card.CardCallbacks"],nil,"refusal no legacy publication")
     end)
     reset_hooks()
     for _,tx in ipairs(controllers) do tx:Release() end

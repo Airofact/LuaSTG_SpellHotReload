@@ -20,28 +20,46 @@ local function fail(phase,code,message,context)
     return nil,{phase=phase,code=code,message=message,
         file=plain(context) and plain(context.common) and context.common.file}
 end
--- Match declarations/writes at the shared position; reuse the same candidate
--- binding unit when its definition follows a separate declaration.
+-- Match retains the definition and assignment facts used by later owner work.
 function M.Match(cursor,common,accepted)
     local source=common.source;local row=cursor:Peek();local index=cursor:Mark()
     local Tree=source.analysis.syntax;local ast=row.syntax
     local declaration=Tree.Match(ast,"declaration")
+    local assignment,fn,defined,self_visible
     local names,seen={},{}
     local function add(name)
         if name and not seen[name] then names[#names+1]=name;seen[name]=true end
     end
     if declaration then
         for _,binding in ipairs(declaration.names) do add(Tree.Identifier(binding)) end
+        if #declaration.names==1 and #declaration.values==1 and Tree.Is(declaration.values[1],"function") then
+            defined,fn,self_visible=names[1],declaration.values[1],declaration.self_visible
+        end
     else
-        local assignment=Tree.Match(ast,"assignment")
-        local definition=Tree.Match(ast,"definition")
-        local targets=assignment and assignment.targets or definition and {definition.target} or {}
+        assignment=Tree.Match(ast,"assignment")
+        local targets
+        if assignment then
+            targets=assignment.targets
+            if #targets==1 and #assignment.values==1 and Tree.Is(assignment.values[1],"function") then
+                defined,fn=Tree.Identifier(targets[1]),assignment.values[1]
+            end
+        else
+            local definition=Tree.Match(ast,"function_statement")
+            targets=definition and {definition.target} or {}
+            if definition then defined,fn=Tree.Identifier(definition.target),definition.fn end
+        end
         for _,target in ipairs(targets) do
             local name=Tree.Identifier(target)
             if name and Source.ResolveLocal(source,index,name) then add(name) end
         end
     end
     if #names==0 then return nil end
+    local data={assignment=assignment}
+    if fn and defined and seen[defined] then
+        local definition,err=Definitions.Describe(source,index,defined,fn,self_visible==true)
+        if not definition then return nil,err end
+        data.definition=definition
+    end
     local units,claims,mappings={},{},{}
     for _,name in ipairs(names) do
         local key="local:"..name;local unit=accepted[key]
@@ -49,7 +67,7 @@ function M.Match(cursor,common,accepted)
             unit={key=key,carrier="local",context={name=name}}
             claims[#claims+1]={kind="declaration",key=key,unit_key=key}
         end
-        units[#units+1]=unit;mappings[#mappings+1]={unit=unit,first=index,last=index}
+        units[#units+1]=unit;mappings[#mappings+1]={unit=unit,first=index,last=index,data=data}
     end
     cursor:Take()
     return {units=units,claims=claims,mappings=mappings}

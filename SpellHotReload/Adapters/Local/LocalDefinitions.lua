@@ -25,6 +25,15 @@ end
 local function append(map,name,value)
     local list=map[name] or {};map[name]=list;list[#list+1]=value
 end
+-- Preserve the original function node and its complete lexical support at Match.
+function M.Describe(source,index,name,fn,self_visible)
+    local statement=source.analysis.statements[index];local Tree=source.analysis.syntax
+    local names,err=Source.Visible(source,fn);if not names then return nil,err end
+    local form=self_visible and "statement" or "expression"
+    return {source=source,name=name,statement=index,syntax=fn,visible=names,form=form,self_visible=self_visible,
+        signature=form=="statement" and Tree.Signature(statement.syntax) or Tree.FunctionSignature(fn),
+        source_range=statement.source_range}
+end
 -- Assemble lexical support once from accepted local units and complete facts.
 -- This does not discover units or run a second source analyzer.
 function M.Build(source,units,mappings)
@@ -34,23 +43,12 @@ function M.Build(source,units,mappings)
     if not policy then return fail(why or "capture policy unavailable") end
     local projection={kind=M.Kind,version=M.Version,source=source,policy=policy,
         definitions={},writes={},blocked={},initializers={}}
-    local matched={}
+    local seen={}
     for _,mapping in ipairs(mappings) do
-        for index=mapping.first,mapping.last do matched[index]=true end
-    end
-    for index,statement in ipairs(a.statements) do
-        if matched[index] then
-            local ast=statement.syntax;local definition=Tree.Match(ast,"definition")
-            local name=definition and Tree.Identifier(definition.target)
-            if name and not definition.method then
-                local fn,self_visible=definition.fn,definition.self_visible
-                local names,nerr=Source.Visible(source,fn);if not names then return nil,nerr end
-                local form=self_visible and "statement" or "expression"
-                append(projection.definitions,name,{source=source,name=name,statement=index,
-                    syntax=fn,visible=names,form=form,self_visible=self_visible,
-                    signature=form=="statement" and Tree.Signature(ast) or Tree.FunctionSignature(fn),
-                    source_range=statement.source_range})
-            end
+        local definition=mapping.data.definition
+        if definition and not seen[definition.statement] then
+            seen[definition.statement]=true
+            append(projection.definitions,definition.name,definition)
         end
     end
     -- These facts include statements consumed by Class/Spell or left unmatched.

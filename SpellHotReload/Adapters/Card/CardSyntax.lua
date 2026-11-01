@@ -17,11 +17,14 @@ function M.Constructor(Tree,node)
     local owner=Tree.Match(target.base,"member")
     if owner and owner.separator=="." and Tree.IsName(owner.base,"boss") then return owner.name,call end
 end
+-- Expression-level target recognition only; callback policy stays in Card.
+function M.TempField(Tree,target)
+    local member=Tree.Match(target,"member")
+    if member and Tree.IsName(member.base,"_tmp_sc") then return member.name end
+end
 function M.Callback(Tree,node)
     local definition=Tree.Match(node,"definition")
-    local target=definition and Tree.Match(definition.target,"member")
-    if target and Tree.IsName(target.base,"_tmp_sc") then
-        return target.name,definition.fn,definition.method
-    end
+    local name=definition and M.TempField(Tree,definition.target)
+    if name then return name,definition.fn,definition.method end
 end
 return M

@@ -11,17 +11,45 @@ function M.Key(Tree,target)
 end
 function M.Member(Tree,target)
     local member=Tree.Match(target,"member")
-    if member then return M.Key(Tree,member.base),member.name end
+    if member then return M.Key(Tree,member.base),member.name,member.separator end
     local index=Tree.Match(target,"index")
-    if index then return M.Key(Tree,index.base),Tree.String(index.key) end
+    if index then return M.Key(Tree,index.base),Tree.String(index.key),"[]" end
 end
-function M.StatementKey(Tree,ast)
-    local target=Tree.SingleAssignment(ast)
-    local definition=Tree.Match(ast,"definition")
-    if definition then target=definition.target end
+-- Identify one class statement without building unrelated function metadata.
+function M.Read(Tree,ast)
+    local target,value=Tree.SingleAssignment(ast);local definition
+    if not target then
+        definition=Tree.Match(ast,"function_statement")
+        if definition then target,value=definition.target,definition.fn end
+    end
     local key=M.Key(Tree,target)
-    if key~=nil then return key end
-    return (M.Member(Tree,target))
+    if key~=nil then return {class_key=key,value=value,constructor=true} end
+    local name,access
+    key,name,access=M.Member(Tree,target)
+    if key==nil then return nil end
+    return {class_key=key,name=name,access=access,value=value,
+        fn=definition and definition.fn or Tree.Is(value,"function") and value or nil,
+        method=definition and definition.method or false}
+end
+-- Called only for the statements consumed by this successful class trial.
+function M.Describe(source,index,part)
+    local Tree=source.analysis.syntax;local statement=source.analysis.statements[index];local ast=statement.syntax
+    part.index,part.syntax,part.signature,part.range=index,ast,Tree.Signature(ast),statement.source_range
+    if part.constructor then
+        local call=Tree.Match(part.value,"call")
+        local base=call and not call.method and Tree.IsName(call.callee,"Class") and #call.args==1
+            and Tree.Is(call.args[1],"name") and Tree.Identifier(call.args[1])
+        part.base_name=base
+        part.safe=base and not shadow(source,index,"Class") and not shadow(source,index,"_editor_class")
+            and not shadow(source,index,base) or false
+    elseif not part.name then return nil,"class mapping contains a foreign member"
+    elseif part.fn then
+        local fn,method=part.fn,part.method;local visible=Source.Visible(source,fn)
+        part.definition={index=index,syntax=fn,method=method,visible=visible,
+            body=Tree.FunctionSource(fn,method),signature=Tree.FunctionSignature(fn,method),
+            range=statement.source_range,safe=visible~=nil and not shadow(source,index,"_editor_class")}
+    end
+    return part
 end
 local function append(map,key,value)
     local list=map[key] or {};map[key]=list;list[#list+1]=value
@@ -35,42 +63,18 @@ function M.Build(source,units,mappings)
     local Tree=source.analysis.syntax
     local p={source=source,order={},by_key={},constructors={},unsafe=false}
     for _,unit in ipairs(units) do
-        local key=unit.context.key
-        p.order[#p.order+1]=key;p.by_key[key]={key=key,constructors={},methods={},members={},ranges=unit.source_ranges}
+        local u=unit.context;local key=u.key
+        u.ranges=unit.source_ranges
+        p.order[#p.order+1]=key;p.by_key[key]=u
     end
-    local visited={}
     for _,mapping in ipairs(mappings) do
         local u=p.by_key[mapping.unit.context.key]
-        for index=mapping.first,mapping.last do
-            if not visited[index] then
-                visited[index]=true
-                local statement=source.analysis.statements[index];local ast=statement.syntax
-                local target,value=Tree.SingleAssignment(ast)
-                local definition=Tree.Match(ast,"definition")
-                if M.Key(Tree,target)~=nil then
-                    local call=Tree.Match(value,"call")
-                    local base=call and not call.method and Tree.IsName(call.callee,"Class") and #call.args==1
-                        and Tree.Is(call.args[1],"name") and Tree.Identifier(call.args[1])
-                    local c={index=index,syntax=ast,base_name=base,signature=Tree.Signature(ast),
-                        range=statement.source_range,value=value}
-                    c.safe=base and not shadow(source,index,"Class") and not shadow(source,index,"_editor_class")
-                        and not shadow(source,index,base) or false
-                    u.constructors[#u.constructors+1]=c;p.constructors[#p.constructors+1]=c
-                else
-                    if definition then target,value=definition.target,definition.fn end
-                    local key,name=M.Member(Tree,target)
-                    if key~=u.key or not name then return nil,"class mapping contains a foreign member" end
-                    local member={index=index,name=name,syntax=ast,value=value,signature=Tree.Signature(ast),range=statement.source_range}
-                    if definition then
-                        local fn,method=definition.fn,definition.method
-                        local visible=Source.Visible(source,fn)
-                        member.definition={index=index,syntax=fn,method=method,visible=visible,
-                            body=Tree.FunctionSource(fn,method),signature=Tree.FunctionSignature(fn,method),
-                            range=statement.source_range,safe=visible~=nil and not shadow(source,index,"_editor_class")}
-                        append(u.methods,name,member.definition)
-                    end
-                    u.members[#u.members+1]=member
-                end
+        for _,part in ipairs(mapping.data) do
+            if part.class_key~=u.key then return nil,"class mapping contains a foreign member" end
+            if part.constructor then u.constructors[#u.constructors+1]=part;p.constructors[#p.constructors+1]=part
+            else
+                if part.definition then append(u.methods,part.name,part.definition) end
+                u.members[#u.members+1]=part
             end
         end
     end

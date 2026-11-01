@@ -271,7 +271,7 @@ Del 消亡；enemy 仍仅有同一协议的离线覆盖，Kill 掉落、完整�
 | `Pipeline/Adapter.lua`、`NodeRegistry.lua`、`FileMatch.lua`、`UnitIndex.lua`、`Driver.lua` | 契约7注册、完整候选发现、逐 unit/owner 准备及全部片段收齐后的事务调度 |
 | `Pipeline/FileVersions.lua`、`Dependencies.lua` | 唯一文件快照/owner贡献与实际 unit 图、有限需求和 root 来源；不拥有适配器细粒度规则 |
 | `Adapters/Local/Local.lua`、`LocalDefinitions.lua`、`LocalVersions.lua` | 已有全文节点上的局部定义匹配、支持范围、私有映射、实际版本、依赖需求和最终选择 |
-| `Adapters/Card/Card.lua`、`CardCallbacks.lua` | 单卡多语句匹配、独立卡单元、注册布局、回调准备及对Class/Local的真实依赖；不独立发布 |
+| `Adapters/Card/Card.lua`、`CardSyntax.lua` | Card直接控制单卡匹配、游标消费、回调规则和注册布局；CardSyntax只提供共享语法形状识别。定向准备及Class/Local依赖保持，不独立发布 |
 | `Adapters/Card/CardTarget.lua`、`CardVersions.lua` | 精确对应/重启证明、Card 私有版本和公共实际图派生的依赖观察 |
 | `Adapters/Class/` | 类段匹配、真实Class首载、单卡依赖provider、既有六回调/数字槽与继承规则、私有版本及共同事务片段 |
 | `Source/` | 公共语法/绑定/节点事实、编译与选中闭包准备/接线工具；不拥有 Local 领域规则、版本或发布权限 |
@@ -312,6 +312,13 @@ Retry 消费同一冻结目标，不重读源码、不编译、不再次发布�
 
 共享游标、Class段、单卡及Card→Class依赖组成契约7。匹配成功不等于源码已发布；
 类名/slot或当前活体也不能补造首载Class provider。缺少同文件真实类证据时保留拒绝。
+Match在语句映射data中保留已识别的Local定义和Class构造/成员，单卡描述保留注册目标及源码顺序。
+公共接受点直接保留原Match结果和映射，并把未匹配语句的位置留在同一源码顺序中；失败试探不进入序列。
+BuildContext按这个顺序读取已接受的描述，Card直接构建布局；没有事件转换、重新分组、排序或Assignments/Members查询接口。
+CardCallbacks已删除，单卡注册、类卡表成员、临时引用变化及未描述接线在各自源码位置处理。
+卡表中的Unit引用用于定位；slot是关系结果，不是Unit身份。已匹配片段不再由BuildContext重新识别。
+必要全文安全检查、实际版本协调、Fresh/Guard及发布后新发现保持；重复识别减少不代替实机性能结果。
+公共function_statement模式只匹配函数声明；definition仍提供跨写法的函数定义归一化。
 不连续的卡定义片段不会跨过Local/未知语句重放回调；脱离已匹配单卡的回调明确拒绝。
 列表关系按源码顺序汇总，重复注册仍由真实身份和对应检查拒绝，Class卡表结构不被重放。
 

@@ -13,7 +13,6 @@ function M.run(opts)
     local IR=require("SpellHotReload.Source.TopLevelIR")
     local Syntax=require("SpellHotReload.Source.SyntaxTree")
     local Compose=require("SpellHotReload.Source.Compose")
-    local Callbacks=require("SpellHotReload.Adapters.Card.CardCallbacks")
     local Card=require("SpellHotReload.Adapters.Card.Card")
     local passed,failed,failures=0,0,{}
     local function eq(a,b,label)
@@ -35,10 +34,10 @@ function M.run(opts)
     local saved={}
     local environment
     for _,n in ipairs({"_BOSS_ESCAPE","FILE_TARGET_EFFECT"}) do saved[n]=rawget(_G,n) end
-    local saved_apis={layout=Callbacks.Layout,match=Card.Match,build=Source.Build,analyze=IR.Analyze,
+    local saved_apis={layout=Card.BuildContext,match=Card.Match,build=Source.Build,analyze=IR.Analyze,
         tokenize=Syntax.Parse,create=Compose.Create}
     local function restore_apis()
-        Callbacks.Layout,Card.Match=saved_apis.layout,saved_apis.match
+        Card.BuildContext,Card.Match=saved_apis.layout,saved_apis.match
         Source.Build,IR.Analyze,Syntax.Parse,Compose.Create=
             saved_apis.build,saved_apis.analyze,saved_apis.tokenize,saved_apis.create
     end
@@ -315,7 +314,7 @@ function M.run(opts)
             debug=setmetatable({},{__index=forbidden}),jit={flush=forbidden}},{__index=_G}))
         local pure=chunk()
         before_effect,before_ctor=effects,constructors
-        Callbacks.Layout=forbidden;Card.Match=forbidden;Source.Build=forbidden
+        Card.BuildContext=forbidden;Card.Match=forbidden;Source.Build=forbidden
         IR.Analyze=forbidden;Syntax.Parse=forbidden;Compose.Create=forbidden
         local ran,value=pcall(function()
             r=must(pure.LocateFileDiscovery(d,f.capture,f.live))

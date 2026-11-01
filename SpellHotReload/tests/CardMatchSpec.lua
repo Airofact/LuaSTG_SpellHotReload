@@ -3,7 +3,6 @@ local Adapter = require("SpellHotReload.Pipeline.Adapter")
 local NodeRegistry = require("SpellHotReload.Pipeline.NodeRegistry")
 local FileMatch = require("SpellHotReload.Pipeline.FileMatch")
 local Card = require("SpellHotReload.Adapters.Card.Card")
-local CardCallbacks = require("SpellHotReload.Adapters.Card.CardCallbacks")
 local IR = require("SpellHotReload.Source.TopLevelIR")
 local Source = require("SpellHotReload.Source.FileAnalysis")
 local Syntax = require("SpellHotReload.Source.SyntaxTree")
@@ -284,6 +283,42 @@ function M.run()
             'table.insert(_editor_class["A"].cards,_tmp_sc)',
         },"\n"),"callback outside a contiguous card block refuses the complete file","unsupported")
         contains(detached.message,"outside a matched single-card definition","detached callback reason")
+        -- Card layout only inspects table values belonging to card lists.
+        local unrelated=assert(discover([=[outside={'\x41'}]=]))
+        eq(#unrelated.units,0,"unrelated table initializer is not a card definition")
+        local Tree=unrelated.common.source.analysis.syntax
+        local _,value=Tree.SingleAssignment(unrelated.common.source.analysis.statements[1].syntax)
+        local ok,why=pcall(Tree.Match,value,"table")
+        eq(ok,false,"explicit table inspection retains literal support checks")
+        contains(why,"unsupported string escape","Card dispatch does not expand literal support")
+        -- Both Lua callback forms retain the same owner policy and boundaries.
+        local prefix='_editor_class["K"].cards={}\n_tmp_sc=boss.card.New("A",1,2,3,100)\n'
+        local suffix='\ntable.insert(_editor_class["K"].cards,_tmp_sc)'
+        for _,body in ipairs({'function _tmp_sc:init(n) return self,n end',
+            '_tmp_sc.init=function(self,n) return self,n end'}) do
+            local snapshot=assert(discover(prefix..body..'\n_tmp_sc.perform=false'..suffix))
+            local descriptor=snapshot.adapter_contexts.card.by_class.K.layout[1]
+            eq(descriptor.callbacks.init,'function(self,n) return self,n end',"both callback forms preserve receiver and body")
+            eq(descriptor.perform,"false","field assignment belongs to the same card")
+            eq(descriptor.last,5,"callback, property and registration stay contiguous")
+        end
+        for _,body in ipairs({
+            '_tmp_sc.init,other=function() end,0',
+            'other,_tmp_sc.init=0,function() end',
+            '_tmp_sc.init=function() end,side_effect()',
+        }) do
+            local why=reject(prefix..body..suffix,"multi-assignment card write","unsupported")
+            contains(why.message,"multi-target or multi-value card assignment","multi-assignment diagnostic")
+        end
+        for _,item in ipairs({
+            {'_tmp_sc.unknown=1',"unsupported card assignment: unknown"},
+            {'_tmp_sc.unknown=function() end',"unsupported card callback: unknown"},
+            {'function _tmp_sc:init() end\n_tmp_sc.init=function() end',"duplicate card callback: init"},
+            {'_tmp_sc.perform=false\n_tmp_sc.perform=true',"duplicate card perform assignment"},
+        }) do
+            local why=reject(prefix..item[1]..suffix,"card field policy","unsupported")
+            contains(why.message,item[2],"exact owner refusal")
+        end
         local no_lists = assert(discover("G = 1"))
         eq(#no_lists.units, 0, "a file without card lists is an empty success")
         local _,no_input=FileMatch.Discover(registry,nil,{file="Test_Boss.lua"})
@@ -332,7 +367,7 @@ function M.run()
         ------------------------------------------------------------------------
         do
             local facts=assert(Source.Build(new))
-            local match,layout=CardCallbacks.Match,CardCallbacks.Layout
+            local match,layout=Card.Match,Card.BuildContext
             local metamethods=0
             local hostile=setmetatable({},{__tostring=function() metamethods=metamethods+1;error("unsafe diagnostic") end})
             local function fault(mode,seam)
@@ -344,25 +379,26 @@ function M.run()
             for _,seam in ipairs({"match","layout"}) do
                 for _,mode in ipairs({"refuse-string","throw-string","refuse-object","throw-object"}) do
                     local seen,layout_calls={},0
-                    CardCallbacks.Match=function(cursor,input)
-                        eq(input,facts,"fault: Match keeps exact complete source")
-                        local desc,reason=match(cursor,input)
-                        if not desc then return nil,reason end
+                    Card.Match=function(cursor,common,accepted)
+                        eq(common.source,facts,"fault: Match keeps exact complete source")
+                        local result,reason=match(cursor,common,accepted)
+                        if not result then return nil,reason end
+                        local desc=result.units[1].context.descriptor
                         seen[#seen+1]=desc.kind..":"..desc.name
                         if seam=="match" and desc.name=="HardCard" then return fault(mode,seam) end
-                        return desc
+                        return result
                     end
-                    CardCallbacks.Layout=function(input,units)
+                    Card.BuildContext=function(input,units,...)
                         layout_calls=layout_calls+1
                         eq(input,facts,"fault: Layout keeps exact complete source")
                         eq(#units,4,"fault: Layout receives every accepted single-card unit")
-                        local context,reason=layout(input,units)
+                        local context,reason=layout(input,units,...)
                         assert(context,reason)
                         if seam=="layout" then return fault(mode,seam) end
                         return context
                     end
                     local ran,result,problem=pcall(FileMatch.Discover,registry,facts,{file="Test_Boss.lua"})
-                    CardCallbacks.Match,CardCallbacks.Layout=match,layout
+                    Card.Match,Card.BuildContext=match,layout
                     check(ran,"fault: exceptions contained at "..seam)
                     eq(result,nil,"fault: earlier accepted units cannot escape as a partial snapshot")
                     if ran and problem then

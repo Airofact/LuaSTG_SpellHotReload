@@ -56,7 +56,8 @@ local function claim_key(claim)
 end
 
 -- Match consumes one or more items and returns units immediately. BuildContext
--- derives owner-private file facts from accepted units; it never creates units.
+-- receives the original accepted results in source order. Their fields and
+-- mapping data are read-only after acceptance; failed trials never enter the sequence.
 function M.Discover(registry, source, supplied)
     if supplied~=nil and not plain(supplied) then return failure("analyze","unsupported","plain common required") end
     local common={};for k,v in next,supplied or {} do common[k]=v end
@@ -67,7 +68,7 @@ function M.Discover(registry, source, supplied)
     local called,adapters=pcall(function() return registry:Discoveries() end)
     if not called or dense(adapters)==nil then return failure("match","unsupported","discovery registry required",file) end
     local snapshot={kind="SpellHotReload.FileMatch",version=7,common=common,units={},entries={},by_key={},
-        adapter_contexts={},claims={},claim_owners={},mappings={},unmatched={},owners={}}
+        adapter_contexts={},claims={},claim_owners={},mappings={},unmatched={},owners={},sequence={}}
     local owned={}
     for _,adapter in ipairs(adapters) do
         local ok,why=Adapter.ValidateDiscovery(adapter)
@@ -98,6 +99,7 @@ function M.Discover(registry, source, supplied)
         end
         if selected==nil then
             snapshot.unmatched[#snapshot.unmatched+1]=start
+            snapshot.sequence[#snapshot.sequence+1]=start
             cursor:Take()
         else
             local own=owned[owner.Id]
@@ -153,19 +155,21 @@ function M.Discover(registry, source, supplied)
                 local range={first=rows[mapping.first].source_range.first,last=rows[mapping.last].source_range.last}
                 local unit=mapping.unit
                 unit.source_ranges[#unit.source_ranges+1]=range
-                local item={unit=unit,first=mapping.first,last=mapping.last}
+                local item=mapping
                 own.mappings[#own.mappings+1]=item;snapshot.mappings[#snapshot.mappings+1]=item
             end
             for _,claim in ipairs(selected.claims) do
                 snapshot.claim_owners[claim_key(claim)]=snapshot.by_key[claim.unit_key]
                 snapshot.claims[#snapshot.claims+1]=claim
             end
+            selected.adapter,selected.first,selected.last=owner,start,finish-1
+            snapshot.sequence[#snapshot.sequence+1]=selected
             cursor:Reset(finish)
         end
     end
     for _,adapter in ipairs(adapters) do
         local own=owned[adapter.Id]
-        local ran,context,err=pcall(adapter.BuildContext,source,own.units,own.mappings,common)
+        local ran,context,err=pcall(adapter.BuildContext,source,own.units,own.mappings,common,snapshot)
         if not ran or not plain(context) or context.source~=source or context.units~=own.units then
             return failure("match",plain(err) and err.code or "unsupported",
                 not ran and context or plain(err) and err.message or err or "same-source owner context required",file)

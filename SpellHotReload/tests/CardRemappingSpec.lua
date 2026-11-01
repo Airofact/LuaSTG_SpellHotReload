@@ -12,7 +12,6 @@ function M.run(opts)
     local Syntax=require("SpellHotReload.Source.SyntaxTree")
     local Compose=require("SpellHotReload.Source.Compose")
     local Card=require("SpellHotReload.Adapters.Card.Card")
-    local Callbacks=require("SpellHotReload.Adapters.Card.CardCallbacks")
     local Load=require("SpellHotReload.Adapters.Class.ClassLoad")
     local ClassAdapter=require("SpellHotReload.Adapters.Class.Class")
     local ClassFixture=require("SpellHotReload.tests.ClassFixture")
@@ -53,10 +52,10 @@ function M.run(opts)
     local saved={}
     local environment
     for _,n in ipairs({"REMAPPING_EFFECT"}) do saved[n]=rawget(_G,n) end
-    local saved_apis={layout=Callbacks.Layout,match=Card.Match,build=Source.Build,analyze=IR.Analyze,
+    local saved_apis={layout=Card.BuildContext,match=Card.Match,build=Source.Build,analyze=IR.Analyze,
         tokenize=Syntax.Parse,create=Compose.Create}
     local function restore_apis()
-        Callbacks.Layout,Card.Match= saved_apis.layout,saved_apis.match
+        Card.BuildContext,Card.Match= saved_apis.layout,saved_apis.match
         Source.Build,IR.Analyze,Syntax.Parse,Compose.Create=
             saved_apis.build,saved_apis.analyze,saved_apis.tokenize,saved_apis.create
     end
@@ -235,7 +234,7 @@ function M.run(opts)
             debug=setmetatable({},{__index=function() traps=traps+1;error("debug") end}),
             jit={flush=function() traps=traps+1;error("flush") end}}, {__index=_G}))
         local pure=chunk()
-        Callbacks.Layout=function() error("layout rebuild forbidden") end
+        Card.BuildContext=function() error("layout rebuild forbidden") end
         Card.Match=function() error("re-match forbidden") end
         Source.Build=function() error("source rebuild forbidden") end
         IR.Analyze=function() error("IR rebuild forbidden") end

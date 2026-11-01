@@ -18,16 +18,22 @@ local function dense(t)
 end
 function M.Match(cursor,common,accepted)
     local source=common.source;local Tree=source.analysis.syntax
-    local start=cursor:Mark();local key=D.StatementKey(Tree,cursor:Peek().syntax)
-    if key==nil then return nil end
-    local id="class:"..key;local unit=accepted[id]
-    local claims={}
+    local start=cursor:Mark();local part=D.Read(Tree,cursor:Peek().syntax)
+    if not part then return nil end
+    local key=part.class_key;local id="class:"..key;local unit=accepted[id]
+    local claims,parts={},{}
     if not unit then
-        unit={key=id,carrier="class",context={key=key}}
+        unit={key=id,carrier="class",context={key=key,constructors={},methods={},members={}}}
         claims[1]={kind="constructor",key=id,unit_key=id}
     end
-    repeat cursor:Take() until cursor:AtEnd() or D.StatementKey(Tree,cursor:Peek().syntax)~=key
-    return {units={unit},claims=claims,mappings={{unit=unit,first=start,last=cursor:Mark()-1}}}
+    repeat
+        local described,err=D.Describe(source,cursor:Mark(),part)
+        if not described then return nil,err end
+        parts[#parts+1]=described
+        cursor:Take()
+        part=not cursor:AtEnd() and D.Read(Tree,cursor:Peek().syntax)
+    until not part or part.class_key~=key
+    return {units={unit},claims=claims,mappings={{unit=unit,first=start,last=cursor:Mark()-1,data=parts}}}
 end
 function M.BuildContext(source,units,mappings)
     local p,err=D.Build(source,units,mappings);if not p then return nil,err end

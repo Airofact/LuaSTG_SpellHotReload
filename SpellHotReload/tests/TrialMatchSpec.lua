@@ -59,6 +59,22 @@ function M.run()
         eq(#s.by_key["local:f"].unit.source_ranges,2,"later local assignment maps to the same binding unit")
         eq(#s.adapter_contexts["local"].projection.definitions.f,1,"definition context consumes accepted mapping")
         eq(s.by_key["card:K"],nil,"no class-sized Card wrapper survives")
+        local local_definition,class_parts
+        for _,mapping in ipairs(s.mappings) do
+            if mapping.unit.key=="local:f" and mapping.data.definition then local_definition=mapping.data.definition end
+            if mapping.unit.key=="class:K" then class_parts=mapping.data end
+        end
+        eq(s.adapter_contexts["local"].projection.definitions.f[1],local_definition,"Local context retains the matched definition object")
+        eq(cl.projection.by_key.K.constructor,class_parts[1],"Class context retains the matched constructor object")
+        eq(cl.projection.by_key.K.members[1],class_parts[2],"Class context retains the matched member object")
+        eq(s.sequence[3].adapter,Class,"accepted Class result remains in source order")
+        eq(s.sequence[3].mappings[1].data,class_parts,"ordered result retains the same Class descriptions")
+        eq(s.sequence[4].units[1],cc.units[1],"card follows its class definition")
+        eq(s.sequence[5].adapter,Local,"intervening Local stays between cards")
+        eq(s.sequence[6].units[1],cc.units[2],"second card keeps its original accepted position")
+        eq(cc.units[1].context.descriptor.registrations[1].class_key,"K","Card retains its matched registration target")
+        eq(cc.units[1].context.descriptor.registrations[1].index,9,"registration records source order, not a guessed slot")
+
         local build,parse=Source.Build,Syntax.Parse
         Source.Build=function() error("discovery rebuilt Source") end
         Syntax.Parse=function() error("discovery reparsed input") end
@@ -68,7 +84,7 @@ function M.run()
     end)
     case("failed multi-item trial restores the shared cursor",function()
         local source=must(Source.Build("local a,b=1,2\nG=3\nH=4"))
-        local registry=Registry.New();local seen,built={},0
+        local registry=Registry.New();local seen,built={},0;local accepted_result
         local function no() error("publication hook ran") end
         local function adapter(id,match)
             return {Id=id,ContractVersion=7,Match=match,
@@ -83,12 +99,17 @@ function M.run()
             if c:Mark()~=1 then return nil end
             local a={key="a",carrier="local",context={}};local b={key="b",carrier="local",context={}}
             c:Take();eq(built,0,"units returned before file-context assembly")
-            return {units={a,b},claims={},mappings={{unit=a,first=1,last=1},{unit=b,first=1,last=1}}}
+            accepted_result={units={a,b},claims={},mappings={{unit=a,first=1,last=1},{unit=b,first=1,last=1}}}
+            return accepted_result
         end)))
         local s=must(FileMatch.Discover(registry,source,{file="Trial.lua"}))
         eq(table.concat(seen,","),"1,2,3","every losing trial restored its starting point")
         eq(#s.units,2,"multi-name syntax may produce two units")
         eq(#s.unmatched,2,"unmatched items remain available to completion checks")
+        eq(#s.sequence,3,"only accepted results and unmatched statements enter the sequence")
+        eq(s.sequence[1],accepted_result,"the original accepted Match result is reused")
+        eq(s.sequence[2],2,"first unmatched statement retains its source position")
+        eq(s.sequence[3],3,"second unmatched statement follows it without sorting")
     end)
     case("single-card scope rejects detached callbacks",function()
         local input=text:gsub("function _tmp_sc:init%(%) self.n=f%(%) end", "local gap=1\nfunction _tmp_sc:init() self.n=f() end",1)

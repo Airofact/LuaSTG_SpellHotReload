@@ -5,6 +5,7 @@ local Source=require("SpellHotReload.Source.FileAnalysis")
 local Versions=require("SpellHotReload.Adapters.Card.CardVersions")
 local Files=require("SpellHotReload.Pipeline.FileVersions")
 local Binding=require("SpellHotReload.Adapters.Card.PracticeBinding")
+local Pattern=require("SpellHotReload.Adapters.Card.CardSyntax")
 local Card={name="Card",Id="card",ContractVersion=7}
 local CALLBACKS={"before","init","frame","render","beforedel","del","after"}
 local VIEW="SpellHotReload.Card.View"
@@ -28,18 +29,166 @@ local function names_of(map)
     return names
 end
 
+-- Card owns the contiguous definition and its file registration layout.
+local allowed_callbacks={}
+for _,name in ipairs(CALLBACKS) do allowed_callbacks[name]=true end
+local function match_failure(message) return nil,{code="unsupported",message=message} end
+local function descriptor(Tree,expression,visible,kind,call)
+    if not kind then kind,call=Pattern.Constructor(Tree,expression) end
+    return {kind=kind or "other",name=kind and (Tree.String(call.args[1]) or "") or "",
+        constructor=Tree.Signature(expression),callbacks={},callback_points={},callback_syntax={},callback_signatures={},
+        locals=visible or {},perform=""}
+end
+
 -- Source keys belong to this discovery; actual identity comes from capture.
 function Card.Match(cursor,common)
-    local desc,err=require("SpellHotReload.Adapters.Card.CardCallbacks").Match(cursor,common.source)
-    if not desc then return nil,err end
+    local source=common.source;local Tree=source.analysis.syntax;local start=cursor:Mark()
+    local target,rhs=Tree.SingleAssignment(cursor:Peek().syntax)
+    if not Tree.IsName(target,"_tmp_sc") then return nil end
+    local kind,call=Pattern.Constructor(Tree,rhs);if not kind then return nil end
+    local desc=descriptor(Tree,rhs,Source.VisibleBefore(source,start),kind,call);desc.first=start;desc.registrations={}
+    cursor:Take()
+    while not cursor:AtEnd() do
+        local statement=cursor:Peek();local ast=statement.syntax
+        local assignment=Tree.Match(ast,"assignment")
+        local name,fn,method,value,call
+        if assignment then
+            if #assignment.targets~=1 or #assignment.values~=1 then
+                for _,written in ipairs(assignment.targets) do
+                    local part=Tree.Match(written,"member") or Tree.Match(written,"index")
+                    if Tree.IsName(written,"_tmp_sc") or part and Tree.IsName(part.base,"_tmp_sc") then
+                        return match_failure("multi-target or multi-value card assignment")
+                    end
+                end
+                break
+            end
+            name=Pattern.TempField(Tree,assignment.targets[1]);value=assignment.values[1]
+            if not name then break end
+            if Tree.Is(value,"function") then fn=value end
+        else
+            local definition=Tree.Match(ast,"function_statement")
+            if definition then
+                name=Pattern.TempField(Tree,definition.target);fn,method=definition.fn,definition.method
+            else call=Tree.Match(ast,"call_statement") end
+        end
+        if name then
+            if fn then
+                if not allowed_callbacks[name] then return match_failure("unsupported card callback: "..name) end
+                if desc.callbacks[name] then return match_failure("duplicate card callback: "..name) end
+                desc.callbacks[name]=Tree.FunctionSource(fn,method)
+                desc.callback_syntax[name]=fn
+                desc.callback_signatures[name]="literal|"..Tree.FunctionSignature(fn,method)
+                local range,err=Source.ByteRange(source,fn,"function");if not range then return nil,err end
+                desc.callback_points[name]={first=statement.source_range.first,last=range.last}
+            else
+                if name~="perform" then return match_failure("unsupported card assignment: "..name) end
+                if desc.perform~="" then return match_failure("duplicate card perform assignment") end
+                desc.perform=Tree.Text(value)
+                local literal=Tree.Match(value,"literal")
+                if literal and literal.category=="boolean" then desc.perform_point=statement.source_range end
+            end
+        elseif call and Tree.Path(call.callee)=="table.insert" and #call.args==2 then
+            local class_key=Pattern.CardList(Tree,call.args[1])
+            if class_key and Tree.IsName(call.args[2],"_tmp_sc") then
+                desc.registrations[#desc.registrations+1]={index=cursor:Mark(),class_key=class_key}
+            elseif Tree.IsName(call.args[1],"_sc_table") then
+                local record=Tree.Match(call.args[2],"table")
+                if not record or #record.fields~=5 or not record.fields[3].array
+                    or not Tree.IsName(record.fields[3].value,"_tmp_sc") then break end
+            else break end
+        else break end
+        cursor:Take()
+    end
+    desc.last=cursor:Mark()-1
     local key="card:@"..desc.first
-    local unit={key=key,carrier="card",context={descriptor=desc}}
+    local unit={key=key,carrier="card",context={descriptor=desc,placements={}}}
+    desc.unit=unit
     local claims={{kind="constructor",key=key,unit_key=key}}
     for _,name in ipairs(names_of(desc.callbacks)) do claims[#claims+1]={kind="callback",key=key..":"..name,unit_key=key} end
     return {units={unit},claims=claims,mappings={{unit=unit,first=desc.first,last=desc.last}}}
 end
-function Card.BuildContext(source,units)
-    return require("SpellHotReload.Adapters.Card.CardCallbacks").Layout(source,units)
+
+-- Consume the original accepted Match results in source order. No event list.
+function Card.BuildContext(source,units,mappings,common,discovery)
+    local Tree=source.analysis.syntax
+    local Class=require("SpellHotReload.Adapters.Class.Class")
+    local Local=require("SpellHotReload.Adapters.Local.Local")
+    local classes,by_class,current={},{},nil
+    local function replace(index,key,value)
+        local list=Tree.Match(value,"table");if not list then return true end
+        if key=="" then return match_failure("card list class key is empty") end
+        local row=by_class[key]
+        if not row then row={class_key=key,layout={},first=index};by_class[key]=row;classes[#classes+1]=row end
+        local layout={}
+        for _,field in ipairs(list.fields) do
+            if not field.array then return match_failure("unsupported keyed class card list") end
+            if Tree.IsName(field.value,"_tmp_sc") then
+                if not current then return match_failure("card list reuses an unknown _tmp_sc") end
+                layout[#layout+1]=current
+            else layout[#layout+1]=descriptor(Tree,field.value) end
+        end
+        row.layout=layout;return true
+    end
+    local function append(key,card)
+        local row=by_class[key];if not row then return match_failure("card registration before class card list") end
+        row.layout[#row.layout+1]=card;return true
+    end
+    -- Syntax not described by these owners is inspected once at its own position.
+    local function inspect(index)
+        local ast=source.analysis.statements[index].syntax;local target,value=Tree.SingleAssignment(ast)
+        if Tree.IsName(target,"_tmp_sc") then current=nil end
+        local key=Pattern.CardList(Tree,target)
+        if key then return replace(index,key,value) end
+        if Pattern.Callback(Tree,ast) then return match_failure("card callback is outside a matched single-card definition") end
+        local call=Tree.Match(ast,"call_statement");if not call then return true end
+        if Tree.IsName(call.callee,"_BOSS_ESCAPE") then
+            local key=Tree.String(call.args[1])
+            if #call.args~=4 or not key or Source.ResolveLocal(source,index,"_BOSS_ESCAPE") then
+                return match_failure("literal unshadowed _BOSS_ESCAPE and four arguments required")
+            end
+            local row=by_class[key];if not row then return match_failure("escape registration before class card list") end
+            for slot=1,2 do row.layout[#row.layout+1]={kind="other",name="",constructor=Tree.Signature(call.node)..":escape-slot:"..slot,
+                callbacks={},locals={},perform=""} end
+        elseif Tree.Path(call.callee)=="table.insert" and #call.args==2 then
+            local key=Pattern.CardList(Tree,call.args[1])
+            if key then return append(key,Tree.IsName(call.args[2],"_tmp_sc") and current or descriptor(Tree,call.args[2])) end
+        end
+        return true
+    end
+    for _,matched in ipairs(discovery.sequence) do
+        if type(matched)=="number" then
+            local ok,err=inspect(matched);if not ok then return nil,err end
+        elseif matched.adapter==Card then
+            current=matched.units[1].context.descriptor
+            for _,registration in ipairs(current.registrations) do
+                local ok,err=append(registration.class_key,current);if not ok then return nil,err end
+            end
+        elseif matched.adapter==Class then
+            for _,mapping in ipairs(matched.mappings) do for _,member in ipairs(mapping.data) do
+                if member.name=="cards" and member.access=="." then
+                    local ok,err=replace(member.index,member.class_key,member.value);if not ok then return nil,err end
+                end
+            end end
+        elseif matched.adapter==Local then
+            local a=matched.mappings[1].data.assignment
+            if a and #a.targets==1 and #a.values==1 and Tree.IsName(a.targets[1],"_tmp_sc") then current=nil end
+        else
+            for index=matched.first,matched.last do
+                local ok,err=inspect(index);if not ok then return nil,err end
+            end
+        end
+    end
+    for _,row in ipairs(classes) do for slot,desc in ipairs(row.layout) do
+        if desc.unit then
+            local placements=desc.unit.context.placements
+            placements[#placements+1]={class_key=row.class_key,slot=slot}
+        end
+    end end
+    for _,unit in ipairs(units) do
+        local placements=unit.context.placements
+        if #placements==1 then unit.context.class_key=placements[1].class_key;unit.context.slot=placements[1].slot end
+    end
+    return {source=source,carrier="card",units=units,classes=classes,by_class=by_class}
 end
 
 function Card.FreezeBinding(current)

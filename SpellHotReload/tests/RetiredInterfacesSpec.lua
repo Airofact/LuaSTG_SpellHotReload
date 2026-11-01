@@ -11,7 +11,7 @@ function M.run()
         "PrepareVersioned","PrepareFileVersioned","InspectPrepared","CaptureVersions","SeedVersions",
         "CheckCommitInput","ProposeVersion","CheckOwnership","CheckCallbackRead","CheckPublications",
         "CheckJoinDestinations","RuntimeContext"})
-    absent("Adapters.Card.CardCallbacks",{"Select","Build","Publish","Read"})
+    assert(not pcall(require,"SpellHotReload.Adapters.Card.CardCallbacks"),"retired CardCallbacks module remains");passed=passed+1
     absent("Adapters.Card.PracticeBinding",{"Patch","Restart","FlyOut"})
     absent("Adapters.Card.CardVersions",{"CompareDiscovery","Publication"})
     assert(type(require("SpellHotReload.Adapters.Card.CardVersions").Compare)=="function",

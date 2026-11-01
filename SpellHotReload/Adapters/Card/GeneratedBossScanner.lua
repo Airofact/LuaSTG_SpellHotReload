@@ -1,8 +1,8 @@
 --------------------------------------------------------------------------------
 --- SpellHotReload.Adapters.Card.GeneratedBossScanner
 ---
---- Format gate for LuaSTG Editor Sharp generated Boss files. CardCallbacks owns
---- structural parsing and class/slot identity checks. This module only:
+--- Format gate for LuaSTG Editor Sharp generated Boss files. Card owns matching;
+--- CardTarget checks class/slot identity. This module only:
 ---   * rejects binary chunks / NUL bytes
 ---   * rejects files missing the generated header
 ---   * flags SC Debug output; its startup wiring is never executed
